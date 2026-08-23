@@ -1,0 +1,32 @@
+.DS_Store
+node_modules/
+.pnpm-store/
+dist/
+coverage/
+.vite/
+.local/
+*.tsbuildinfo
+*.log
+*.sqlite
+*.sqlite3
+*.sqlite-*
+*.sqlite-shm
+*.sqlite-wal
+*.db
+*.db-*
+
+# Private local product context.
+/AGENTS.md
+/PRODUCT.md
+/DESIGN.md
+
+# Local Agent and visual-review work products.
+.impeccable/
+.validation/
+.acceptance/
+/VALIDATION.md
+/ACCEPTANCE.md
+
+.env
+.env.*
+!.env.example

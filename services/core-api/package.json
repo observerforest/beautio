@@ -1,0 +1,28 @@
+{
+  "name": "@beautio/core-api",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "dev": "node --watch src/http.ts",
+    "typecheck": "tsc --project tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@beautio/application": "workspace:*",
+    "@beautio/contracts": "workspace:*",
+    "@beautio/database": "workspace:*",
+    "@beautio/domain": "workspace:*",
+    "@beautio/image-storage": "workspace:*",
+    "@modelcontextprotocol/node": "2.0.0",
+    "@modelcontextprotocol/server": "2.0.0",
+    "jose": "6.2.9",
+    "zod": "4.4.3"
+  },
+  "devDependencies": {
+    "@modelcontextprotocol/client": "2.0.0",
+    "sharp": "0.34.4"
+  }
+}

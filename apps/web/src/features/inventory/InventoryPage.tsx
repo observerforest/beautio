@@ -1,0 +1,515 @@
+import type { InventoryListItemOutput, InventoryListOutput } from "@beautio/contracts";
+import { useEffect, useMemo, useState } from "react";
+import { AdminApiClient } from "../../admin-api.ts";
+import { Icon } from "../../components/Icon.tsx";
+import { Logo } from "../../components/Logo.tsx";
+import {
+  inventoryCardViews,
+  projectInventoryBrowse,
+  type InventoryBrowseOptions,
+  type InventoryCollectionView,
+  type InventoryStatusFilter,
+} from "../../view-model.ts";
+import { BottleEditorDialog } from "./BottleEditorDialog.tsx";
+import {
+  BrowseToolbar,
+  CollectionTabs,
+  InventoryFilterControls,
+  InventorySearchField,
+  StatusTabs,
+} from "./InventoryControls.tsx";
+import { DesktopSidebar, MobileNavigation, SettingsPanel } from "./InventoryNavigation.tsx";
+import { NotesEditorDialog } from "./NotesEditorDialog.tsx";
+import { ProductCard } from "./ProductCard.tsx";
+import { ProductDetailDialog } from "./ProductDetailDialog.tsx";
+import { ProductEditorDialog } from "./ProductEditorDialog.tsx";
+
+type DialogMode = "detail" | "edit-product" | "edit-bottle" | "edit-notes";
+
+export interface InventoryPageProps {
+  readonly client: AdminApiClient;
+  readonly inventory: InventoryListOutput;
+  readonly readError: string | null;
+  readonly statusMessage: string | null;
+  readonly onStatusMessage: (message: string | null) => void;
+  readonly onRefresh: (showLoading?: boolean) => Promise<boolean>;
+  readonly onLock: (message: string) => void;
+  readonly onDialogOpenChange: (open: boolean) => void;
+}
+
+const initialBrowseOptions: InventoryBrowseOptions = {
+  view: "active",
+  status: "opened",
+  query: "",
+  category: null,
+  sort: "deadline-asc",
+};
+
+/**
+ * 围绕真实 Core API 快照组合已认证的 Figma 库存界面。
+ * Composes the authenticated Figma inventory shell around the real Core API snapshot.
+ *
+ * @param props - 已认证客户端、源库存、反馈、刷新、锁定和模态框回调。 / Authenticated client, source inventory, feedback, refresh, lock, and modal callbacks.
+ * @returns 响应式库存导航、浏览、卡片、设置和写入对话框。 / Responsive inventory navigation, browsing, cards, settings, and write dialogs.
+ */
+export function InventoryPage({
+  client,
+  inventory,
+  readError,
+  statusMessage,
+  onStatusMessage,
+  onRefresh,
+  onLock,
+  onDialogOpenChange,
+}: InventoryPageProps) {
+  const [browseOptions, setBrowseOptions] = useState<InventoryBrowseOptions>(initialBrowseOptions);
+  const [queryInput, setQueryInput] = useState("");
+  const [mobilePage, setMobilePage] = useState<"inventory" | "settings">("inventory");
+  const [desktopSettingsOpen, setDesktopSettingsOpen] = useState(false);
+  const [selectedInventoryItemId, setSelectedInventoryItemId] = useState<string | null>(null);
+  const [dialogMode, setDialogMode] = useState<DialogMode>("detail");
+  const [editorItemFingerprint, setEditorItemFingerprint] = useState<string | null>(null);
+  const [dialogFeedback, setDialogFeedback] = useState("选择编辑入口后才会产生可保存的修改。");
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      setBrowseOptions((current) => ({ ...current, query: queryInput }));
+    }, 140);
+    return () => window.clearTimeout(timer);
+  }, [queryInput]);
+
+  const projection = useMemo(
+    () => projectInventoryBrowse(inventory.items, browseOptions),
+    [browseOptions, inventory.items],
+  );
+  const selectedItem = useMemo(
+    () => selectedInventoryItemId === null
+      ? null
+      : inventory.items.find((item) => item.inventory_item_id === selectedInventoryItemId) ?? null,
+    [inventory.items, selectedInventoryItemId],
+  );
+  const finishedCount = useMemo(
+    () => inventory.items.filter((item) => item.lifecycle_status === "finished").length,
+    [inventory.items],
+  );
+  const discardedCount = useMemo(
+    () => inventory.items.filter((item) => item.lifecycle_status === "discarded").length,
+    [inventory.items],
+  );
+  const selectedItemFingerprint = selectedItem === null ? null : inventoryItemFingerprint(selectedItem);
+  const editorSnapshotChanged =
+    dialogMode !== "detail" &&
+    editorItemFingerprint !== null &&
+    selectedItemFingerprint !== null &&
+    editorItemFingerprint !== selectedItemFingerprint;
+
+  useEffect(() => {
+    if (
+      browseOptions.category !== null &&
+      !projection.categoryChoices.includes(browseOptions.category)
+    ) {
+      setBrowseOptions((current) => ({ ...current, category: null }));
+    }
+  }, [browseOptions.category, projection.categoryChoices]);
+
+  useEffect(() => {
+    if (selectedInventoryItemId !== null && selectedItem === null) {
+      setSelectedInventoryItemId(null);
+      setEditorItemFingerprint(null);
+    }
+  }, [selectedInventoryItemId, selectedItem]);
+
+  useEffect(() => {
+    if (!editorSnapshotChanged) return;
+    setSelectedInventoryItemId(null);
+    setDialogMode("detail");
+    setEditorItemFingerprint(null);
+    onStatusMessage("这条库存已被新读取结果更新。为避免旧草稿覆盖新事实，编辑器已关闭，请重新打开。");
+  }, [editorSnapshotChanged, onStatusMessage]);
+
+  const dialogOpen = selectedItem !== null && !editorSnapshotChanged;
+  useEffect(() => {
+    onDialogOpenChange(dialogOpen);
+    return () => onDialogOpenChange(false);
+  }, [dialogOpen, onDialogOpenChange]);
+
+  const changeCollection = (view: InventoryCollectionView): void => {
+    setMobilePage("inventory");
+    setBrowseOptions((current) => ({
+      ...current,
+      view,
+      status: view === "active" ? "opened" : "all",
+      category: null,
+    }));
+    setSelectedInventoryItemId(null);
+  };
+
+  const changeStatus = (status: InventoryStatusFilter): void => {
+    if (browseOptions.view === "archive") return;
+    setBrowseOptions((current) => ({ ...current, status }));
+    setSelectedInventoryItemId(null);
+  };
+
+  const openDetail = (item: InventoryListItemOutput): void => {
+    setDialogFeedback("选择编辑入口后才会产生可保存的修改。");
+    setDialogMode("detail");
+    setEditorItemFingerprint(null);
+    setSelectedInventoryItemId(item.inventory_item_id);
+  };
+
+  const closeDialog = (): void => {
+    setSelectedInventoryItemId(null);
+    setDialogMode("detail");
+    setEditorItemFingerprint(null);
+  };
+
+  const returnToDetail = (message: string): void => {
+    setDialogFeedback(message);
+    setDialogMode("detail");
+    setEditorItemFingerprint(null);
+  };
+
+  const openEditor = (mode: Exclude<DialogMode, "detail">): void => {
+    if (selectedItem === null) return;
+    setEditorItemFingerprint(inventoryItemFingerprint(selectedItem));
+    setDialogMode(mode);
+  };
+
+  const handleCommitted = async (
+    inventoryItemId: string,
+    message: string,
+  ): Promise<boolean> => {
+    const refreshed = await onRefresh(false);
+    if (!refreshed) return false;
+    setSelectedInventoryItemId(inventoryItemId);
+    setDialogFeedback(message);
+    setDialogMode("detail");
+    setEditorItemFingerprint(null);
+    onStatusMessage(message);
+    return true;
+  };
+
+  const clearFilters = (): void => {
+    setQueryInput("");
+    setBrowseOptions((current) => ({
+      ...current,
+      query: "",
+      category: null,
+      status: current.view === "active" ? "opened" : "all",
+    }));
+  };
+
+  const cardViews = inventoryCardViews(projection.items);
+  const hasNonDefaultFilters =
+    browseOptions.query.trim().length > 0 ||
+    browseOptions.category !== null ||
+    browseOptions.status !== (browseOptions.view === "active" ? "opened" : "all");
+  const lock = (message = "管理页已锁定，密钥已从当前标签页内存清除。"): void => {
+    setSelectedInventoryItemId(null);
+    setDesktopSettingsOpen(false);
+    onLock(message);
+  };
+
+  return (
+    <div className="min-h-screen bg-[#F5F3F1] text-[#5A4C4A]">
+      <DesktopSidebar
+        view={browseOptions.view}
+        counts={projection.counts}
+        settingsOpen={desktopSettingsOpen}
+        onViewChange={changeCollection}
+        onSettingsToggle={() => setDesktopSettingsOpen((open) => !open)}
+      />
+
+      <div className="flex h-dvh min-h-0 flex-col overflow-hidden md:ml-60 md:block md:min-h-screen md:overflow-visible">
+        <header className="z-20 shrink-0 border-b border-[#E5D8CF]/60 bg-white md:hidden">
+          <div className="beautio-safe-top px-5">
+            <div className="mb-4 flex items-center gap-3">
+              <Logo className="h-6 w-auto max-w-[110px] object-contain object-left" />
+              {mobilePage === "settings" ? (
+                <span className="text-sm tracking-[0.08em]">设置</span>
+              ) : (
+                <InventorySearchField compact query={queryInput} onQueryChange={setQueryInput} />
+              )}
+            </div>
+            {mobilePage === "inventory" ? (
+              <CollectionTabs compact view={browseOptions.view} counts={projection.counts} onChange={changeCollection} />
+            ) : null}
+          </div>
+        </header>
+
+        {mobilePage === "settings" ? (
+          <main className="pb-32 md:hidden">
+            <SettingsPanel desktop={false} onLock={() => lock()} />
+            <p className="mt-6 text-center text-xs text-[#C8C2BE]">Beautio · Beauty in Flow</p>
+          </main>
+        ) : (
+          <InventorySurface
+            inventory={inventory}
+            client={client}
+            projection={projection}
+            cardViews={cardViews}
+            browseOptions={browseOptions}
+            queryInput={queryInput}
+            finishedCount={finishedCount}
+            discardedCount={discardedCount}
+            readError={readError}
+            statusMessage={statusMessage}
+            hasNonDefaultFilters={hasNonDefaultFilters}
+            onQueryInput={setQueryInput}
+            onBrowseOptions={setBrowseOptions}
+            onStatusChange={changeStatus}
+            onClearFilters={clearFilters}
+            onOpenDetail={openDetail}
+            onUnauthorized={lock}
+            onRefresh={onRefresh}
+            onDismissStatus={() => onStatusMessage(null)}
+          />
+        )}
+      </div>
+
+      {mobilePage === "inventory" ? (
+        <button type="button" disabled title="添加产品即将开放" className="fixed bottom-24 right-5 z-30 flex size-12 items-center justify-center rounded-full bg-[linear-gradient(135deg,#9B7F7C,#B3A0AD)] text-white opacity-45 shadow-[0_4px_18px_rgba(155,127,124,0.38)] md:hidden" aria-label="添加产品即将开放">
+          <Icon name="plus" />
+        </button>
+      ) : null}
+      <MobileNavigation active={mobilePage} onChange={setMobilePage} />
+
+      {desktopSettingsOpen ? (
+        <>
+          <button type="button" className="fixed inset-0 z-40 hidden bg-black/10 backdrop-blur-[2px] md:block" onClick={() => setDesktopSettingsOpen(false)} aria-label="关闭设置" />
+          <SettingsPanel desktop onClose={() => setDesktopSettingsOpen(false)} onLock={() => lock()} />
+        </>
+      ) : null}
+
+      {selectedItem === null || editorSnapshotChanged ? null : (
+        <InventoryDialog
+          mode={dialogMode}
+          item={selectedItem}
+          asOf={inventory.as_of}
+          client={client}
+          feedback={dialogFeedback}
+          onClose={closeDialog}
+          onMode={openEditor}
+          onReturn={returnToDetail}
+          onCommitted={handleCommitted}
+          onUnauthorized={lock}
+        />
+      )}
+    </div>
+  );
+}
+
+interface InventorySurfaceProps {
+  readonly inventory: InventoryListOutput;
+  readonly client: AdminApiClient;
+  readonly projection: ReturnType<typeof projectInventoryBrowse>;
+  readonly cardViews: ReturnType<typeof inventoryCardViews>;
+  readonly browseOptions: InventoryBrowseOptions;
+  readonly queryInput: string;
+  readonly finishedCount: number;
+  readonly discardedCount: number;
+  readonly readError: string | null;
+  readonly statusMessage: string | null;
+  readonly hasNonDefaultFilters: boolean;
+  readonly onQueryInput: (query: string) => void;
+  readonly onBrowseOptions: React.Dispatch<React.SetStateAction<InventoryBrowseOptions>>;
+  readonly onStatusChange: (status: InventoryStatusFilter) => void;
+  readonly onClearFilters: () => void;
+  readonly onOpenDetail: (item: InventoryListItemOutput) => void;
+  readonly onUnauthorized: (message: string) => void;
+  readonly onRefresh: (showLoading?: boolean) => Promise<boolean>;
+  readonly onDismissStatus: () => void;
+}
+
+function InventorySurface({
+  client,
+  projection,
+  cardViews,
+  browseOptions,
+  queryInput,
+  finishedCount,
+  discardedCount,
+  readError,
+  statusMessage,
+  hasNonDefaultFilters,
+  onQueryInput,
+  onBrowseOptions,
+  onStatusChange,
+  onClearFilters,
+  onOpenDetail,
+  onUnauthorized,
+  onRefresh,
+  onDismissStatus,
+}: InventorySurfaceProps) {
+  return (
+    <main className="flex min-h-0 flex-1 flex-col md:block md:min-h-screen md:pb-12">
+      <div className="hidden border-b border-[#E5D8CF] bg-white px-8 py-4 md:block">
+        <BrowseToolbar
+          query={queryInput}
+          category={browseOptions.category}
+          categories={projection.categoryChoices}
+          sort={browseOptions.sort}
+          onQueryChange={onQueryInput}
+          onCategoryChange={(category) => onBrowseOptions((current) => ({ ...current, category }))}
+          onSortChange={(sort) => onBrowseOptions((current) => ({ ...current, sort }))}
+        />
+        <button type="button" disabled title="添加产品即将开放" className="absolute right-8 top-4 hidden items-center gap-2 rounded-full bg-[linear-gradient(120deg,#9B7F7C,#B3A0AD)] px-5 py-2.5 text-sm text-white opacity-45 xl:flex">
+          <Icon name="plus" />添加产品
+        </button>
+      </div>
+
+      <div className="shrink-0 bg-[#F5F3F1] px-5 pb-2 pt-3 md:hidden">
+        <div className="mb-3">
+          <StatusTabs
+            view={browseOptions.view}
+            status={browseOptions.status}
+            counts={projection.counts}
+            finishedCount={finishedCount}
+            discardedCount={discardedCount}
+            onChange={onStatusChange}
+          />
+        </div>
+        <InventoryFilterControls
+          category={browseOptions.category}
+          categories={projection.categoryChoices}
+          sort={browseOptions.sort}
+          onCategoryChange={(category) => onBrowseOptions((current) => ({ ...current, category }))}
+          onSortChange={(sort) => onBrowseOptions((current) => ({ ...current, sort }))}
+        />
+      </div>
+
+      <div className="hidden px-8 pb-3 pt-4 md:block">
+        <StatusTabs
+          view={browseOptions.view}
+          status={browseOptions.status}
+          counts={projection.counts}
+          finishedCount={finishedCount}
+          discardedCount={discardedCount}
+          onChange={onStatusChange}
+        />
+      </div>
+
+      <div className="beautio-scrollbar min-h-0 flex-1 overflow-y-auto px-5 pb-32 pt-1 md:overflow-visible md:px-8 md:pb-0 md:pt-0">
+        {readError === null ? null : (
+          <div className="mb-4 flex items-center justify-between gap-4 rounded-2xl bg-[#FBF3F2] px-4 py-3 text-sm text-[#9D4C57]" role="alert">
+            <span>库存重新读取失败：{readError}</span>
+            <button type="button" onClick={() => void onRefresh()} className="shrink-0 rounded-full bg-white px-3 py-1.5 text-xs">再试一次</button>
+          </div>
+        )}
+        {statusMessage === null ? null : (
+          <div className="mb-4 flex items-center justify-between gap-4 rounded-2xl bg-[#EEF1F4] px-4 py-3 text-sm text-[#4A6272]" role="status">
+            <span>{statusMessage}</span>
+            <button type="button" onClick={onDismissStatus} className="shrink-0" aria-label="关闭状态消息"><Icon name="x" /></button>
+          </div>
+        )}
+
+        {projection.items.length === 0 ? (
+          <section className="flex flex-col items-center gap-3 py-20 text-center">
+            <div className="flex size-14 items-center justify-center rounded-full bg-[#E5D8CF] text-[#9B7F7C]"><Icon name="search" /></div>
+            <h2 className="text-sm font-medium text-[#5A4C4A]">暂时没有结果</h2>
+            <p className="max-w-sm text-sm text-[#A8A3A0]">{projection.emptyCopy ?? "当前没有库存。"}</p>
+            {hasNonDefaultFilters ? <button type="button" onClick={onClearFilters} className="mt-2 rounded-full border border-[#D8D4D1] px-4 py-2 text-xs text-[#7A7572]">清除筛选</button> : null}
+          </section>
+        ) : (
+          <div className="grid grid-cols-3 gap-3 sm:grid-cols-4 md:grid-cols-3 lg:grid-cols-4 md:gap-4">
+            {projection.items.map((item, index) => {
+              const view = cardViews[index];
+              if (view === undefined) return null;
+              return (
+                <ProductCard
+                  key={item.inventory_item_id}
+                  item={item}
+                  view={view}
+                  client={client}
+                  onOpen={() => onOpenDetail(item)}
+                  onUnauthorized={onUnauthorized}
+                />
+              );
+            })}
+          </div>
+        )}
+      </div>
+    </main>
+  );
+}
+
+interface InventoryDialogProps {
+  readonly mode: DialogMode;
+  readonly item: InventoryListItemOutput;
+  readonly asOf: string;
+  readonly client: AdminApiClient;
+  readonly feedback: string;
+  readonly onClose: () => void;
+  readonly onMode: (mode: Exclude<DialogMode, "detail">) => void;
+  readonly onReturn: (message: string) => void;
+  readonly onCommitted: (inventoryItemId: string, message: string) => Promise<boolean>;
+  readonly onUnauthorized: (message: string) => void;
+}
+
+function InventoryDialog({
+  mode,
+  item,
+  asOf,
+  client,
+  feedback,
+  onClose,
+  onMode,
+  onReturn,
+  onCommitted,
+  onUnauthorized,
+}: InventoryDialogProps) {
+  if (mode === "edit-product") {
+    if (item.product === null) return null;
+    return (
+      <ProductEditorDialog
+        item={item}
+        product={item.product}
+        client={client}
+        onCancel={() => onReturn("已取消产品编辑，没有保存任何修改。")}
+        onCommitted={onCommitted}
+        onUnauthorized={onUnauthorized}
+      />
+    );
+  }
+  if (mode === "edit-bottle") {
+    if (item.lifecycle_status !== "unopened" && item.lifecycle_status !== "opened") return null;
+    return (
+      <BottleEditorDialog
+        item={item}
+        initialLifecycle={item.lifecycle_status}
+        client={client}
+        onCancel={() => onReturn("已取消单瓶编辑，没有保存任何修改。")}
+        onCommitted={onCommitted}
+        onUnauthorized={onUnauthorized}
+      />
+    );
+  }
+  if (mode === "edit-notes") {
+    return (
+      <NotesEditorDialog
+        item={item}
+        client={client}
+        onCancel={() => onReturn("已取消自定义备注编辑，没有保存任何修改。")}
+        onCommitted={onCommitted}
+        onUnauthorized={onUnauthorized}
+      />
+    );
+  }
+  return (
+    <ProductDetailDialog
+      item={item}
+      asOf={asOf}
+      client={client}
+      feedback={feedback}
+      onClose={onClose}
+      onEditProduct={() => onMode("edit-product")}
+      onEditBottle={() => onMode("edit-bottle")}
+      onEditNotes={() => onMode("edit-notes")}
+      onUnauthorized={onUnauthorized}
+    />
+  );
+}
+
+function inventoryItemFingerprint(item: InventoryListItemOutput): string {
+  return JSON.stringify(item);
+}

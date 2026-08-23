@@ -1,0 +1,69 @@
+import { AdminApiError, type OpenedOnAccuracy } from "../../admin-api.ts";
+import { accuracyLabel } from "../../view-model.ts";
+
+/**
+ * 显示可选的已记录事实，不虚构替代值。
+ * Displays an optional recorded fact without inventing a substitute.
+ *
+ * @param value - 已记录文本或 null。 / Recorded text or null.
+ * @returns 已记录值，或明确的缺失标签。 / The recorded value or an explicit missing label.
+ */
+export function displayValue(value: string | null): string {
+  return value ?? "未记录";
+}
+
+/**
+ * 将已记录日期与其证据精度一起格式化。
+ * Formats a recorded date together with its evidence accuracy.
+ *
+ * @param value - 已记录的 YYYY-MM-DD 日期或 null。 / Recorded YYYY-MM-DD date or null.
+ * @param accuracy - 精确、估算、旧版或缺失的证据标记。 / Exact, estimated, legacy, or absent evidence marker.
+ * @returns 明确的日期与精度文案，或缺失标签。 / Explicit date and accuracy copy, or a missing label.
+ */
+export function dateWithAccuracy(
+  value: string | null,
+  accuracy: OpenedOnAccuracy | null,
+): string {
+  return value === null ? "未记录" : `${value}（${accuracyLabel(accuracy)}）`;
+}
+
+/**
+ * 解析可选的正整数表单字段，不强制转换无效草稿。
+ * Parses an optional positive integer form field without coercing invalid drafts.
+ *
+ * @param value - 浏览器输入框的当前值。 / Current browser input value.
+ * @returns 空字段返回 null，合法值返回正整数，无效输入返回 undefined。 / Null for an empty field, a positive integer, or undefined for invalid input.
+ */
+export function nullablePositiveInteger(
+  value: string,
+): number | null | undefined {
+  if (value.length === 0) return null;
+  const parsed = Number(value);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : undefined;
+}
+
+/**
+ * 将预期内的浏览器与 Admin API 故障转换为安全的界面文案。
+ * Converts expected browser and Admin API failures to safe interface copy.
+ *
+ * @param error - 未知的拒绝值。 / Unknown rejected value.
+ * @returns 面向用户且绝不包含 Admin 凭证的文案。 / User-facing copy that never includes an Admin credential.
+ */
+export function inventoryErrorMessage(error: unknown): string {
+  if (error instanceof AdminApiError) return error.message;
+  if (error instanceof TypeError) {
+    return "无法连接 Beautio 服务，请确认服务正在运行。";
+  }
+  return "发生了未知错误，请稍后再试。";
+}
+
+/**
+ * 识别由会话销毁或页面导航引起的主动取消。
+ * Identifies deliberate cancellation caused by session destruction or navigation.
+ *
+ * @param error - 未知的拒绝值。 / Unknown rejected value.
+ * @returns 该值是否为 DOM AbortError。 / Whether the value is a DOM AbortError.
+ */
+export function isAbortError(error: unknown): boolean {
+  return error instanceof DOMException && error.name === "AbortError";
+}

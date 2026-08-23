@@ -1,0 +1,24 @@
+{
+  "name": "@beautio/mcp-server",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --project tsconfig.json --noEmit"
+  },
+  "devDependencies": {
+    "@beautio/core-api": "workspace:*"
+  },
+  "dependencies": {
+    "@beautio/application": "workspace:*",
+    "@beautio/contracts": "workspace:*",
+    "@beautio/database": "workspace:*",
+    "@beautio/domain": "workspace:*",
+    "@beautio/image-storage": "workspace:*",
+    "@modelcontextprotocol/client": "2.0.0",
+    "@modelcontextprotocol/server": "2.0.0"
+  }
+}

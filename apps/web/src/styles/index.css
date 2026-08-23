@@ -1,0 +1,189 @@
+@import "tailwindcss";
+
+:root {
+  color: #5a4c4a;
+  background: #f5f3f1;
+  font-family:
+    "Avenir Next", Avenir, "Segoe UI", "PingFang SC", "Hiragino Sans GB",
+    "Microsoft YaHei", sans-serif;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  --beautio-rose: #9b7f7c;
+  --beautio-mauve: #b3a0ad;
+  --beautio-bluegray: #aeb7c1;
+  --beautio-cream: #e5d8cf;
+  --beautio-mist: #d5d2cf;
+  --beautio-dark: #5a4c4a;
+  --beautio-muted: #a8a3a0;
+  --beautio-bg: #f5f3f1;
+  --beautio-paper: #ffffff;
+  --beautio-danger: #a4515c;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html {
+  min-width: 320px;
+  min-height: 100%;
+  background: var(--beautio-bg);
+}
+
+body {
+  min-width: 320px;
+  min-height: 100vh;
+  margin: 0;
+  background: var(--beautio-bg);
+  -webkit-font-smoothing: antialiased;
+}
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
+}
+
+button,
+select {
+  cursor: pointer;
+}
+
+button:disabled,
+input:disabled,
+select:disabled,
+textarea:disabled {
+  cursor: not-allowed;
+}
+
+button {
+  -webkit-tap-highlight-color: transparent;
+}
+
+img {
+  display: block;
+  max-width: 100%;
+}
+
+:focus-visible {
+  outline: 3px solid color-mix(in srgb, var(--beautio-bluegray) 72%, transparent);
+  outline-offset: 3px;
+}
+
+::selection {
+  color: var(--beautio-dark);
+  background: color-mix(in srgb, var(--beautio-mauve) 28%, white);
+}
+
+.beautio-scrollbar {
+  scrollbar-color: color-mix(in srgb, var(--beautio-mauve) 35%, transparent) transparent;
+  scrollbar-width: thin;
+}
+
+.beautio-scrollbar::-webkit-scrollbar {
+  width: 7px;
+  height: 7px;
+}
+
+.beautio-scrollbar::-webkit-scrollbar-thumb {
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--beautio-mauve) 35%, transparent);
+}
+
+.beautio-dialog {
+  width: 100%;
+  max-width: none;
+  height: 100%;
+  max-height: none;
+  margin: 0;
+  padding: 0;
+  overflow: visible;
+  border: 0;
+  background: transparent;
+}
+
+.beautio-dialog::backdrop {
+  background: rgba(31, 25, 24, 0.34);
+  backdrop-filter: blur(4px);
+}
+
+.beautio-dialog-surface {
+  position: fixed;
+  inset: auto 0 0;
+  display: flex;
+  width: 100%;
+  max-height: min(92dvh, 920px);
+  flex-direction: column;
+  overflow: hidden;
+  border-radius: 24px 24px 0 0;
+  background: white;
+  box-shadow: 0 -8px 48px rgba(90, 76, 74, 0.2);
+}
+
+.beautio-fullscreen-viewer::backdrop {
+  background: rgba(16, 13, 13, 0.94);
+  backdrop-filter: blur(10px);
+}
+
+.beautio-fullscreen-viewer {
+  width: 100%;
+  max-width: none;
+  height: 100%;
+  max-height: none;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: rgba(16, 13, 13, 0.98);
+}
+
+.beautio-lockup-wordmark {
+  font-family: "Josefin Sans", "Avenir Next", Avenir, sans-serif;
+}
+
+.beautio-safe-top {
+  padding-top: max(4rem, env(safe-area-inset-top, 4rem));
+}
+
+.beautio-safe-bottom {
+  padding-bottom: max(1rem, env(safe-area-inset-bottom, 1rem));
+}
+
+.beautio-line-clamp-2 {
+  display: -webkit-box;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+@media (min-width: 768px) {
+  .beautio-dialog {
+    display: grid;
+    place-items: center;
+    padding: 28px;
+  }
+
+  .beautio-dialog-surface {
+    position: relative;
+    inset: auto;
+    width: min(680px, calc(100vw - 56px));
+    max-height: min(90dvh, 900px);
+    border-radius: 24px;
+    box-shadow: 0 24px 80px rgba(90, 76, 74, 0.24);
+  }
+
+  .beautio-dialog-surface-wide {
+    width: min(880px, calc(100vw - 56px));
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
