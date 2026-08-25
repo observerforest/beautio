@@ -7,18 +7,13 @@ import {
   recordProductOpenedInputSchema,
   searchInventoryInputSchema,
   setProductDisplayImageInputSchema,
-  sourceRefSchema,
   updateInventoryItemFactsInputSchema,
   updateInventoryItemCustomNotesInputSchema,
   updateProductInputSchema,
   type CreateInventoryBatchOutput,
   type FetchInventoryOutput,
-  type InventoryReadModelOutput,
-  type InventorySearchItemOutput,
-  type InventoryListItemOutput,
   type InventoryListOutput,
   type GetInventoryItemOutput,
-  type InventoryStateOutput,
   type RecordProductOpenedOutput,
   type SearchInventoryOutput,
   type SetProductDisplayImageOutput,
@@ -37,7 +32,6 @@ import {
   parseIsoDate,
   type ImageAsset,
   type InventoryItem,
-  type InventorySnapshot,
   type Product,
 } from "@beautio/domain";
 import { randomUUID } from "node:crypto";
@@ -49,44 +43,46 @@ import type {
   ImageRenditionProvider,
   InventoryRepository,
 } from "./ports.ts";
+import {
+  abortableInspection,
+  assertUploadNotAborted,
+  ensureUniqueRefs,
+  parseImageUploads,
+  parseInput,
+  parseRequiredId,
+  validateEditedOpeningAccuracy,
+} from "./input-parsing.ts";
+import type {
+  CleanupImageAssetsOutput,
+  ImageAssetReadVariant,
+  ImageUploadInput,
+  ImageUploadOperationOptions,
+  InventoryApplicationServiceOptions,
+  ReadImageAssetOutput,
+} from "./inventory-service-types.ts";
+import {
+  asActiveLifecycle,
+  assertValidClock,
+  countInventoryByProduct,
+  inventoryMatchesQuery,
+  requireArrayItem,
+  requireProductId,
+  toInventoryListItemOutput,
+  toInventoryReadModelOutput,
+  toInventorySearchItemOutput,
+  toInventoryStateOutput,
+  toProductOutput,
+} from "./output-mappers.ts";
+import {
+  loadProducts as loadProductsFromRepository,
+  requireInventoryItem as requireInventoryItemFromRepository,
+  requireProduct as requireProductFromRepository,
+} from "./repository-queries.ts";
 
-const MAX_IMAGES = 10;
 const MAX_IMAGE_BYTES = 20 * 1024 * 1024;
 const MAX_UPLOAD_BYTES = 50 * 1024 * 1024;
 const MAX_IMAGE_PIXELS = 40_000_000;
 const TEMPORARY_ASSET_MILLISECONDS = 24 * 60 * 60 * 1000;
-
-export interface ImageUploadInput {
-  readonly source_ref: string;
-  readonly bytes: Uint8Array;
-}
-
-export interface ImageUploadOperationOptions {
-  readonly signal?: AbortSignal;
-}
-
-export interface InventoryApplicationServiceOptions {
-  readonly idGenerator?: (kind: GeneratedIdKind) => string;
-  readonly clock?: () => Date;
-  readonly imageStorage?: ImageAssetStorage;
-  readonly imageInspector?: ImageInspector;
-  readonly imageRenditions?: ImageRenditionProvider;
-}
-
-export type ImageAssetReadVariant = "original" | "card";
-
-export interface ReadImageAssetOutput {
-  readonly image_asset_id: string;
-  readonly media_type: "image/jpeg" | "image/png" | "image/webp";
-  readonly byte_size: number;
-  readonly bytes: Uint8Array;
-}
-
-export interface CleanupImageAssetsOutput {
-  readonly claimed: number;
-  readonly deleted: number;
-  readonly failed: number;
-}
 
 export class InventoryApplicationService {
   readonly #repository: InventoryRepository;
@@ -836,389 +832,19 @@ export class InventoryApplicationService {
   private async loadProducts(
     items: readonly InventoryItem[],
   ): Promise<ReadonlyMap<string, Product | null>> {
-    const productIds = [
-      ...new Set(
-        items.flatMap((item) =>
-          item.productId === null ? [] : [item.productId],
-        ),
-      ),
-    ];
-    const entries = await Promise.all(
-      productIds.map(async (productId) =>
-        [productId, await this.#repository.findProductById(productId)] as const,
-      ),
-    );
-    return new Map(entries);
+    return loadProductsFromRepository(this.#repository, items);
   }
 
   private async requireInventoryItem(
     inventoryItemId: string,
   ): Promise<InventoryItem> {
-    const item = await this.#repository.findById(inventoryItemId);
-    if (item === null) {
-      throw new BeautioError(
-        "INVENTORY_ITEM_NOT_FOUND",
-        `inventory item ${inventoryItemId} does not exist`,
-      );
-    }
-    return item;
+    return requireInventoryItemFromRepository(
+      this.#repository,
+      inventoryItemId,
+    );
   }
 
   private async requireProduct(productId: string): Promise<Product> {
-    const product = await this.#repository.findProductById(productId);
-    if (product === null) {
-      throw new BeautioError(
-        "INTERNAL_ERROR",
-        "committed Product could not be re-read",
-      );
-    }
-    return product;
+    return requireProductFromRepository(this.#repository, productId);
   }
-}
-
-function parseInput<T>(
-  schema: {
-    safeParse(
-      input: unknown,
-    ): { success: true; data: T } | { success: false };
-  },
-  input: unknown,
-): T {
-  const result = schema.safeParse(input);
-  if (!result.success) {
-    throw new BeautioError(
-      "INVALID_INPUT",
-      "input does not match the tool contract",
-    );
-  }
-  return result.data;
-}
-
-function parseRequiredId(value: string, fieldName: string): string {
-  if (typeof value !== "string" || value.trim().length === 0) {
-    throw new BeautioError("INVALID_INPUT", `${fieldName} is required`);
-  }
-  return value.trim();
-}
-
-function parseImageUploads(input: unknown): readonly ImageUploadInput[] {
-  if (!Array.isArray(input) || input.length < 1 || input.length > MAX_IMAGES) {
-    throw new BeautioError(
-      "INVALID_INPUT",
-      "images must contain 1 through 10 items",
-    );
-  }
-  const refs = new Set<string>();
-  return input.map((candidate) => {
-    if (
-      typeof candidate !== "object" ||
-      candidate === null ||
-      Array.isArray(candidate) ||
-      Object.keys(candidate).some(
-        (key) => key !== "source_ref" && key !== "bytes",
-      )
-    ) {
-      throw new BeautioError(
-        "INVALID_INPUT",
-        "each image must contain only source_ref and bytes",
-      );
-    }
-    const record = candidate as Record<string, unknown>;
-    const sourceRef = parseInput(sourceRefSchema, record.source_ref);
-    if (refs.has(sourceRef)) {
-      throw new BeautioError(
-        "INVALID_INPUT",
-        `duplicate image source_ref ${sourceRef}`,
-      );
-    }
-    refs.add(sourceRef);
-    if (!(record.bytes instanceof Uint8Array)) {
-      throw new BeautioError("INVALID_INPUT", "image bytes must be binary data");
-    }
-    return { source_ref: sourceRef, bytes: record.bytes };
-  });
-}
-
-function assertUploadNotAborted(signal: AbortSignal | undefined): void {
-  if (signal?.aborted === true) {
-    throw new BeautioError("UPLOAD_FAILED", "image upload timed out");
-  }
-}
-
-function abortableInspection<T>(
-  operation: Promise<T>,
-  signal: AbortSignal | undefined,
-): Promise<T> {
-  if (signal === undefined) {
-    return operation;
-  }
-  if (signal.aborted) {
-    return Promise.reject(
-      new BeautioError("UPLOAD_FAILED", "image upload timed out"),
-    );
-  }
-  return new Promise<T>((resolve, reject) => {
-    const abort = (): void => {
-      reject(new BeautioError("UPLOAD_FAILED", "image upload timed out"));
-    };
-    signal.addEventListener("abort", abort, { once: true });
-    void operation.then(
-      (value) => {
-        signal.removeEventListener("abort", abort);
-        resolve(value);
-      },
-      (error: unknown) => {
-        signal.removeEventListener("abort", abort);
-        reject(error);
-      },
-    );
-  });
-}
-
-function ensureUniqueRefs(refs: readonly string[], entityName: string): void {
-  const unique = new Set<string>();
-  for (const ref of refs) {
-    if (unique.has(ref)) {
-      throw new BeautioError(
-        "INVALID_INPUT",
-        `duplicate ${entityName} batch_ref ${ref}`,
-      );
-    }
-    unique.add(ref);
-  }
-}
-
-function validateEditedOpeningAccuracy(
-  existing: InventoryItem,
-  input: {
-    readonly lifecycle_status: "unopened" | "opened";
-    readonly opened_on: string | null;
-    readonly opened_on_accuracy: "exact" | "estimated" | "legacy_unknown" | null;
-  },
-): void {
-  if (input.lifecycle_status === "unopened") {
-    if (input.opened_on !== null || input.opened_on_accuracy !== null) {
-      throw new BeautioError(
-        "INVALID_INPUT",
-        "unopened inventory cannot have opening facts",
-      );
-    }
-    return;
-  }
-  if (input.opened_on === null || input.opened_on_accuracy === null) {
-    throw new BeautioError(
-      "INVALID_INPUT",
-      "opened inventory requires opened_on and opened_on_accuracy",
-    );
-  }
-  if (
-    input.opened_on_accuracy === "legacy_unknown" &&
-    (existing.lifecycleStatus !== "opened" ||
-      existing.openedOnAccuracy !== "legacy_unknown" ||
-      existing.openedOn !== input.opened_on)
-  ) {
-    throw new BeautioError(
-      "INVALID_INPUT",
-      "legacy_unknown can only preserve an unchanged legacy opening date",
-    );
-  }
-}
-
-function toInventoryReadModelOutput(
-  item: InventoryItem,
-  product: Product | null,
-  asOf: ReturnType<typeof parseIsoDate> | null,
-): InventoryReadModelOutput {
-  const derivedSnapshot =
-    asOf === null ? null : deriveInventorySnapshot(item, asOf);
-
-  return {
-    inventory_item_id: item.id,
-    product_id: product === null ? null : item.productId,
-    product: product === null ? null : toReadInventoryProductOutput(product),
-    lifecycle_status: item.lifecycleStatus,
-    opened_on: item.openedOn,
-    opened_on_accuracy: item.openedOnAccuracy,
-    expires_on: item.expiresOn,
-    pao_duration_months: item.paoDurationMonths,
-    pao_deadline: item.paoDeadline,
-    pao_deadline_accuracy:
-      item.paoDeadline === null ? null : item.openedOnAccuracy,
-    usable_until: item.usableUntil,
-    custom_notes: item.customNotes,
-    derived_status:
-      asOf === null || derivedSnapshot === null
-        ? null
-        : {
-            as_of: asOf,
-            usability_status: derivedSnapshot.usabilityStatus,
-            warnings: [...derivedSnapshot.warnings],
-          },
-  };
-}
-
-function toReadInventoryProductOutput(
-  product: Product,
-): NonNullable<InventoryReadModelOutput["product"]> {
-  return {
-    product_id: product.id,
-    name: product.name,
-    category: product.category,
-    size_label: product.sizeLabel,
-    ingredient_list_text: product.ingredientListText,
-    shared_notes: product.sharedNotes,
-    has_image: product.imageAssetId !== null,
-  };
-}
-
-function toInventorySearchItemOutput(
-  item: InventoryItem,
-  product: Product | null,
-  asOf: ReturnType<typeof parseIsoDate> | null,
-): InventorySearchItemOutput {
-  const complete = toInventoryReadModelOutput(item, product, asOf);
-  return {
-    inventory_item_id: complete.inventory_item_id,
-    product_id: complete.product_id,
-    product_name: product?.name ?? null,
-    category: product?.category ?? null,
-    size_label: product?.sizeLabel ?? null,
-    lifecycle_status: complete.lifecycle_status,
-    opened_on: complete.opened_on,
-    expires_on: complete.expires_on,
-    usable_until: complete.usable_until,
-    has_image: product !== null && product.imageAssetId !== null,
-    derived_status: complete.derived_status,
-  };
-}
-
-function inventoryMatchesQuery(
-  item: InventoryItem,
-  product: Product | null,
-  normalizedQuery: string | null,
-): boolean {
-  if (normalizedQuery === null) {
-    return true;
-  }
-
-  const fields: readonly (string | null)[] = [
-    item.id,
-    product === null ? null : item.productId,
-    product?.name ?? null,
-    product?.category ?? null,
-    product?.sizeLabel ?? null,
-    product?.ingredientListText ?? null,
-    product?.sharedNotes ?? null,
-    item.customNotes,
-  ];
-
-  return fields.some(
-    (value) => value?.toLowerCase().includes(normalizedQuery) === true,
-  );
-}
-
-function toInventoryStateOutput(
-  snapshot: InventorySnapshot,
-): InventoryStateOutput {
-  return {
-    inventory_item_id: snapshot.inventoryItemId,
-    lifecycle_status: snapshot.lifecycleStatus,
-    opened_on: snapshot.openedOn,
-    opened_on_accuracy: snapshot.openedOnAccuracy,
-    expires_on: snapshot.expiresOn,
-    pao_duration_months: snapshot.paoDurationMonths,
-    pao_deadline: snapshot.paoDeadline,
-    pao_deadline_accuracy: snapshot.paoDeadlineAccuracy,
-    usable_until: snapshot.usableUntil,
-    usability_status: snapshot.usabilityStatus,
-    warnings: [...snapshot.warnings],
-    custom_notes: snapshot.customNotes,
-  };
-}
-
-function toProductOutput(product: Product): {
-  readonly product_id: string;
-  readonly name: string;
-  readonly category: string | null;
-  readonly size_label: string | null;
-  readonly image_asset_id: string | null;
-  readonly image_ref: string | null;
-  readonly ingredient_list_text: string | null;
-  readonly shared_notes: string | null;
-} {
-  return {
-    product_id: product.id,
-    name: product.name,
-    category: product.category,
-    size_label: product.sizeLabel,
-    image_asset_id: product.imageAssetId,
-    image_ref: product.imageRef,
-    ingredient_list_text: product.ingredientListText,
-    shared_notes: product.sharedNotes,
-  };
-}
-
-function toInventoryListItemOutput(
-  item: InventoryItem,
-  asOf: ReturnType<typeof parseIsoDate>,
-  product: Product | null,
-  productInventoryPosition: number | null,
-  productInventoryCount: number | null,
-): InventoryListItemOutput {
-  return {
-    ...toInventoryStateOutput(deriveInventorySnapshot(item, asOf)),
-    product_id: item.productId,
-    product: product === null ? null : toProductOutput(product),
-    product_inventory_position: productInventoryPosition,
-    product_inventory_count: productInventoryCount,
-  };
-}
-
-function countInventoryByProduct(
-  items: readonly InventoryItem[],
-): ReadonlyMap<string, number> {
-  const counts = new Map<string, number>();
-  for (const item of items) {
-    if (item.productId !== null) {
-      counts.set(item.productId, (counts.get(item.productId) ?? 0) + 1);
-    }
-  }
-  return counts;
-}
-
-function requireProductId(item: InventoryItem): string {
-  if (item.productId === null) {
-    throw new BeautioError(
-      "BATCH_CONFLICT",
-      `inventory item ${item.id} has no Product`,
-    );
-  }
-  return item.productId;
-}
-
-function asActiveLifecycle(item: InventoryItem): "unopened" | "opened" {
-  if (
-    item.lifecycleStatus !== "unopened" &&
-    item.lifecycleStatus !== "opened"
-  ) {
-    throw new BeautioError(
-      "INTERNAL_ERROR",
-      "active inventory write produced a terminal lifecycle",
-    );
-  }
-  return item.lifecycleStatus;
-}
-
-function assertValidClock(value: Date): void {
-  if (Number.isNaN(value.getTime())) {
-    throw new BeautioError("INTERNAL_ERROR", "clock returned an invalid date");
-  }
-}
-
-function requireArrayItem<T>(items: readonly T[], index: number): T {
-  const item = items[index];
-  if (item === undefined) {
-    throw new BeautioError("INTERNAL_ERROR", "result ordering failed");
-  }
-  return item;
 }
