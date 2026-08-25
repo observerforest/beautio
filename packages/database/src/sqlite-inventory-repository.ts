@@ -15,7 +15,6 @@ import { DatabaseSync } from "node:sqlite";
 import { mapSqliteConflict } from "./errors.ts";
 import {
   importInventoryData as importInventoryDataWithOperations,
-  seedInventoryItem as seedInventoryItemWithOperation,
   type InventoryImportData,
   type InventoryImportResult,
 } from "./import.ts";
@@ -402,9 +401,7 @@ export class SqliteInventoryRepository implements InventoryRepository {
    * @returns A promise resolved after the row is inserted.
    */
   async seedInventoryItem(item: InventoryItem): Promise<void> {
-    seedInventoryItemWithOperation(item, (seededItem) =>
-      this.insertInventoryItem(seededItem),
-    );
+    this.insertInventoryItem(item);
   }
 
   /**

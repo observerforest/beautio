@@ -25,13 +25,6 @@ export interface InventoryImportOperations {
   readonly inImmediateTransaction: <T>(action: () => T) => T;
 }
 
-export function seedInventoryItem(
-  item: InventoryItem,
-  insertInventoryItem: (item: InventoryItem) => void,
-): void {
-  insertInventoryItem(item);
-}
-
 export function importInventoryData(
   data: InventoryImportData,
   operations: InventoryImportOperations,
