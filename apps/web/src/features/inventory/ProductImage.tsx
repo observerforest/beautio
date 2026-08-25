@@ -1,5 +1,5 @@
 import { AdminApiClient, type PrivateImageVariant } from "../../admin-api.ts";
-import type { ProductImageChoice } from "../../view-model.ts";
+import type { ProductImageChoice } from "./view-model.ts";
 import { useProductImage } from "./useProductImage.ts";
 
 export interface ProductImageProps {

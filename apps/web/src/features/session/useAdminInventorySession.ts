@@ -1,7 +1,7 @@
 import type { InventoryListOutput } from "@beautio/contracts";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { AdminApiClient, AdminApiError } from "../../admin-api.ts";
-import { localDateForApi } from "../../view-model.ts";
+import { localDateForApi } from "../inventory/view-model.ts";
 
 export type SessionPhase = "locked" | "unlocking" | "unlocked";
 

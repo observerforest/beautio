@@ -19,7 +19,7 @@ import {
   type InventoryBrowseOptions,
   usabilityLabel,
   warningLabel,
-} from "../src/view-model.ts";
+} from "../src/features/inventory/view-model.ts";
 
 test("inventory summary keeps lifecycle and usability counts independent", () => {
   const items: readonly InventoryListItemOutput[] = [

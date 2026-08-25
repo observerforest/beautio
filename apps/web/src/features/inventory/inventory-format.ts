@@ -1,5 +1,5 @@
 import { AdminApiError, type OpenedOnAccuracy } from "../../admin-api.ts";
-import { accuracyLabel } from "../../view-model.ts";
+import { accuracyLabel } from "./view-model.ts";
 
 /**
  * 显示可选的已记录事实，不虚构替代值。

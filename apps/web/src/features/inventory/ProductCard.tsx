@@ -1,6 +1,6 @@
 import type { InventoryListItemOutput } from "@beautio/contracts";
 import { AdminApiClient } from "../../admin-api.ts";
-import type { InventoryCardView } from "../../view-model.ts";
+import type { InventoryCardView } from "./view-model.ts";
 import { ProductImage } from "./ProductImage.tsx";
 
 export interface ProductCardProps {

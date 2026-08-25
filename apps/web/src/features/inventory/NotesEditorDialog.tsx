@@ -4,7 +4,7 @@ import { AdminApiClient, AdminApiError } from "../../admin-api.ts";
 import { ModalShell } from "../../components/ModalShell.tsx";
 import { normalizeOptionalEditorText, textCharacterCountLabel } from "../../text-fields.ts";
 import { editorInputClass, Field, ScopeNotice } from "./EditorPrimitives.tsx";
-import { inventoryErrorMessage, isAbortError } from "./inventoryFormat.ts";
+import { inventoryErrorMessage, isAbortError } from "./inventory-format.ts";
 
 const NOTES_MAXIMUM = 1_000;
 

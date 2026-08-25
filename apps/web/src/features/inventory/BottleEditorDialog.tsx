@@ -7,9 +7,9 @@ import {
   type OpenedOnAccuracy,
 } from "../../admin-api.ts";
 import { ModalShell } from "../../components/ModalShell.tsx";
-import { canPreserveLegacyAccuracy, localDateForApi, openedOnAccuracy, paoDeadlineAccuracy, usabilityLabel } from "../../view-model.ts";
+import { canPreserveLegacyAccuracy, localDateForApi, openedOnAccuracy, paoDeadlineAccuracy, usabilityLabel } from "./view-model.ts";
 import { editorInputClass, Field, ScopeNotice } from "./EditorPrimitives.tsx";
-import { dateWithAccuracy, displayValue, inventoryErrorMessage, isAbortError, nullablePositiveInteger } from "./inventoryFormat.ts";
+import { dateWithAccuracy, displayValue, inventoryErrorMessage, isAbortError, nullablePositiveInteger } from "./inventory-format.ts";
 
 export interface BottleEditorDialogProps {
   readonly item: InventoryListItemOutput;

@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { AdminApiClient, AdminApiError, type PrivateImageVariant } from "../../admin-api.ts";
-import type { ProductImageChoice } from "../../view-model.ts";
+import type { ProductImageChoice } from "./view-model.ts";
 
 export type ProductImageState =
   | { readonly status: "empty"; readonly src: null }

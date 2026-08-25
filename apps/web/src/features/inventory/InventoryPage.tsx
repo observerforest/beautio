@@ -9,7 +9,7 @@ import {
   type InventoryBrowseOptions,
   type InventoryCollectionView,
   type InventoryStatusFilter,
-} from "../../view-model.ts";
+} from "./view-model.ts";
 import { BottleEditorDialog } from "./BottleEditorDialog.tsx";
 import {
   BrowseToolbar,
