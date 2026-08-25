@@ -74,9 +74,9 @@ import {
   toProductOutput,
 } from "./output-mappers.ts";
 import {
-  loadProducts as loadProductsFromRepository,
-  requireInventoryItem as requireInventoryItemFromRepository,
-  requireProduct as requireProductFromRepository,
+  loadProducts,
+  requireInventoryItem,
+  requireProduct,
 } from "./repository-queries.ts";
 
 const MAX_IMAGE_BYTES = 20 * 1024 * 1024;
@@ -120,7 +120,10 @@ export class InventoryApplicationService {
     untrustedInput: unknown,
   ): Promise<RecordProductOpenedOutput> {
     const input = parseInput(recordProductOpenedInputSchema, untrustedInput);
-    const item = await this.requireInventoryItem(input.inventory_item_id);
+    const item = await requireInventoryItem(
+      this.#repository,
+      input.inventory_item_id,
+    );
     const transition = openInventoryItem(
       item,
       parseIsoDate(input.opened_on, "opened_on"),
@@ -148,7 +151,10 @@ export class InventoryApplicationService {
     untrustedInput: unknown,
   ): Promise<GetInventoryItemOutput> {
     const input = parseInput(getInventoryItemInputSchema, untrustedInput);
-    const item = await this.requireInventoryItem(input.inventory_item_id);
+    const item = await requireInventoryItem(
+      this.#repository,
+      input.inventory_item_id,
+    );
     const product =
       item.productId === null
         ? null
@@ -172,7 +178,7 @@ export class InventoryApplicationService {
     const input = parseInput(listInventoryInputSchema, untrustedInput);
     const asOf = parseIsoDate(input.as_of, "as_of");
     const items = await this.#repository.findAll();
-    const productsById = await this.loadProducts(items);
+    const productsById = await loadProducts(this.#repository, items);
     const countsByProductId = countInventoryByProduct(items);
     const positionsByProductId = new Map<string, number>();
 
@@ -208,7 +214,7 @@ export class InventoryApplicationService {
   ): Promise<SearchInventoryOutput> {
     const input = parseInput(searchInventoryInputSchema, untrustedInput);
     const items = await this.#repository.findAll();
-    const productsById = await this.loadProducts(items);
+    const productsById = await loadProducts(this.#repository, items);
     const normalizedQuery = input.query?.toLowerCase() ?? null;
     const asOf =
       input.as_of === undefined ? null : parseIsoDate(input.as_of, "as_of");
@@ -255,7 +261,10 @@ export class InventoryApplicationService {
     untrustedInput: unknown,
   ): Promise<FetchInventoryOutput> {
     const input = parseInput(fetchInventoryInputSchema, untrustedInput);
-    const item = await this.requireInventoryItem(input.inventory_item_id);
+    const item = await requireInventoryItem(
+      this.#repository,
+      input.inventory_item_id,
+    );
     const product =
       item.productId === null
         ? null
@@ -374,10 +383,12 @@ export class InventoryApplicationService {
     await this.#repository.createBatch({ products, inventoryItems, now });
 
     const committedProducts = await Promise.all(
-      products.map((product) => this.requireProduct(product.id)),
+      products.map((product) => requireProduct(this.#repository, product.id)),
     );
     const committedItems = await Promise.all(
-      inventoryItems.map((item) => this.requireInventoryItem(item.id)),
+      inventoryItems.map((item) =>
+        requireInventoryItem(this.#repository, item.id),
+      ),
     );
     const asOf = parseIsoDate(input.as_of, "as_of");
 
@@ -468,7 +479,10 @@ export class InventoryApplicationService {
       "inventory_item_id",
     );
     const input = parseInput(updateInventoryItemFactsInputSchema, untrustedInput);
-    const existing = await this.requireInventoryItem(normalizedInventoryItemId);
+    const existing = await requireInventoryItem(
+      this.#repository,
+      normalizedInventoryItemId,
+    );
     if (
       existing.lifecycleStatus === "finished" ||
       existing.lifecycleStatus === "discarded"
@@ -827,24 +841,5 @@ export class InventoryApplicationService {
       );
     }
     return { storage: this.#imageStorage, inspector: this.#imageInspector };
-  }
-
-  private async loadProducts(
-    items: readonly InventoryItem[],
-  ): Promise<ReadonlyMap<string, Product | null>> {
-    return loadProductsFromRepository(this.#repository, items);
-  }
-
-  private async requireInventoryItem(
-    inventoryItemId: string,
-  ): Promise<InventoryItem> {
-    return requireInventoryItemFromRepository(
-      this.#repository,
-      inventoryItemId,
-    );
-  }
-
-  private async requireProduct(productId: string): Promise<Product> {
-    return requireProductFromRepository(this.#repository, productId);
   }
 }
