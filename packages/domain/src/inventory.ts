@@ -1,3 +1,18 @@
+import {
+  addCalendarMonthsClamped,
+  parseNullableDate,
+  type IsoDate,
+} from "./dates.ts";
+import { BeautioError } from "./errors.ts";
+import {
+  customNotesMaximumLength,
+  ingredientListTextMaximumLength,
+  normalizeNullableText,
+  normalizeOptionalText,
+  requireText,
+  sharedNotesMaximumLength,
+} from "./text.ts";
+
 export const lifecycleStatuses = [
   "unopened",
   "opened",
@@ -28,72 +43,12 @@ export const imageAssetStatuses = [
   "pending_cleanup",
 ] as const;
 
-export const ingredientListTextMaximumLength = 5_000;
-export const sharedNotesMaximumLength = 1_000;
-export const customNotesMaximumLength = 1_000;
-
-/**
- * Reports whether free-form persisted text can be represented consistently by
- * the JSON and SQLite boundaries used by Beautio.
- *
- * @param value - User-confirmed text before persistence.
- * @returns True for ordinary Unicode text plus tab and line breaks; false for
- * unsupported C0 controls or unpaired UTF-16 surrogates.
- */
-export function hasOnlySupportedTextCharacters(value: string): boolean {
-  for (let index = 0; index < value.length; index += 1) {
-    const codeUnit = value.charCodeAt(index);
-    if (
-      codeUnit <= 0x1f &&
-      codeUnit !== 0x09 &&
-      codeUnit !== 0x0a &&
-      codeUnit !== 0x0d
-    ) {
-      return false;
-    }
-    if (codeUnit >= 0xd800 && codeUnit <= 0xdbff) {
-      if (index + 1 >= value.length) {
-        return false;
-      }
-      const nextCodeUnit = value.charCodeAt(index + 1);
-      if (nextCodeUnit < 0xdc00 || nextCodeUnit > 0xdfff) {
-        return false;
-      }
-      index += 1;
-      continue;
-    }
-    if (codeUnit >= 0xdc00 && codeUnit <= 0xdfff) {
-      return false;
-    }
-  }
-  return true;
-}
-
-export const beautioErrorCodes = [
-  "INVALID_INPUT",
-  "INVENTORY_ITEM_NOT_FOUND",
-  "INVENTORY_ITEM_TERMINAL",
-  "OPENED_ON_CONFLICT",
-  "UNAUTHORIZED",
-  "PRODUCT_NOT_FOUND",
-  "IMAGE_ASSET_NOT_FOUND",
-  "IMAGE_ASSET_EXPIRED",
-  "BATCH_CONFLICT",
-  "UNSUPPORTED_MEDIA_TYPE",
-  "UPLOAD_TOO_LARGE",
-  "FILE_SOURCE_REJECTED",
-  "UPLOAD_FAILED",
-  "INTERNAL_ERROR",
-] as const;
-
 export type LifecycleStatus = (typeof lifecycleStatuses)[number];
 export type UsabilityStatus = (typeof usabilityStatuses)[number];
 export type InventoryWarning = (typeof inventoryWarnings)[number];
 export type OpenedOnAccuracy = (typeof openedOnAccuracies)[number];
 export type ImageMediaType = (typeof imageMediaTypes)[number];
 export type ImageAssetStatus = (typeof imageAssetStatuses)[number];
-export type BeautioErrorCode = (typeof beautioErrorCodes)[number];
-export type IsoDate = string & { readonly __isoDate: unique symbol };
 
 export interface Product {
   readonly id: string;
@@ -161,98 +116,6 @@ export interface EditableInventoryFacts {
   readonly expiresOn: string | null;
   readonly paoDurationMonths: number | null;
   readonly customNotes?: string | null;
-}
-
-export class BeautioError extends Error {
-  readonly code: BeautioErrorCode;
-  readonly ref: string | undefined;
-
-  /**
-   * Creates a stable, externally distinguishable Beautio business error.
-   *
-   * @param code - The stable error code exposed by application adapters.
-   * @param message - A human-readable explanation that does not replace the code.
-   * @param ref - Optional safe input reference associated with the failure.
-   */
-  constructor(code: BeautioErrorCode, message: string, ref?: string) {
-    super(message);
-    this.name = "BeautioError";
-    this.code = code;
-    this.ref = ref;
-  }
-}
-
-const ISO_DATE_PATTERN = /^(\d{4})-(\d{2})-(\d{2})$/;
-
-/**
- * Returns whether a string is a real Gregorian calendar date in YYYY-MM-DD form.
- *
- * @param value - Candidate date text.
- * @returns True only for a lexically and calendrically valid date.
- */
-export function isIsoDateString(value: string): value is IsoDate {
-  const match = ISO_DATE_PATTERN.exec(value);
-  if (match === null) {
-    return false;
-  }
-
-  const year = Number(match[1]);
-  const month = Number(match[2]);
-  const day = Number(match[3]);
-
-  if (year < 1 || month < 1 || month > 12 || day < 1) {
-    return false;
-  }
-
-  return day <= daysInMonth(year, month);
-}
-
-/**
- * Parses a YYYY-MM-DD value or raises the stable INVALID_INPUT error.
- *
- * @param value - Candidate date text.
- * @param fieldName - Contract field name included in an error message.
- * @returns The validated date value.
- */
-export function parseIsoDate(value: string, fieldName: string): IsoDate {
-  if (!isIsoDateString(value)) {
-    throw new BeautioError(
-      "INVALID_INPUT",
-      `${fieldName} must be a real calendar date in YYYY-MM-DD format`,
-    );
-  }
-
-  return value;
-}
-
-/**
- * Adds whole calendar months and clamps an unavailable target day to month end.
- *
- * @param date - Valid source calendar date.
- * @param months - Positive whole-month PAO duration.
- * @returns The derived deadline date.
- */
-export function addCalendarMonthsClamped(
-  date: IsoDate,
-  months: number,
-): IsoDate {
-  if (!Number.isInteger(months) || months < 1 || months > 120) {
-    throw new BeautioError(
-      "INVALID_INPUT",
-      "pao_duration_months must be an integer from 1 through 120",
-    );
-  }
-
-  const [yearText, monthText, dayText] = date.split("-");
-  const year = Number(yearText);
-  const month = Number(monthText);
-  const day = Number(dayText);
-  const absoluteMonth = year * 12 + (month - 1) + months;
-  const targetYear = Math.floor(absoluteMonth / 12);
-  const targetMonth = (absoluteMonth % 12) + 1;
-  const targetDay = Math.min(day, daysInMonth(targetYear, targetMonth));
-
-  return formatIsoDate(targetYear, targetMonth, targetDay);
 }
 
 /**
@@ -541,80 +404,6 @@ export function deriveInventorySnapshot(
     warnings,
     customNotes: item.customNotes,
   };
-}
-
-function daysInMonth(year: number, month: number): number {
-  if (month === 2) {
-    const isLeapYear = year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0);
-    return isLeapYear ? 29 : 28;
-  }
-
-  return [4, 6, 9, 11].includes(month) ? 30 : 31;
-}
-
-function formatIsoDate(year: number, month: number, day: number): IsoDate {
-  return `${String(year).padStart(4, "0")}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}` as IsoDate;
-}
-
-function parseNullableDate(
-  value: string | null | undefined,
-  fieldName: string,
-): IsoDate | null {
-  return value === null || value === undefined
-    ? null
-    : parseIsoDate(value, fieldName);
-}
-
-function requireText(value: string, fieldName: string): string {
-  const normalized = value.trim();
-  if (normalized.length === 0) {
-    throw new BeautioError("INVALID_INPUT", `${fieldName} is required`);
-  }
-  return normalized;
-}
-
-function normalizeOptionalText(
-  value: string | null | undefined,
-  fieldName: string,
-): string | null {
-  if (value === null || value === undefined) {
-    return null;
-  }
-  const normalized = value.trim();
-  if (normalized.length === 0) {
-    throw new BeautioError(
-      "INVALID_INPUT",
-      `${fieldName} must be non-empty when provided`,
-    );
-  }
-  return normalized;
-}
-
-function normalizeNullableText(
-  value: string | null | undefined,
-  fieldName: string,
-  maximumLength: number,
-): string | null {
-  if (value === null || value === undefined) {
-    return null;
-  }
-  if (!hasOnlySupportedTextCharacters(value)) {
-    throw new BeautioError(
-      "INVALID_INPUT",
-      `${fieldName} contains unsupported control characters`,
-    );
-  }
-  const normalized = value.trim();
-  if (normalized.length === 0) {
-    return null;
-  }
-  if (normalized.length > maximumLength) {
-    throw new BeautioError(
-      "INVALID_INPUT",
-      `${fieldName} must be at most ${maximumLength} characters`,
-    );
-  }
-  return normalized;
 }
 
 function normalizeMissingAccuracy(
