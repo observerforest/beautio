@@ -7,9 +7,10 @@ import {
   type OpenedOnAccuracy,
 } from "../../admin-api.ts";
 import { ModalShell } from "../../components/ModalShell.tsx";
+import { isAbortError } from "../../utils/is-abort-error.ts";
 import { canPreserveLegacyAccuracy, localDateForApi, openedOnAccuracy, paoDeadlineAccuracy, usabilityLabel } from "./view-model.ts";
 import { editorInputClass, Field, ScopeNotice } from "./EditorPrimitives.tsx";
-import { dateWithAccuracy, displayValue, inventoryErrorMessage, isAbortError, nullablePositiveInteger } from "./inventory-format.ts";
+import { dateWithAccuracy, displayValue, inventoryErrorMessage } from "./utils/inventory-format.ts";
 
 export interface BottleEditorDialogProps {
   readonly item: InventoryListItemOutput;
@@ -18,6 +19,19 @@ export interface BottleEditorDialogProps {
   readonly onCancel: () => void;
   readonly onCommitted: (inventoryItemId: string, message: string) => Promise<boolean>;
   readonly onUnauthorized: (message: string) => void;
+}
+
+/**
+ * 解析酒瓶编辑器中的可选正整数字段，不强制转换无效草稿。
+ * Parses an optional positive integer field in the bottle editor without coercing invalid drafts.
+ *
+ * @param value - 浏览器输入框的当前值。 / Current browser input value.
+ * @returns 空字段返回 null，合法值返回正整数，无效输入返回 undefined。 / Null for an empty field, a positive integer, or undefined for invalid input.
+ */
+function nullablePositiveInteger(value: string): number | null | undefined {
+  if (value.length === 0) return null;
+  const parsed = Number(value);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : undefined;
 }
 
 /**

@@ -1,5 +1,5 @@
-import { AdminApiError, type OpenedOnAccuracy } from "../../admin-api.ts";
-import { accuracyLabel } from "./view-model.ts";
+import { AdminApiError, type OpenedOnAccuracy } from "../../../admin-api.ts";
+import { accuracyLabel } from "../view-model.ts";
 
 /**
  * 显示可选的已记录事实，不虚构替代值。
@@ -28,21 +28,6 @@ export function dateWithAccuracy(
 }
 
 /**
- * 解析可选的正整数表单字段，不强制转换无效草稿。
- * Parses an optional positive integer form field without coercing invalid drafts.
- *
- * @param value - 浏览器输入框的当前值。 / Current browser input value.
- * @returns 空字段返回 null，合法值返回正整数，无效输入返回 undefined。 / Null for an empty field, a positive integer, or undefined for invalid input.
- */
-export function nullablePositiveInteger(
-  value: string,
-): number | null | undefined {
-  if (value.length === 0) return null;
-  const parsed = Number(value);
-  return Number.isInteger(parsed) && parsed > 0 ? parsed : undefined;
-}
-
-/**
  * 将预期内的浏览器与 Admin API 故障转换为安全的界面文案。
  * Converts expected browser and Admin API failures to safe interface copy.
  *
@@ -55,15 +40,4 @@ export function inventoryErrorMessage(error: unknown): string {
     return "无法连接 Beautio 服务，请确认服务正在运行。";
   }
   return "发生了未知错误，请稍后再试。";
-}
-
-/**
- * 识别由会话销毁或页面导航引起的主动取消。
- * Identifies deliberate cancellation caused by session destruction or navigation.
- *
- * @param error - 未知的拒绝值。 / Unknown rejected value.
- * @returns 该值是否为 DOM AbortError。 / Whether the value is a DOM AbortError.
- */
-export function isAbortError(error: unknown): boolean {
-  return error instanceof DOMException && error.name === "AbortError";
 }

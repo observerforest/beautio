@@ -2,9 +2,10 @@ import type { InventoryListItemOutput } from "@beautio/contracts";
 import { useEffect, useId, useRef, useState, type FormEvent } from "react";
 import { AdminApiClient, AdminApiError } from "../../admin-api.ts";
 import { ModalShell } from "../../components/ModalShell.tsx";
+import { isAbortError } from "../../utils/is-abort-error.ts";
 import { normalizeOptionalEditorText, textCharacterCountLabel } from "../../text-fields.ts";
 import { editorInputClass, Field, ScopeNotice } from "./EditorPrimitives.tsx";
-import { inventoryErrorMessage, isAbortError } from "./inventory-format.ts";
+import { inventoryErrorMessage } from "./utils/inventory-format.ts";
 
 const NOTES_MAXIMUM = 1_000;
 

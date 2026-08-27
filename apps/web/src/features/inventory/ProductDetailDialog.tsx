@@ -13,7 +13,7 @@ import {
   type ProductImageChoice,
 } from "./view-model.ts";
 import { ImageViewer } from "./ImageViewer.tsx";
-import { dateWithAccuracy, displayValue } from "./inventory-format.ts";
+import { dateWithAccuracy, displayValue } from "./utils/inventory-format.ts";
 import { useProductImage } from "./useProductImage.ts";
 
 export interface ProductDetailDialogProps {

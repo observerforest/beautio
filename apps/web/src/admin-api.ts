@@ -14,6 +14,7 @@ import {
   type UpdateProductInput,
   type UpdateProductOutput,
 } from "@beautio/contracts";
+import { isAbortError } from "./utils/is-abort-error.ts";
 
 export type OpenedOnAccuracy = NonNullable<
   InventoryStateOutput["opened_on_accuracy"]
@@ -396,10 +397,6 @@ async function readJson(response: Response): Promise<unknown> {
     }
     throw invalidResponse();
   }
-}
-
-function isAbortError(error: unknown): boolean {
-  return error instanceof DOMException && error.name === "AbortError";
 }
 
 function invalidResponse(): AdminApiError {
