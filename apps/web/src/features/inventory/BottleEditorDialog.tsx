@@ -9,7 +9,7 @@ import {
 import { ModalShell } from "../../components/ModalShell.tsx";
 import { isAbortError } from "../../utils/is-abort-error.ts";
 import { localDateForApi } from "../../utils/local-date-for-api.ts";
-import { canPreserveLegacyAccuracy, openedOnAccuracy, paoDeadlineAccuracy, usabilityLabel } from "./view-model.ts";
+import { canPreserveLegacyAccuracy, openedOnAccuracy, paoDeadlineAccuracy, usabilityLabel } from "./models/index.ts";
 import { editorInputClass, Field, ScopeNotice } from "./EditorPrimitives.tsx";
 import { dateWithAccuracy, displayValue, inventoryErrorMessage } from "./utils/inventory-format.ts";
 

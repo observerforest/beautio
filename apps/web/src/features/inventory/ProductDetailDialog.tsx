@@ -11,7 +11,7 @@ import {
   usabilityLabel,
   warningLabel,
   type ProductImageChoice,
-} from "./view-model.ts";
+} from "./models/index.ts";
 import { ImageViewer } from "./ImageViewer.tsx";
 import { dateWithAccuracy, displayValue } from "./utils/inventory-format.ts";
 import { useProductImage } from "./useProductImage.ts";

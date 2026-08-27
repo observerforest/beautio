@@ -4,7 +4,7 @@ import type {
   InventoryCollectionView,
   InventorySortOption,
   InventoryStatusFilter,
-} from "./view-model.ts";
+} from "./models/index.ts";
 
 export interface CollectionTabsProps {
   readonly view: InventoryCollectionView;

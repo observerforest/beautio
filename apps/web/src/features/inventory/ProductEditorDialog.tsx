@@ -9,7 +9,7 @@ import { Icon } from "../../components/Icon.tsx";
 import { ModalShell } from "../../components/ModalShell.tsx";
 import { isAbortError } from "../../utils/is-abort-error.ts";
 import { normalizeOptionalEditorText, textCharacterCountLabel } from "../../text-fields.ts";
-import { managedImageAssetId, type ProductImageChoice } from "./view-model.ts";
+import { managedImageAssetId, type ProductImageChoice } from "./models/index.ts";
 import { editorInputClass, Field, ScopeNotice } from "./EditorPrimitives.tsx";
 import { inventoryErrorMessage } from "./utils/inventory-format.ts";
 import { useProductImage } from "./useProductImage.ts";
