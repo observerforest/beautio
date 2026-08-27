@@ -1,3 +1,10 @@
+/**
+ * 把 Core API 的库存事实转换为 inventory 页面可以直接消费的显示模型。
+ * Transforms Core API inventory facts into presentation models consumed directly by the inventory UI.
+ *
+ * 本模块只负责筛选、排序、汇总、卡片投影与界面文案；不执行网络请求、持久化或 React 渲染。
+ * This module only filters, sorts, summarizes, projects cards, and supplies interface copy; it performs no network requests, persistence, or React rendering.
+ */
 import type {
   InventoryListItemOutput,
   InventoryStateOutput,
@@ -70,12 +77,15 @@ export interface InventoryCardAlert {
 }
 
 /**
+ * 把完整的 Core API 库存投影成一个客户端浏览视图。
  * Projects the complete Core API inventory into one client-side browsing view.
  *
- * @param items - Complete inventory list returned by the existing Core API contract.
- * @param options - Lifecycle view, active-state filter, query, category, and deterministic sort.
- * @returns Filtered items plus source counts, categories for the selected lifecycle view, and contextual empty copy.
+ * @param items - 现有 Core API 契约返回的完整库存列表。 / Complete inventory list returned by the existing Core API contract.
+ * @param options - 生命周期视图、活跃状态筛选、搜索词、分类和确定性排序。 / Lifecycle view, active-state filter, query, category, and deterministic sort.
+ * @returns 筛选结果、来源计数、当前生命周期视图的分类选项和有上下文的空状态文案。 / Filtered items plus source counts, categories for the selected lifecycle view, and contextual empty copy.
  *
+ * 该函数绝不修改输入。活跃视图包含未开封和已开封库存；归档视图包含已用完和已弃置库存。
+ * 状态筛选只应用于活跃视图。缺失期限和名称排在已记录值之后。
  * The function never mutates the input. Active contains unopened and opened items;
  * archive contains finished and discarded items. The status filter only applies to
  * the active view. Missing deadlines and names sort after recorded values.
@@ -238,10 +248,11 @@ function inventoryBrowseEmptyCopy(
 }
 
 /**
+ * 为每一条具体库存记录创建且只创建一个紧凑卡片投影。
  * Creates exactly one compact card projection for every concrete inventory item.
  *
- * @param items - Individual inventory items returned by the Core API.
- * @returns Card projections in the same order and count, without product grouping or inferred names.
+ * @param items - Core API 返回的单条库存记录。 / Individual inventory items returned by the Core API.
+ * @returns 顺序和数量不变的卡片投影，不按 Product 合并，也不推测名称。 / Card projections in the same order and count, without product grouping or inferred names.
  */
 export function inventoryCardViews(
   items: readonly InventoryListItemOutput[],
@@ -286,10 +297,11 @@ export function inventoryCardViews(
 }
 
 /**
+ * 选择浏览器获准渲染的唯一 Product 图片来源。
  * Selects the one product image source the browser is allowed to render.
  *
- * @param item - Inventory item whose Product may contain managed and legacy image facts.
- * @returns Managed ImageAsset first, otherwise the unchanged legacy reference, otherwise none.
+ * @param item - Product 可能包含受管图片和旧版图片事实的库存记录。 / Inventory item whose Product may contain managed and legacy image facts.
+ * @returns 优先返回受管 ImageAsset，否则返回未经改写的旧版引用；两者都没有时返回 none。 / Managed ImageAsset first, otherwise the unchanged legacy reference, otherwise none.
  */
 export function productImageChoice(
   item: InventoryListItemOutput,
@@ -321,10 +333,11 @@ function usableUntilAccuracySuffix(item: InventoryListItemOutput): string {
 }
 
 /**
+ * 读取服务端管理的 Product 图片标识，不解释其内部格式。
  * Reads the server-managed product image identifier without interpreting its format.
  *
- * @param item - Inventory item whose Product may have a managed image.
- * @returns The opaque ImageAsset identifier, or null when no managed image exists.
+ * @param item - Product 可能带有受管图片的库存记录。 / Inventory item whose Product may have a managed image.
+ * @returns 不透明的 ImageAsset 标识；没有受管图片时返回 null。 / The opaque ImageAsset identifier, or null when no managed image exists.
  */
 export function managedImageAssetId(
   item: InventoryListItemOutput,
@@ -333,10 +346,11 @@ export function managedImageAssetId(
 }
 
 /**
+ * 从库存契约读取开封日期准确性。
  * Reads an opening-date accuracy value from the inventory contract.
  *
- * @param item - Inventory item returned by the management read model.
- * @returns The stored accuracy classification, or null when no opening date exists.
+ * @param item - 管理端读取模型返回的库存记录。 / Inventory item returned by the management read model.
+ * @returns 已存储的准确性分类；没有开封日期时返回 null。 / The stored accuracy classification, or null when no opening date exists.
  */
 export function openedOnAccuracy(
   item: InventoryListItemOutput,
@@ -345,10 +359,11 @@ export function openedOnAccuracy(
 }
 
 /**
+ * 从库存契约读取派生的 PAO 截止日期准确性。
  * Reads a derived PAO deadline accuracy value from the inventory contract.
  *
- * @param item - Inventory item returned by the management read model.
- * @returns The inherited deadline accuracy, or null when no PAO deadline exists.
+ * @param item - 管理端读取模型返回的库存记录。 / Inventory item returned by the management read model.
+ * @returns 继承得到的截止日期准确性；没有 PAO 截止日期时返回 null。 / The inherited deadline accuracy, or null when no PAO deadline exists.
  */
 export function paoDeadlineAccuracy(
   item: InventoryListItemOutput,
@@ -357,12 +372,13 @@ export function paoDeadlineAccuracy(
 }
 
 /**
+ * 判断提交时是否可以保留未改变的历史准确性标记。
  * Determines whether an unchanged historical accuracy marker may be submitted.
  *
- * @param item - Persisted inventory item being edited.
- * @param lifecycleStatus - Candidate editable lifecycle value.
- * @param openedOn - Candidate opening date.
- * @returns True only for an already-opened legacy item whose date remains unchanged.
+ * @param item - 正在编辑的已持久化库存记录。 / Persisted inventory item being edited.
+ * @param lifecycleStatus - 待提交的生命周期值。 / Candidate editable lifecycle value.
+ * @param openedOn - 待提交的开封日期。 / Candidate opening date.
+ * @returns 仅当旧版库存已经开封且日期保持不变时返回 true。 / True only for an already-opened legacy item whose date remains unchanged.
  */
 export function canPreserveLegacyAccuracy(
   item: InventoryListItemOutput,
@@ -378,10 +394,11 @@ export function canPreserveLegacyAccuracy(
 }
 
 /**
+ * 把准确性契约值转换为明确的中文界面文案。
  * Converts an accuracy contract value to explicit Chinese interface copy.
  *
- * @param accuracy - Stored exact, estimated, legacy, or absent accuracy value.
- * @returns A label that does not present estimates as confirmed dates.
+ * @param accuracy - 已存储的准确、估算、旧版或缺失准确性值。 / Stored exact, estimated, legacy, or absent accuracy value.
+ * @returns 不会把估算日期表述成确认日期的标签。 / A label that does not present estimates as confirmed dates.
  */
 export function accuracyLabel(accuracy: OpenedOnAccuracy | null): string {
   return {
@@ -417,10 +434,12 @@ function inventoryCardAlerts(
 }
 
 /**
+ * 按浏览器本地日历格式化 Core API 契约要求的日期。
  * Formats a valid browser-local calendar date for the explicit Core API contract.
  *
- * @param date - A valid Date whose local year, month, and day should be used.
- * @returns A zero-padded YYYY-MM-DD value without converting through UTC.
+ * @param date - 使用本地年、月、日的有效 Date。 / A valid Date whose local year, month, and day should be used.
+ * @returns 不经过 UTC 转换、补齐零位的 YYYY-MM-DD 值。 / A zero-padded YYYY-MM-DD value without converting through UTC.
+ * @throws {RangeError} Date 无效时抛出。 / Thrown when the Date is invalid.
  */
 export function localDateForApi(date: Date): string {
   if (Number.isNaN(date.getTime())) {
@@ -434,10 +453,11 @@ export function localDateForApi(date: Date): string {
 }
 
 /**
+ * 在不修改输入数据的前提下，统计库存摘要中展示的各类状态。
  * Counts the states shown in the inventory summary without mutating input data.
  *
- * @param items - Inventory projections returned by the read-only Core API.
- * @returns Counts for all items, opened items, usable items, and items needing attention.
+ * @param items - 只读 Core API 返回的库存投影。 / Inventory projections returned by the read-only Core API.
+ * @returns 全部、已开封、可用和需要关注的库存数量。 / Counts for all items, opened items, usable items, and items needing attention.
  */
 export function summarizeInventory(
   items: readonly InventoryStateOutput[],
@@ -460,10 +480,11 @@ function inventoryItemNeedsAttention(item: InventoryStateOutput): boolean {
 }
 
 /**
+ * 把生命周期契约值转换为简洁的中文界面文案。
  * Converts a lifecycle contract value to concise Chinese interface copy.
  *
- * @param status - Stable lifecycle status from the Core API.
- * @returns The corresponding user-facing label.
+ * @param status - Core API 返回的稳定生命周期状态。 / Stable lifecycle status from the Core API.
+ * @returns 对应的用户可见标签。 / The corresponding user-facing label.
  */
 export function lifecycleLabel(
   status: InventoryStateOutput["lifecycle_status"],
@@ -477,10 +498,11 @@ export function lifecycleLabel(
 }
 
 /**
+ * 把可用性契约值转换为简洁的中文界面文案。
  * Converts a usability contract value to concise Chinese interface copy.
  *
- * @param status - Derived usability status from the Core API.
- * @returns The corresponding user-facing label.
+ * @param status - Core API 返回的派生可用性状态。 / Derived usability status from the Core API.
+ * @returns 对应的用户可见标签。 / The corresponding user-facing label.
  */
 export function usabilityLabel(
   status: InventoryStateOutput["usability_status"],
@@ -493,10 +515,11 @@ export function usabilityLabel(
 }
 
 /**
+ * 把警告契约值转换为解释性的中文界面文案。
  * Converts a warning contract value to explanatory Chinese interface copy.
  *
- * @param warning - Stable warning code from the Core API.
- * @returns A direct explanation of the warning condition.
+ * @param warning - Core API 返回的稳定警告代码。 / Stable warning code from the Core API.
+ * @returns 对警告条件的直接说明。 / A direct explanation of the warning condition.
  */
 export function warningLabel(
   warning: InventoryStateOutput["warnings"][number],
