@@ -1,4 +1,5 @@
 import { Icon } from "../../components/Icon.tsx";
+import { SelectMenu, type SelectMenuOption } from "../../components/SelectMenu.tsx";
 import type {
   InventoryBrowseCounts,
   InventoryCollectionView,
@@ -240,44 +241,52 @@ export function InventoryFilterControls({
   onCategoryChange,
   onSortChange,
 }: InventoryFilterControlsProps) {
+  const categoryOptions: readonly SelectMenuOption<string>[] = [
+    { value: "", label: "全部品类" },
+    ...categories.map((choice) => ({ value: choice, label: choice })),
+  ];
+  const sortOptions: readonly SelectMenuOption<InventorySortOption>[] = [
+    { value: "deadline-asc", label: "按临期排序", icon: "calendar" },
+    { value: "name-asc", label: "按名称排序", icon: "sort" },
+  ];
+
   return (
-    <div className="flex min-w-0 items-center gap-2 overflow-x-auto pb-1 md:pb-0">
+    <div className="flex min-w-0 items-center gap-2 pb-1 md:pb-0">
       <button
         type="button"
-        disabled
+        aria-disabled="true"
+        data-beautio-select-trigger="compact"
         title="当前数据还没有品牌字段"
-        className="flex shrink-0 items-center gap-1.5 rounded-full border border-[#D8D4D1] px-3 py-1.5 text-xs text-[#BEB9B6]"
+        className="flex shrink-0 items-center gap-1.5 rounded-full border border-[#D8D4D1] px-3 py-1.5 text-xs text-[#7A7572]"
       >
         <Icon name="tag" className="size-3" />品牌<Icon name="chevron-down" className="size-3" />
       </button>
 
-      <label className="relative flex shrink-0 items-center gap-1.5 rounded-full border border-[#D8D4D1] px-3 py-1.5 text-xs text-[#7A7572]">
-        <Icon name="category" className="size-3" />
-        <span className="sr-only">按品类筛选</span>
-        <select
-          value={category ?? ""}
-          onChange={(event) => onCategoryChange(event.target.value || null)}
-          className="max-w-28 appearance-none bg-transparent pr-4 outline-none"
-        >
-          <option value="">全部品类</option>
-          {categories.map((choice) => <option key={choice} value={choice}>{choice}</option>)}
-        </select>
-        <Icon name="chevron-down" className="pointer-events-none absolute right-2.5 size-3" />
-      </label>
+      <SelectMenu
+        value={category ?? ""}
+        options={categoryOptions}
+        onChange={(nextCategory) => onCategoryChange(nextCategory || null)}
+        ariaLabel="按品类筛选"
+        leadingIcon="category"
+        triggerLabel="品类"
+        variant="compact"
+        className="shrink-0"
+        buttonClassName="flex items-center gap-1.5 rounded-full border border-[#D8D4D1] px-3 py-1.5 text-xs text-[#7A7572] transition-all"
+        menuClassName="left-0"
+      />
 
-      <label className="relative flex shrink-0 items-center gap-1.5 rounded-full border border-[#D8D4D1] px-3 py-1.5 text-xs text-[#7A7572]">
-        <Icon name="sort" className="size-3" />
-        <span className="sr-only">库存排序</span>
-        <select
-          value={sort}
-          onChange={(event) => onSortChange(event.target.value === "name-asc" ? "name-asc" : "deadline-asc")}
-          className="appearance-none bg-transparent pr-4 outline-none"
-        >
-          <option value="deadline-asc">按临期排序</option>
-          <option value="name-asc">按名称排序</option>
-        </select>
-        <Icon name="chevron-down" className="pointer-events-none absolute right-2.5 size-3" />
-      </label>
+      <SelectMenu
+        value={sort}
+        options={sortOptions}
+        onChange={onSortChange}
+        ariaLabel="库存排序"
+        leadingIcon="sort"
+        triggerLabel="排序"
+        variant="compact"
+        className="shrink-0"
+        buttonClassName="flex items-center gap-1.5 rounded-full border border-[#D8D4D1] px-3 py-1.5 text-xs text-[#7A7572] transition-all"
+        menuClassName="left-0"
+      />
     </div>
   );
 }

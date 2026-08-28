@@ -7,10 +7,11 @@ import {
 } from "../../admin-api.ts";
 import { Icon } from "../../components/Icon.tsx";
 import { ModalShell } from "../../components/ModalShell.tsx";
+import { Toast, ToastViewport } from "../../components/Toast.tsx";
 import { isAbortError } from "../../utils/is-abort-error.ts";
 import { normalizeOptionalEditorText, textCharacterCountLabel } from "../../text-fields.ts";
 import { managedImageAssetId, type ProductImageChoice } from "./models/index.ts";
-import { editorInputClass, Field, ScopeNotice } from "./EditorPrimitives.tsx";
+import { EditorFooter, editorInputClass, Field } from "./EditorPrimitives.tsx";
 import { inventoryErrorMessage } from "./utils/inventory-format.ts";
 import { useProductImage } from "./useProductImage.ts";
 
@@ -154,21 +155,30 @@ export function ProductEditorDialog({
     <ImagePlaceholder copy={currentImage.status === "loading" ? "正在读取当前图片" : currentImage.status === "error" ? "当前图片读取失败" : product.image_ref === null ? "暂无管理图片" : "旧图片引用不自动加载"} />
   );
 
-  const footer = (
-    <div className="space-y-3">
-      <ScopeNotice shared>修改将同步影响该 Product 的所有库存瓶。</ScopeNotice>
-      <p className="text-[11px] text-[#A8A3A0]" role="status" aria-live="polite">{progress}</p>
-      <div className="flex justify-end gap-2">
-        <button type="button" onClick={onCancel} disabled={busy} className="rounded-2xl px-4 py-2.5 text-sm text-[#A8A3A0] disabled:opacity-45">取消</button>
-        <button type="submit" form={formId} disabled={busy || writeCompleted} className="rounded-2xl bg-[linear-gradient(120deg,#9B7F7C,#B3A0AD)] px-5 py-2.5 text-sm font-medium text-white disabled:opacity-45">
-          {busy ? "保存中…" : "保存产品资料"}
-        </button>
-      </div>
-    </div>
+  const footer = (requestClose: () => void) => (
+    <EditorFooter
+      shared
+      notice="修改将同步影响该产品的所有库存瓶"
+      progress={progress}
+      formId={formId}
+      saveLabel="保存产品资料"
+      busy={busy}
+      saveDisabled={busy || writeCompleted}
+      onCancel={requestClose}
+    />
   );
 
   return (
-    <ModalShell title={product.name} subtitle="编辑产品资料" footer={footer} busy={busy} onClose={onCancel}>
+    <ModalShell
+      title={product.name}
+      subtitle="编辑产品资料"
+      footer={footer}
+      busy={busy}
+      onClose={onCancel}
+      toast={error.length === 0 ? null : (
+        <ToastViewport><Toast message={error} onDismiss={() => setError("")} /></ToastViewport>
+      )}
+    >
       <form id={formId} onSubmit={handleSubmit} className="space-y-5 px-5 py-5" noValidate>
         <fieldset disabled={busy || writeCompleted} className="space-y-5 disabled:opacity-70">
           <div className="flex flex-col items-center gap-3">
@@ -215,7 +225,6 @@ export function ProductEditorDialog({
             </Field>
           </div>
         </fieldset>
-        {error.length === 0 ? null : <p role="alert" className="rounded-xl bg-[#FBF3F2] px-3 py-2 text-sm text-[#9D4C57]">{error}</p>}
       </form>
     </ModalShell>
   );

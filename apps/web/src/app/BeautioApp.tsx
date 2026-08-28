@@ -46,6 +46,7 @@ export function BeautioApp() {
         busy={session.phase === "unlocking"}
         message={session.unlockMessage}
         onUnlock={session.unlock}
+        onDismissMessage={session.dismissUnlockMessage}
       />
     );
   }
@@ -57,6 +58,7 @@ export function BeautioApp() {
       readError={session.readError}
       statusMessage={session.statusMessage}
       onStatusMessage={session.setStatusMessage}
+      onDismissReadError={session.dismissReadError}
       onRefresh={session.refresh}
       onLock={session.lock}
       onDialogOpenChange={setDialogOpen}

@@ -7,10 +7,12 @@ import {
   type OpenedOnAccuracy,
 } from "../../admin-api.ts";
 import { ModalShell } from "../../components/ModalShell.tsx";
+import { SelectMenu, type SelectMenuOption } from "../../components/SelectMenu.tsx";
+import { Toast, ToastViewport } from "../../components/Toast.tsx";
 import { isAbortError } from "../../utils/is-abort-error.ts";
 import { localDateForApi } from "../../utils/local-date-for-api.ts";
 import { canPreserveLegacyAccuracy, openedOnAccuracy, paoDeadlineAccuracy, usabilityLabel } from "./models/index.ts";
-import { editorInputClass, Field, ScopeNotice } from "./EditorPrimitives.tsx";
+import { EditorFooter, editorInputClass, Field } from "./EditorPrimitives.tsx";
 import { dateWithAccuracy, displayValue, inventoryErrorMessage } from "./utils/inventory-format.ts";
 
 export interface BottleEditorDialogProps {
@@ -52,7 +54,7 @@ export function BottleEditorDialog({
 }: BottleEditorDialogProps) {
   const formId = useId();
   const openedDateRef = useRef<HTMLInputElement>(null);
-  const accuracyRef = useRef<HTMLSelectElement>(null);
+  const accuracyRef = useRef<HTMLButtonElement>(null);
   const paoRef = useRef<HTMLInputElement>(null);
   const mountedRef = useRef(true);
   const [lifecycle, setLifecycle] = useState<"unopened" | "opened">(initialLifecycle);
@@ -65,6 +67,16 @@ export function BottleEditorDialog({
   const [error, setError] = useState("");
   const [writeCompleted, setWriteCompleted] = useState(false);
   const legacyAllowed = canPreserveLegacyAccuracy(item, lifecycle, openedOn || null);
+  const lifecycleOptions: readonly SelectMenuOption<"unopened" | "opened">[] = [
+    { value: "unopened", label: "未开封" },
+    { value: "opened", label: "已开封" },
+  ];
+  const accuracyOptions: readonly SelectMenuOption<OpenedOnAccuracy | "">[] = [
+    { value: "", label: "请选择日期准确性" },
+    { value: "exact", label: "准确日期" },
+    { value: "estimated", label: "估算日期" },
+    ...(legacyAllowed ? [{ value: "legacy_unknown" as const, label: "保留历史记录的未知准确性" }] : []),
+  ];
 
   useEffect(() => {
     mountedRef.current = true;
@@ -150,38 +162,59 @@ export function BottleEditorDialog({
     }
   };
 
-  const footer = (
-    <div className="space-y-3">
-      <ScopeNotice shared={false}>仅对当前这一瓶生效；保存后服务端会重新计算期限和可用状态。</ScopeNotice>
-      <p className="text-[11px] text-[#A8A3A0]" role="status" aria-live="polite">{progress}</p>
-      <div className="flex justify-end gap-2">
-        <button type="button" onClick={onCancel} disabled={busy} className="rounded-2xl px-4 py-2.5 text-sm text-[#A8A3A0] disabled:opacity-45">取消</button>
-        <button type="submit" form={formId} disabled={busy || writeCompleted} className="rounded-2xl bg-[linear-gradient(120deg,#9B7F7C,#B3A0AD)] px-5 py-2.5 text-sm font-medium text-white disabled:opacity-45">{busy ? "保存中…" : "保存这瓶"}</button>
-      </div>
-    </div>
+  const footer = (requestClose: () => void) => (
+    <EditorFooter
+      shared={false}
+      notice="仅对当前这一瓶生效，不影响其他瓶或产品资料"
+      progress={progress}
+      formId={formId}
+      saveLabel="保存这瓶"
+      busy={busy}
+      saveDisabled={busy || writeCompleted}
+      onCancel={requestClose}
+    />
   );
 
   return (
-    <ModalShell title={item.product?.name ?? "未记录产品名称"} subtitle="编辑这瓶" footer={footer} busy={busy} onClose={onCancel}>
+    <ModalShell
+      title={item.product?.name ?? "未记录产品名称"}
+      subtitle="编辑这瓶"
+      footer={footer}
+      busy={busy}
+      onClose={onCancel}
+      toast={error.length === 0 ? null : (
+        <ToastViewport><Toast message={error} onDismiss={() => setError("")} /></ToastViewport>
+      )}
+    >
       <form id={formId} onSubmit={handleSubmit} className="space-y-5 px-5 py-5" noValidate>
         <fieldset disabled={busy || writeCompleted} className="space-y-5 disabled:opacity-70">
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
             <Field label="生命周期">
-              <select value={lifecycle} onChange={(event) => setLifecycleAndOpening(event.target.value === "opened" ? "opened" : "unopened")} className={editorInputClass}>
-                <option value="unopened">未开封</option>
-                <option value="opened">已开封</option>
-              </select>
+              <SelectMenu
+                value={lifecycle}
+                options={lifecycleOptions}
+                onChange={setLifecycleAndOpening}
+                ariaLabel="生命周期"
+                className="w-full"
+                buttonClassName={`${editorInputClass} flex items-center justify-between gap-3 text-left`}
+                menuClassName="left-0 right-0 max-h-64 overflow-y-auto"
+              />
             </Field>
             <Field label="开封日期" hint="已开封时必填；未开封时会清空。">
               <input ref={openedDateRef} type="date" value={openedOn} onChange={(event) => setOpenedOn(event.target.value)} disabled={lifecycle !== "opened"} className={editorInputClass} />
             </Field>
             <Field label="开封日期准确性" hint="估算必须明确标记。">
-              <select ref={accuracyRef} value={accuracy} onChange={(event) => setAccuracy(event.target.value as OpenedOnAccuracy | "")} disabled={lifecycle !== "opened"} className={editorInputClass}>
-                <option value="">请选择日期准确性</option>
-                <option value="exact">准确日期</option>
-                <option value="estimated">估算日期</option>
-                {legacyAllowed ? <option value="legacy_unknown">保留历史记录的未知准确性</option> : null}
-              </select>
+              <SelectMenu
+                value={accuracy}
+                options={accuracyOptions}
+                onChange={setAccuracy}
+                ariaLabel="开封日期准确性"
+                disabled={lifecycle !== "opened"}
+                triggerRef={accuracyRef}
+                className="w-full"
+                buttonClassName={`${editorInputClass} flex items-center justify-between gap-3 text-left`}
+                menuClassName="left-0 right-0 max-h-64 overflow-y-auto"
+              />
             </Field>
             <Field label="包装过期日" hint="没有记录时留空。">
               <input type="date" value={expiresOn} onChange={(event) => setExpiresOn(event.target.value)} className={editorInputClass} />
@@ -197,7 +230,6 @@ export function BottleEditorDialog({
             <p>可用状态：{usabilityLabel(item.usability_status)}</p>
           </section>
         </fieldset>
-        {error.length === 0 ? null : <p role="alert" className="rounded-xl bg-[#FBF3F2] px-3 py-2 text-sm text-[#9D4C57]">{error}</p>}
       </form>
     </ModalShell>
   );

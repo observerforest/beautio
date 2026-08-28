@@ -26,22 +26,23 @@ export function ProductCard({
   onUnauthorized,
 }: ProductCardProps) {
   return (
-    <article className="min-w-0">
+    <article className="h-full min-w-0">
       <button
         type="button"
         onClick={onOpen}
         aria-label={view.accessibleName}
         aria-haspopup="dialog"
-        className="group flex w-full min-w-0 flex-col overflow-hidden rounded-2xl bg-white text-left shadow-[0_1px_6px_rgba(90,76,74,0.06)] transition-transform active:scale-[0.97]"
+        className="group flex h-full w-full min-w-0 flex-col overflow-hidden rounded-2xl bg-white text-left shadow-[0_1px_6px_rgba(90,76,74,0.06)] transition-transform active:scale-[0.97]"
       >
         <span className="relative aspect-square w-full overflow-hidden bg-[#F8F5F3]">
           <ProductImage
             client={client}
             choice={view.image}
             alt={view.displayName}
-            variant="card"
+            variant="original"
+            loading="lazy"
             onUnauthorized={onUnauthorized}
-            className="h-full w-full object-cover transition-transform duration-300 group-hover:scale-[1.02]"
+            className="h-full w-full object-contain transition-transform duration-300 group-hover:scale-[1.02]"
           />
           {view.alerts.length === 0 ? null : (
             <span className="absolute right-1.5 top-1.5 flex flex-col items-end gap-1">

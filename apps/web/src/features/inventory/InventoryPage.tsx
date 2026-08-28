@@ -3,6 +3,7 @@ import { useEffect, useMemo, useState } from "react";
 import { AdminApiClient } from "../../admin-api.ts";
 import { Icon } from "../../components/Icon.tsx";
 import { Logo } from "../../components/Logo.tsx";
+import { Toast, ToastViewport } from "../../components/Toast.tsx";
 import {
   inventoryCardViews,
   projectInventoryBrowse,
@@ -32,6 +33,7 @@ export interface InventoryPageProps {
   readonly readError: string | null;
   readonly statusMessage: string | null;
   readonly onStatusMessage: (message: string | null) => void;
+  readonly onDismissReadError: () => void;
   readonly onRefresh: (showLoading?: boolean) => Promise<boolean>;
   readonly onLock: (message: string) => void;
   readonly onDialogOpenChange: (open: boolean) => void;
@@ -58,6 +60,7 @@ export function InventoryPage({
   readError,
   statusMessage,
   onStatusMessage,
+  onDismissReadError,
   onRefresh,
   onLock,
   onDialogOpenChange,
@@ -252,8 +255,6 @@ export function InventoryPage({
             queryInput={queryInput}
             finishedCount={finishedCount}
             discardedCount={discardedCount}
-            readError={readError}
-            statusMessage={statusMessage}
             hasNonDefaultFilters={hasNonDefaultFilters}
             onQueryInput={setQueryInput}
             onBrowseOptions={setBrowseOptions}
@@ -261,8 +262,6 @@ export function InventoryPage({
             onClearFilters={clearFilters}
             onOpenDetail={openDetail}
             onUnauthorized={lock}
-            onRefresh={onRefresh}
-            onDismissStatus={() => onStatusMessage(null)}
           />
         )}
       </div>
@@ -273,6 +272,25 @@ export function InventoryPage({
         </button>
       ) : null}
       <MobileNavigation active={mobilePage} onChange={setMobilePage} />
+
+      {readError === null && statusMessage === null ? null : (
+        <ToastViewport>
+          {readError === null ? null : (
+            <Toast
+              message={`库存重新读取失败：${readError}`}
+              action={{ label: "再试一次", onClick: () => void onRefresh() }}
+              onDismiss={onDismissReadError}
+            />
+          )}
+          {statusMessage === null ? null : (
+            <Toast
+              message={statusMessage}
+              tone="info"
+              onDismiss={() => onStatusMessage(null)}
+            />
+          )}
+        </ToastViewport>
+      )}
 
       {desktopSettingsOpen ? (
         <>
@@ -308,8 +326,6 @@ interface InventorySurfaceProps {
   readonly queryInput: string;
   readonly finishedCount: number;
   readonly discardedCount: number;
-  readonly readError: string | null;
-  readonly statusMessage: string | null;
   readonly hasNonDefaultFilters: boolean;
   readonly onQueryInput: (query: string) => void;
   readonly onBrowseOptions: React.Dispatch<React.SetStateAction<InventoryBrowseOptions>>;
@@ -317,8 +333,6 @@ interface InventorySurfaceProps {
   readonly onClearFilters: () => void;
   readonly onOpenDetail: (item: InventoryListItemOutput) => void;
   readonly onUnauthorized: (message: string) => void;
-  readonly onRefresh: (showLoading?: boolean) => Promise<boolean>;
-  readonly onDismissStatus: () => void;
 }
 
 function InventorySurface({
@@ -329,8 +343,6 @@ function InventorySurface({
   queryInput,
   finishedCount,
   discardedCount,
-  readError,
-  statusMessage,
   hasNonDefaultFilters,
   onQueryInput,
   onBrowseOptions,
@@ -338,8 +350,6 @@ function InventorySurface({
   onClearFilters,
   onOpenDetail,
   onUnauthorized,
-  onRefresh,
-  onDismissStatus,
 }: InventorySurfaceProps) {
   return (
     <main className="flex min-h-0 flex-1 flex-col md:block md:min-h-screen md:pb-12">
@@ -390,19 +400,6 @@ function InventorySurface({
       </div>
 
       <div className="beautio-scrollbar min-h-0 flex-1 overflow-y-auto px-5 pb-32 pt-1 md:overflow-visible md:px-8 md:pb-0 md:pt-0">
-        {readError === null ? null : (
-          <div className="mb-4 flex items-center justify-between gap-4 rounded-2xl bg-[#FBF3F2] px-4 py-3 text-sm text-[#9D4C57]" role="alert">
-            <span>库存重新读取失败：{readError}</span>
-            <button type="button" onClick={() => void onRefresh()} className="shrink-0 rounded-full bg-white px-3 py-1.5 text-xs">再试一次</button>
-          </div>
-        )}
-        {statusMessage === null ? null : (
-          <div className="mb-4 flex items-center justify-between gap-4 rounded-2xl bg-[#EEF1F4] px-4 py-3 text-sm text-[#4A6272]" role="status">
-            <span>{statusMessage}</span>
-            <button type="button" onClick={onDismissStatus} className="shrink-0" aria-label="关闭状态消息"><Icon name="x" /></button>
-          </div>
-        )}
-
         {projection.items.length === 0 ? (
           <section className="flex flex-col items-center gap-3 py-20 text-center">
             <div className="flex size-14 items-center justify-center rounded-full bg-[#E5D8CF] text-[#9B7F7C]"><Icon name="search" /></div>

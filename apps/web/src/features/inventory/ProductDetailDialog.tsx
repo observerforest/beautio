@@ -62,7 +62,7 @@ export function ProductDetailDialog({
       ? `第${item.product_inventory_position}瓶`
       : null;
 
-  const hero = (
+  const hero = (requestClose: () => void) => (
     <header className="relative shrink-0">
       <div className="relative h-52 overflow-hidden rounded-t-3xl bg-[#F8F5F3] md:h-64">
         {image.status === "ready" ? (
@@ -74,7 +74,7 @@ export function ProductDetailDialog({
         )}
         <div className="absolute inset-0 bg-[linear-gradient(to_top,rgba(60,45,43,0.68)_0%,transparent_58%)]" />
       </div>
-      <button type="button" onClick={onClose} className="absolute right-4 top-4 flex size-9 items-center justify-center rounded-full bg-white/20 text-white backdrop-blur" aria-label="关闭库存详情">
+      <button type="button" onClick={requestClose} className="absolute right-4 top-4 flex size-9 items-center justify-center rounded-full bg-white/20 text-[#7A7572] shadow-[0_2px_10px_rgba(90,76,74,0.16)] backdrop-blur transition-colors hover:bg-white/35" aria-label="关闭库存详情">
         <Icon name="x" />
       </button>
       {image.status === "ready" ? (

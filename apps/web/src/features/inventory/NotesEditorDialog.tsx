@@ -2,6 +2,7 @@ import type { InventoryListItemOutput } from "@beautio/contracts";
 import { useEffect, useId, useRef, useState, type FormEvent } from "react";
 import { AdminApiClient, AdminApiError } from "../../admin-api.ts";
 import { ModalShell } from "../../components/ModalShell.tsx";
+import { Toast, ToastViewport } from "../../components/Toast.tsx";
 import { isAbortError } from "../../utils/is-abort-error.ts";
 import { normalizeOptionalEditorText, textCharacterCountLabel } from "../../text-fields.ts";
 import { editorInputClass, Field, ScopeNotice } from "./EditorPrimitives.tsx";
@@ -75,26 +76,34 @@ export function NotesEditorDialog({ item, client, onCancel, onCommitted, onUnaut
     }
   };
 
-  const footer = (
+  const footer = (requestClose: () => void) => (
     <div className="space-y-3">
       <ScopeNotice shared={false}>仅对当前这一瓶生效，不影响其他瓶或 Product 资料。</ScopeNotice>
       <p className="text-[11px] text-[#A8A3A0]" role="status" aria-live="polite">{progress}</p>
       <div className="flex justify-end gap-2">
-        <button type="button" onClick={onCancel} disabled={busy} className="rounded-2xl px-4 py-2.5 text-sm text-[#A8A3A0] disabled:opacity-45">取消</button>
+        <button type="button" onClick={requestClose} disabled={busy} className="rounded-2xl px-4 py-2.5 text-sm text-[#A8A3A0] disabled:opacity-45">取消</button>
         <button type="submit" form={formId} disabled={busy || writeCompleted} className="rounded-2xl bg-[linear-gradient(120deg,#9B7F7C,#B3A0AD)] px-5 py-2.5 text-sm font-medium text-white disabled:opacity-45">{busy ? "保存中…" : "保存备注"}</button>
       </div>
     </div>
   );
 
   return (
-    <ModalShell title={item.product?.name ?? "未记录产品名称"} subtitle="编辑自定义备注" footer={footer} busy={busy} onClose={onCancel}>
+    <ModalShell
+      title={item.product?.name ?? "未记录产品名称"}
+      subtitle="编辑自定义备注"
+      footer={footer}
+      busy={busy}
+      onClose={onCancel}
+      toast={error.length === 0 ? null : (
+        <ToastViewport><Toast message={error} onDismiss={() => setError("")} /></ToastViewport>
+      )}
+    >
       <form id={formId} onSubmit={handleSubmit} className="space-y-5 px-5 py-5" noValidate>
         <fieldset disabled={busy || writeCompleted} className="disabled:opacity-70">
           <Field label="自定义备注" hint="留空并保存会清空当前瓶的备注。" counter={textCharacterCountLabel(notes, NOTES_MAXIMUM)}>
             <textarea autoFocus value={notes} onChange={(event) => setNotes(event.target.value)} maxLength={NOTES_MAXIMUM} rows={8} className={`${editorInputClass} min-h-44 resize-y`} />
           </Field>
         </fieldset>
-        {error.length === 0 ? null : <p role="alert" className="rounded-xl bg-[#FBF3F2] px-3 py-2 text-sm text-[#9D4C57]">{error}</p>}
       </form>
     </ModalShell>
   );

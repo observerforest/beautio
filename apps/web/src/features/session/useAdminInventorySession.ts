@@ -16,6 +16,8 @@ export interface AdminInventorySession {
   readonly unlock: (token: string) => Promise<boolean>;
   readonly lock: (message: string) => void;
   readonly refresh: (showLoading?: boolean) => Promise<boolean>;
+  readonly dismissUnlockMessage: () => void;
+  readonly dismissReadError: () => void;
   readonly setStatusMessage: (message: string | null) => void;
 }
 
@@ -45,6 +47,9 @@ export function useAdminInventorySession(): AdminInventorySession {
   const activeRefreshRef = useRef<ActiveRefresh | null>(null);
   const generationRef = useRef(0);
   const mountedRef = useRef(true);
+
+  const dismissUnlockMessage = useCallback(() => setUnlockMessage(""), []);
+  const dismissReadError = useCallback(() => setReadError(null), []);
 
   const destroyClient = useCallback(() => {
     generationRef.current += 1;
@@ -194,6 +199,8 @@ export function useAdminInventorySession(): AdminInventorySession {
     unlock,
     lock,
     refresh,
+    dismissUnlockMessage,
+    dismissReadError,
     setStatusMessage,
   };
 }

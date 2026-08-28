@@ -1,10 +1,12 @@
 import { useRef, useState, type FormEvent } from "react";
 import { Logo } from "../../components/Logo.tsx";
+import { Toast, ToastViewport } from "../../components/Toast.tsx";
 
 export interface LoginPageProps {
   readonly busy: boolean;
   readonly message: string;
   readonly onUnlock: (token: string) => Promise<boolean>;
+  readonly onDismissMessage: () => void;
 }
 
 /**
@@ -14,7 +16,12 @@ export interface LoginPageProps {
  * @param props - 解锁状态、实时反馈与认证提交操作。 / Unlock state, live feedback, and the authenticated submit operation.
  * @returns 锁定态应用界面，不暗示尚未提供的账户登录能力。 / The locked application surface without implying unavailable account login.
  */
-export function LoginPage({ busy, message, onUnlock }: LoginPageProps) {
+export function LoginPage({
+  busy,
+  message,
+  onUnlock,
+  onDismissMessage,
+}: LoginPageProps) {
   const [token, setToken] = useState("");
   const [showToken, setShowToken] = useState(false);
   const [localError, setLocalError] = useState("");
@@ -35,6 +42,7 @@ export function LoginPage({ busy, message, onUnlock }: LoginPageProps) {
       if (!succeeded) tokenRef.current?.focus();
     });
   };
+  const feedback = localError || (busy ? "" : message);
 
   return (
     <main className="relative flex min-h-screen w-full items-center justify-center overflow-hidden bg-[linear-gradient(145deg,#F7F4F2_0%,#EEE8E5_40%,#EDE8EE_100%)] px-5 py-20">
@@ -101,9 +109,7 @@ export function LoginPage({ busy, message, onUnlock }: LoginPageProps) {
             </button>
           </div>
 
-          <p className="mb-4 min-h-5 text-sm text-[#9D4C57]" role={localError.length > 0 ? "alert" : undefined} aria-live="polite">
-            {localError || message}
-          </p>
+          <div className="mb-4 min-h-5" aria-hidden="true" />
 
           <button
             type="submit"
@@ -131,6 +137,14 @@ export function LoginPage({ busy, message, onUnlock }: LoginPageProps) {
       <p className="absolute bottom-8 left-0 right-0 text-center text-[11px] tracking-[0.12em] text-[#C8C2BE]">
         Beauty in Flow
       </p>
+      {feedback.length === 0 ? null : (
+        <ToastViewport>
+          <Toast
+            message={feedback}
+            onDismiss={localError.length > 0 ? () => setLocalError("") : onDismissMessage}
+          />
+        </ToastViewport>
+      )}
     </main>
   );
 }

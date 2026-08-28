@@ -26,6 +26,61 @@ export function ScopeNotice({ shared, children }: ScopeNoticeProps) {
   );
 }
 
+export interface EditorFooterProps {
+  readonly shared: boolean;
+  readonly notice: string;
+  readonly progress: string;
+  readonly formId: string;
+  readonly saveLabel: string;
+  readonly busy: boolean;
+  readonly saveDisabled: boolean;
+  readonly onCancel: () => void;
+}
+
+/**
+ * 以 Figma 的单行底栏呈现编辑作用域、取消和保存操作，并保留无障碍进度播报。
+ * Renders the Figma single-row editor footer with scope, cancel, and save actions while retaining accessible progress announcements.
+ *
+ * @param props - 作用域文案、保存状态、目标表单、按钮文案与取消回调。 / Scope copy, save state, target form, button copy, and cancel callback.
+ * @returns 不额外占用视觉行的编辑弹窗底栏。 / An editor footer without extra visible status rows.
+ */
+export function EditorFooter({
+  shared,
+  notice,
+  progress,
+  formId,
+  saveLabel,
+  busy,
+  saveDisabled,
+  onCancel,
+}: EditorFooterProps) {
+  return (
+    <div className="flex items-center gap-3">
+      <div className={`flex min-w-0 flex-1 items-center gap-1.5 text-[11px] leading-snug ${shared ? "text-[#4A6272]" : "text-[#7A6260]"}`}>
+        <Icon name="info" className="size-3.5 shrink-0" />
+        <p>{notice}</p>
+      </div>
+      <p className="sr-only" role="status" aria-live="polite">{progress}</p>
+      <button
+        type="button"
+        onClick={onCancel}
+        disabled={busy}
+        className="shrink-0 rounded-2xl px-4 py-2.5 text-sm text-[#A8A3A0] disabled:opacity-45"
+      >
+        取消
+      </button>
+      <button
+        type="submit"
+        form={formId}
+        disabled={saveDisabled}
+        className="shrink-0 rounded-2xl bg-[linear-gradient(120deg,#9B7F7C,#B3A0AD)] px-5 py-2.5 text-sm font-medium text-white disabled:opacity-45"
+      >
+        {busy ? "保存中…" : saveLabel}
+      </button>
+    </div>
+  );
+}
+
 export interface FieldProps {
   readonly label: string;
   readonly hint?: string;
@@ -56,4 +111,4 @@ export function Field({ label, hint, counter, children }: FieldProps) {
 }
 
 export const editorInputClass =
-  "w-full rounded-2xl border border-[#E0DBD8] bg-white px-4 py-3 text-sm text-[#5A4C4A] outline-none transition-colors placeholder:text-stone-300 focus:border-[#AEB7C1] disabled:opacity-45";
+  "w-full rounded-2xl border border-[#E0DBD8] bg-white px-4 py-3 text-sm text-[#5A4C4A] outline-none transition-colors placeholder:text-stone-300 disabled:opacity-45";
