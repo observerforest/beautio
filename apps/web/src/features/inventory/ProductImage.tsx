@@ -7,6 +7,7 @@ export interface ProductImageProps {
   readonly choice: ProductImageChoice;
   readonly alt: string;
   readonly variant: PrivateImageVariant;
+  readonly loading?: "eager" | "lazy";
   readonly className?: string;
   readonly placeholderClassName?: string;
   readonly onUnauthorized: (message: string) => void;
@@ -24,6 +25,7 @@ export function ProductImage({
   choice,
   alt,
   variant,
+  loading,
   className = "h-full w-full object-cover",
   placeholderClassName = "h-full w-full",
   onUnauthorized,
@@ -35,7 +37,7 @@ export function ProductImage({
         src={image.src}
         alt={alt}
         className={className}
-        loading={variant === "card" ? "lazy" : "eager"}
+        loading={loading ?? (variant === "card" ? "lazy" : "eager")}
         decoding="async"
         onError={image.reportError}
       />
