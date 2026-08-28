@@ -14,6 +14,8 @@
     "check": "pnpm typecheck && pnpm test",
     "dev": "node scripts/dev.ts",
     "import:local": "node scripts/import-local-data.ts",
+    "local:preview": "node scripts/local-production.ts",
+    "prod:observe": "node scripts/production-observe.ts",
     "test": "node --test apps/*/test/*.test.ts packages/*/test/*.test.ts services/*/test/*.test.ts",
     "typecheck": "tsc --project tsconfig.scripts.json --noEmit && pnpm --recursive --if-present run typecheck"
   },

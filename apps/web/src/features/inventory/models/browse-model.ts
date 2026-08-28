@@ -13,12 +13,13 @@ export type InventoryStatusFilter =
   | "unopened"
   | "attention";
 
-export type InventorySortOption = "deadline-asc" | "name-asc";
+export type InventorySortOption = "deadline-asc" | "created-desc";
 
 export interface InventoryBrowseOptions {
   readonly view: InventoryCollectionView;
   readonly status: InventoryStatusFilter;
   readonly query: string;
+  readonly brand: string | null;
   readonly category: string | null;
   readonly sort: InventorySortOption;
 }
@@ -35,6 +36,7 @@ export interface InventoryBrowseCounts {
 export interface InventoryBrowseProjection {
   readonly items: readonly InventoryListItemOutput[];
   readonly counts: InventoryBrowseCounts;
+  readonly brandChoices: readonly string[];
   readonly categoryChoices: readonly string[];
   readonly emptyCopy: string | null;
 }
@@ -44,14 +46,14 @@ export interface InventoryBrowseProjection {
  * Projects the complete Core API inventory into one client-side browsing view.
  *
  * @param items - 现有 Core API 契约返回的完整库存列表。 / Complete inventory list returned by the existing Core API contract.
- * @param options - 生命周期视图、活跃状态筛选、搜索词、分类和确定性排序。 / Lifecycle view, active-state filter, query, category, and deterministic sort.
- * @returns 筛选结果、来源计数、当前生命周期视图的分类选项和有上下文的空状态文案。 / Filtered items plus source counts, categories for the selected lifecycle view, and contextual empty copy.
+ * @param options - 生命周期视图、活跃状态筛选、搜索词、品牌、分类和确定性排序。 / Lifecycle view, active-state filter, query, brand, category, and deterministic sort.
+ * @returns 筛选结果、来源计数、当前生命周期视图的品牌与分类选项和有上下文的空状态文案。 / Filtered items plus source counts, brands and categories for the selected lifecycle view, and contextual empty copy.
  *
  * 该函数绝不修改输入。活跃视图包含未开封和已开封库存；归档视图包含已用完和已弃置库存。
- * 状态筛选只应用于活跃视图。缺失期限和名称排在已记录值之后。
+ * 状态筛选只应用于活跃视图。缺失期限和创建时间排在已记录值之后。
  * The function never mutates the input. Active contains unopened and opened items;
  * archive contains finished and discarded items. The status filter only applies to
- * the active view. Missing deadlines and names sort after recorded values.
+ * the active view. Missing deadlines and creation times sort after recorded values.
  */
 export function projectInventoryBrowse(
   items: readonly InventoryListItemOutput[],
@@ -68,6 +70,11 @@ export function projectInventoryBrowse(
     )
     .filter(
       (item) =>
+        options.brand === null ||
+        textEqualsCaseInsensitive(item.product?.brand, options.brand),
+    )
+    .filter(
+      (item) =>
         options.category === null || item.product?.category === options.category,
     )
     .filter(
@@ -79,6 +86,7 @@ export function projectInventoryBrowse(
   return {
     items: filteredItems,
     counts: inventoryBrowseCounts(items),
+    brandChoices: inventoryBrandChoices(viewItems),
     categoryChoices: inventoryCategoryChoices(viewItems),
     emptyCopy: inventoryBrowseEmptyCopy(
       viewItems.length,
@@ -139,6 +147,8 @@ function itemMatchesQuery(
   const product = item.product;
   const searchableValues = [
     product?.name,
+    product?.alias,
+    product?.brand,
     product?.category,
     product?.size_label,
     item.inventory_item_id,
@@ -156,10 +166,29 @@ function itemMatchesQuery(
 }
 
 /**
+ * 不区分大小写比较两个品牌字段，且缺失值不匹配。
+ * Compares two brand values case-insensitively while treating missing values as non-matches.
+ *
+ * @param left - 库存中可能缺失的品牌。 / Possibly missing brand from an inventory item.
+ * @param right - 当前已选品牌。 / Currently selected brand.
+ * @returns 两个非空品牌不区分大小写相等时返回 true。 / True when both recorded brands are equal regardless of case.
+ */
+function textEqualsCaseInsensitive(
+  left: string | null | undefined,
+  right: string,
+): boolean {
+  return (
+    left !== null &&
+    left !== undefined &&
+    left.toLowerCase() === right.toLowerCase()
+  );
+}
+
+/**
  * 为选定的库存排序方式构造确定性比较器。
  * Builds a deterministic comparator for the selected inventory sort mode.
  *
- * @param sort - 期限升序或名称升序。 / Deadline-ascending or name-ascending sort mode.
+ * @param sort - 期限升序或最近添加降序。 / Deadline-ascending or recently-added-descending sort mode.
  * @returns 缺失主排序值排在末尾、主值相同时以库存 ID 决胜的比较器。 / A comparator that places missing primary values last and breaks primary ties by inventory ID.
  */
 function inventoryComparator(
@@ -169,14 +198,32 @@ function inventoryComparator(
     const primary =
       sort === "deadline-asc"
         ? compareNullableText(left.usable_until, right.usable_until)
-        : compareNullableText(
-            left.product?.name ?? null,
-            right.product?.name ?? null,
-          );
+        : compareNullableTimestampDescending(left.created_at, right.created_at);
     return primary !== 0
       ? primary
       : compareText(left.inventory_item_id, right.inventory_item_id);
   };
+}
+
+/**
+ * 按时间从新到旧比较两个可空时间戳，并把缺失值排在最后。
+ * Compares nullable timestamps newest-first while placing missing values last.
+ *
+ * @param left - 左侧可空时间戳。 / Nullable timestamp on the left.
+ * @param right - 右侧可空时间戳。 / Nullable timestamp on the right.
+ * @returns 新值靠前时为 -1、相等时为 0、旧值或缺失值靠后时为 1。 / -1 when left is newer, 0 when equal, or 1 when left is older or missing.
+ */
+function compareNullableTimestampDescending(
+  left: string | null,
+  right: string | null,
+): number {
+  if (left === null) return right === null ? 0 : 1;
+  if (right === null) return -1;
+  const leftTimestamp = Date.parse(left);
+  const rightTimestamp = Date.parse(right);
+  if (leftTimestamp > rightTimestamp) return -1;
+  if (leftTimestamp < rightTimestamp) return 1;
+  return 0;
 }
 
 /**
@@ -235,6 +282,35 @@ function inventoryBrowseCounts(
     },
     { total: 0, active: 0, archive: 0, opened: 0, unopened: 0, attention: 0 },
   );
+}
+
+/**
+ * 提取当前生命周期视图中可用的唯一产品品牌。
+ * Extracts the unique product brands available in the current lifecycle view.
+ *
+ * @param items - 已限定到当前生命周期视图的库存列表。 / Inventory items already limited to the current lifecycle view.
+ * @returns 去除缺失值与大小写重复后按确定性文本顺序排列的品牌。 / Brands with missing and case-insensitive duplicate values removed, sorted deterministically.
+ */
+function inventoryBrandChoices(
+  items: readonly InventoryListItemOutput[],
+): readonly string[] {
+  const canonicalByNormalizedBrand = new Map<string, string>();
+  for (const item of items) {
+    const brand = item.product?.brand;
+    if (brand === null || brand === undefined) continue;
+    const normalizedBrand = brand.toLowerCase();
+    const currentCanonical = canonicalByNormalizedBrand.get(normalizedBrand);
+    if (
+      currentCanonical === undefined ||
+      compareText(brand, currentCanonical) < 0
+    ) {
+      canonicalByNormalizedBrand.set(normalizedBrand, brand);
+    }
+  }
+  return [...canonicalByNormalizedBrand.values()].sort((left, right) => {
+    const normalizedOrder = compareText(left.toLowerCase(), right.toLowerCase());
+    return normalizedOrder !== 0 ? normalizedOrder : compareText(left, right);
+  });
 }
 
 /**

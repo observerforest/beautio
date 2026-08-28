@@ -50,6 +50,7 @@ test("read-only MCP exposes exactly search and fetch over the shared application
     (tool) => tool.name === searchInventoryToolName,
   );
   assert.match(searchTool?.description ?? "", /fetch_inventory_item/);
+  assert.match(searchTool?.description ?? "", /alias/i);
   assert.match(searchTool?.description ?? "", /complete inventory_item_id/);
   assert.match(searchTool?.description ?? "", /never invent an ID from a name/i);
   for (const tool of listed.tools) {
@@ -95,6 +96,7 @@ test("read-only MCP exposes exactly search and fetch over the shared application
   );
   assert.equal(search.items.length, 1);
   assert.equal(search.items[0]?.inventory_item_id, fixture.inventoryItemId);
+  assert.equal(search.items[0]?.alias, "Purple Jar");
   assert.deepEqual(textJson(searchResult), search);
 
   const fetchResult = await client.callTool({
@@ -108,6 +110,10 @@ test("read-only MCP exposes exactly search and fetch over the shared application
   assert.equal(
     fetched.inventory_item.product?.ingredient_list_text,
     "Aqua,\nGlycerin",
+  );
+  assert.equal(
+    fetched.inventory_item.product?.alias,
+    "Purple Jar",
   );
   assert.equal(fetched.inventory_item.product?.shared_notes, "Shared note");
   assert.equal(fetched.inventory_item.custom_notes, "Bottle note");
@@ -472,6 +478,7 @@ async function createInventoryFixture(context: TestContext): Promise<{
       {
         batch_ref: "read_product",
         name: "Remote serum",
+        alias: "Purple Jar",
         category: "serum",
         size_label: "30 ml",
         image_asset_id: null,

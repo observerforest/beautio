@@ -1,4 +1,4 @@
-import type { InventoryListItemOutput } from "@beautio/contracts";
+import { productAliasMaximumLength, type InventoryListItemOutput } from "@beautio/contracts";
 import { useEffect, useId, useMemo, useRef, useState, type ChangeEvent, type FormEvent } from "react";
 import {
   AdminApiClient,
@@ -44,9 +44,12 @@ export function ProductEditorDialog({
 }: ProductEditorDialogProps) {
   const formId = useId();
   const nameRef = useRef<HTMLInputElement>(null);
+  const aliasRef = useRef<HTMLInputElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
   const mountedRef = useRef(true);
   const [name, setName] = useState(product.name);
+  const [alias, setAlias] = useState(product.alias ?? "");
+  const [brand, setBrand] = useState(product.brand ?? "");
   const [category, setCategory] = useState(product.category ?? "");
   const [size, setSize] = useState(product.size_label ?? "");
   const [ingredients, setIngredients] = useState(product.ingredient_list_text ?? "");
@@ -98,8 +101,19 @@ export function ProductEditorDialog({
       nameRef.current?.focus();
       return;
     }
+    const normalizedAlias = normalizeOptionalEditorText(alias);
+    if (
+      normalizedAlias !== null &&
+      normalizedAlias.length > productAliasMaximumLength
+    ) {
+      setError(`产品别名最多 ${productAliasMaximumLength} 个字符，请缩短后再保存。`);
+      aliasRef.current?.focus();
+      return;
+    }
     const input: ProductFactsInput = {
       name: normalizedName,
+      alias: normalizedAlias,
+      brand: normalizeOptionalEditorText(brand),
       category: normalizeOptionalEditorText(category),
       size_label: normalizeOptionalEditorText(size),
       image_asset_id: clearImage ? null : currentImageAssetId,
@@ -209,7 +223,17 @@ export function ProductEditorDialog({
             <Field label="产品名称" hint="必填；不会自动按名称查重或合并。">
               <input ref={nameRef} value={name} onChange={(event) => setName(event.target.value)} maxLength={200} className={editorInputClass} required />
             </Field>
-            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+            <Field
+              label="产品别名"
+              hint={`用户常用称呼或已确认的网络称呼；最多 ${productAliasMaximumLength} 个字符。`}
+              counter={textCharacterCountLabel(alias, productAliasMaximumLength)}
+            >
+              <input ref={aliasRef} value={alias} onChange={(event) => setAlias(event.target.value)} className={editorInputClass} />
+            </Field>
+            <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
+              <Field label="品牌" hint="无法确认时留空。">
+                <input value={brand} onChange={(event) => setBrand(event.target.value)} maxLength={100} className={editorInputClass} />
+              </Field>
               <Field label="品类" hint="无法确认时留空。">
                 <input value={category} onChange={(event) => setCategory(event.target.value)} maxLength={100} className={editorInputClass} />
               </Field>

@@ -20,6 +20,8 @@ export interface InventoryBatchPersistenceInput {
 export interface ProductFactsPersistenceInput {
   readonly productId: string;
   readonly name: string;
+  readonly alias?: string | null;
+  readonly brand?: string | null;
   readonly category: string | null;
   readonly sizeLabel: string | null;
   readonly imageAssetId: string | null;

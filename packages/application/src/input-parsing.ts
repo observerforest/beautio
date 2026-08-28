@@ -4,19 +4,39 @@ import type { ImageUploadInput } from "./inventory-service-types.ts";
 
 const MAX_IMAGES = 10;
 
+/**
+ * Parses an untrusted application input through its contract schema.
+ *
+ * @param schema - Contract schema that returns normalized data or safe validation issues.
+ * @param input - Untrusted value received from an adapter.
+ * @returns The normalized contract value.
+ * @throws BeautioError with a stable field-level reason when the schema exposes one.
+ */
 export function parseInput<T>(
   schema: {
     safeParse(
       input: unknown,
-    ): { success: true; data: T } | { success: false };
+    ):
+      | { success: true; data: T }
+      | {
+          success: false;
+          error?: { issues?: readonly { message?: unknown }[] };
+        };
   },
   input: unknown,
 ): T {
   const result = schema.safeParse(input);
   if (!result.success) {
+    const specificMessage = result.error?.issues
+      ?.map((issue) => issue.message)
+      .find(
+        (message): message is string =>
+          typeof message === "string" && message.startsWith("INVALID_INPUT: "),
+      );
     throw new BeautioError(
       "INVALID_INPUT",
-      "input does not match the tool contract",
+      specificMessage?.slice("INVALID_INPUT: ".length) ??
+        "input does not match the tool contract",
     );
   }
   return result.data;

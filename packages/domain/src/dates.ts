@@ -4,6 +4,8 @@ const ISO_DATE_PATTERN = /^(\d{4})-(\d{2})-(\d{2})$/;
 
 export type IsoDate = string & { readonly __isoDate: unique symbol };
 
+export type IsoInstant = string & { readonly __isoInstant: unique symbol };
+
 /**
  * Returns whether a string is a real Gregorian calendar date in YYYY-MM-DD form.
  *
@@ -82,6 +84,30 @@ export function parseNullableDate(
   return value === null || value === undefined
     ? null
     : parseIsoDate(value, fieldName);
+}
+
+/**
+ * Parses a canonical UTC timestamp produced by `Date#toISOString`.
+ *
+ * @param value - Candidate timestamp or an explicit missing value.
+ * @param fieldName - Contract field name included in an error message.
+ * @returns The canonical UTC timestamp, or null when the value is missing.
+ */
+export function parseNullableIsoInstant(
+  value: string | null | undefined,
+  fieldName: string,
+): IsoInstant | null {
+  if (value === null || value === undefined) {
+    return null;
+  }
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime()) || parsed.toISOString() !== value) {
+    throw new BeautioError(
+      "INVALID_INPUT",
+      `${fieldName} must be a canonical UTC timestamp`,
+    );
+  }
+  return value as IsoInstant;
 }
 
 function daysInMonth(year: number, month: number): number {

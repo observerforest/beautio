@@ -32,6 +32,7 @@ export interface InventoryPageProps {
   readonly inventory: InventoryListOutput;
   readonly readError: string | null;
   readonly statusMessage: string | null;
+  readonly readOnly?: boolean;
   readonly onStatusMessage: (message: string | null) => void;
   readonly onDismissReadError: () => void;
   readonly onRefresh: (showLoading?: boolean) => Promise<boolean>;
@@ -43,6 +44,7 @@ const initialBrowseOptions: InventoryBrowseOptions = {
   view: "active",
   status: "opened",
   query: "",
+  brand: null,
   category: null,
   sort: "deadline-asc",
 };
@@ -59,6 +61,7 @@ export function InventoryPage({
   inventory,
   readError,
   statusMessage,
+  readOnly = false,
   onStatusMessage,
   onDismissReadError,
   onRefresh,
@@ -107,6 +110,19 @@ export function InventoryPage({
     editorItemFingerprint !== selectedItemFingerprint;
 
   useEffect(() => {
+    const selectedBrand = browseOptions.brand;
+    if (selectedBrand === null) return;
+    const canonicalBrand = projection.brandChoices.find(
+      (choice) => choice.toLowerCase() === selectedBrand.toLowerCase(),
+    );
+    if (canonicalBrand === undefined) {
+      setBrowseOptions((current) => ({ ...current, brand: null }));
+    } else if (canonicalBrand !== selectedBrand) {
+      setBrowseOptions((current) => ({ ...current, brand: canonicalBrand }));
+    }
+  }, [browseOptions.brand, projection.brandChoices]);
+
+  useEffect(() => {
     if (
       browseOptions.category !== null &&
       !projection.categoryChoices.includes(browseOptions.category)
@@ -142,6 +158,7 @@ export function InventoryPage({
       ...current,
       view,
       status: view === "active" ? "opened" : "all",
+      brand: null,
       category: null,
     }));
     setSelectedInventoryItemId(null);
@@ -173,7 +190,7 @@ export function InventoryPage({
   };
 
   const openEditor = (mode: Exclude<DialogMode, "detail">): void => {
-    if (selectedItem === null) return;
+    if (readOnly || selectedItem === null) return;
     setEditorItemFingerprint(inventoryItemFingerprint(selectedItem));
     setDialogMode(mode);
   };
@@ -197,6 +214,7 @@ export function InventoryPage({
     setBrowseOptions((current) => ({
       ...current,
       query: "",
+      brand: null,
       category: null,
       status: current.view === "active" ? "opened" : "all",
     }));
@@ -205,6 +223,7 @@ export function InventoryPage({
   const cardViews = inventoryCardViews(projection.items);
   const hasNonDefaultFilters =
     browseOptions.query.trim().length > 0 ||
+    browseOptions.brand !== null ||
     browseOptions.category !== null ||
     browseOptions.status !== (browseOptions.view === "active" ? "opened" : "all");
   const lock = (message = "管理页已锁定，密钥已从当前标签页内存清除。"): void => {
@@ -255,6 +274,7 @@ export function InventoryPage({
             queryInput={queryInput}
             finishedCount={finishedCount}
             discardedCount={discardedCount}
+            readOnly={readOnly}
             hasNonDefaultFilters={hasNonDefaultFilters}
             onQueryInput={setQueryInput}
             onBrowseOptions={setBrowseOptions}
@@ -266,7 +286,7 @@ export function InventoryPage({
         )}
       </div>
 
-      {mobilePage === "inventory" ? (
+      {mobilePage === "inventory" && !readOnly ? (
         <button type="button" disabled title="添加产品即将开放" className="fixed bottom-24 right-5 z-30 flex size-12 items-center justify-center rounded-full bg-[linear-gradient(135deg,#9B7F7C,#B3A0AD)] text-white opacity-45 shadow-[0_4px_18px_rgba(155,127,124,0.38)] md:hidden" aria-label="添加产品即将开放">
           <Icon name="plus" />
         </button>
@@ -311,6 +331,7 @@ export function InventoryPage({
           onReturn={returnToDetail}
           onCommitted={handleCommitted}
           onUnauthorized={lock}
+          readOnly={readOnly}
         />
       )}
     </div>
@@ -326,6 +347,7 @@ interface InventorySurfaceProps {
   readonly queryInput: string;
   readonly finishedCount: number;
   readonly discardedCount: number;
+  readonly readOnly: boolean;
   readonly hasNonDefaultFilters: boolean;
   readonly onQueryInput: (query: string) => void;
   readonly onBrowseOptions: React.Dispatch<React.SetStateAction<InventoryBrowseOptions>>;
@@ -343,6 +365,7 @@ function InventorySurface({
   queryInput,
   finishedCount,
   discardedCount,
+  readOnly,
   hasNonDefaultFilters,
   onQueryInput,
   onBrowseOptions,
@@ -356,16 +379,21 @@ function InventorySurface({
       <div className="hidden border-b border-[#E5D8CF] bg-white px-8 py-4 md:block">
         <BrowseToolbar
           query={queryInput}
+          brand={browseOptions.brand}
+          brands={projection.brandChoices}
           category={browseOptions.category}
           categories={projection.categoryChoices}
           sort={browseOptions.sort}
           onQueryChange={onQueryInput}
+          onBrandChange={(brand) => onBrowseOptions((current) => ({ ...current, brand }))}
           onCategoryChange={(category) => onBrowseOptions((current) => ({ ...current, category }))}
           onSortChange={(sort) => onBrowseOptions((current) => ({ ...current, sort }))}
         />
-        <button type="button" disabled title="添加产品即将开放" className="absolute right-8 top-4 hidden items-center gap-2 rounded-full bg-[linear-gradient(120deg,#9B7F7C,#B3A0AD)] px-5 py-2.5 text-sm text-white opacity-45 xl:flex">
-          <Icon name="plus" />添加产品
-        </button>
+        {readOnly ? null : (
+          <button type="button" disabled title="添加产品即将开放" className="absolute right-8 top-4 hidden items-center gap-2 rounded-full bg-[linear-gradient(120deg,#9B7F7C,#B3A0AD)] px-5 py-2.5 text-sm text-white opacity-45 xl:flex">
+            <Icon name="plus" />添加产品
+          </button>
+        )}
       </div>
 
       <div className="shrink-0 bg-[#F5F3F1] px-5 pb-2 pt-3 md:hidden">
@@ -380,9 +408,12 @@ function InventorySurface({
           />
         </div>
         <InventoryFilterControls
+          brand={browseOptions.brand}
+          brands={projection.brandChoices}
           category={browseOptions.category}
           categories={projection.categoryChoices}
           sort={browseOptions.sort}
+          onBrandChange={(brand) => onBrowseOptions((current) => ({ ...current, brand }))}
           onCategoryChange={(category) => onBrowseOptions((current) => ({ ...current, category }))}
           onSortChange={(sort) => onBrowseOptions((current) => ({ ...current, sort }))}
         />
@@ -400,6 +431,12 @@ function InventorySurface({
       </div>
 
       <div className="beautio-scrollbar min-h-0 flex-1 overflow-y-auto px-5 pb-32 pt-1 md:overflow-visible md:px-8 md:pb-0 md:pt-0">
+        {readOnly ? (
+          <div className="mb-4 flex items-center gap-2 rounded-2xl bg-[#EEF1F4] px-4 py-3 text-sm text-[#4A6272]" role="status">
+            <Icon name="info" className="size-4 shrink-0" />
+            <span>正在实时查看生产数据 · 本地只读，不会修改生产库存</span>
+          </div>
+        ) : null}
         {projection.items.length === 0 ? (
           <section className="flex flex-col items-center gap-3 py-20 text-center">
             <div className="flex size-14 items-center justify-center rounded-full bg-[#E5D8CF] text-[#9B7F7C]"><Icon name="search" /></div>
@@ -441,6 +478,7 @@ interface InventoryDialogProps {
   readonly onReturn: (message: string) => void;
   readonly onCommitted: (inventoryItemId: string, message: string) => Promise<boolean>;
   readonly onUnauthorized: (message: string) => void;
+  readonly readOnly: boolean;
 }
 
 function InventoryDialog({
@@ -454,7 +492,11 @@ function InventoryDialog({
   onReturn,
   onCommitted,
   onUnauthorized,
+  readOnly,
 }: InventoryDialogProps) {
+  if (readOnly && mode !== "detail") {
+    return null;
+  }
   if (mode === "edit-product") {
     if (item.product === null) return null;
     return (
@@ -498,6 +540,7 @@ function InventoryDialog({
       asOf={asOf}
       client={client}
       feedback={feedback}
+      readOnly={readOnly}
       onClose={onClose}
       onEditProduct={() => onMode("edit-product")}
       onEditBottle={() => onMode("edit-bottle")}

@@ -8,10 +8,13 @@ import {
   isIsoDateString,
   lifecycleStatuses,
   openedOnAccuracies,
+  productAliasMaximumLength,
   sharedNotesMaximumLength,
   usabilityStatuses,
 } from "@beautio/domain";
 import { z } from "zod";
+
+export { productAliasMaximumLength };
 
 const invalidInput = (message: string): string => `INVALID_INPUT: ${message}`;
 const BATCH_REF_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
@@ -204,6 +207,8 @@ export const productOutputSchema = z
   .object({
     product_id: z.string(),
     name: z.string(),
+    alias: z.string().max(productAliasMaximumLength).nullable().default(null),
+    brand: z.string().nullable().default(null),
     category: z.string().nullable(),
     size_label: z.string().nullable(),
     image_asset_id: z.string().nullable(),
@@ -228,6 +233,7 @@ export const getInventoryItemOutputSchema = inventoryStateOutputSchema
 
 export const inventoryListItemOutputSchema = inventoryStateOutputSchema
   .extend({
+    created_at: z.string().datetime({ offset: true }).nullable().default(null),
     product_id: z.string().nullable(),
     product: productOutputSchema.nullable(),
     product_inventory_position: z.number().int().positive().nullable(),
@@ -254,6 +260,8 @@ export const readInventoryProductOutputSchema = z
   .object({
     product_id: z.string(),
     name: z.string(),
+    alias: z.string().max(productAliasMaximumLength).nullable().default(null),
+    brand: z.string().nullable().default(null),
     category: z.string().nullable(),
     size_label: z.string().nullable(),
     ingredient_list_text: nullablePersistedTextSchema(
@@ -302,6 +310,8 @@ export const inventorySearchItemOutputSchema = z
     inventory_item_id: z.string(),
     product_id: z.string().nullable(),
     product_name: z.string().nullable(),
+    alias: z.string().max(productAliasMaximumLength).nullable().default(null),
+    brand: z.string().nullable().default(null),
     category: z.string().nullable(),
     size_label: z.string().nullable(),
     lifecycle_status: lifecycleStatusSchema,
@@ -332,6 +342,16 @@ const newProductInputSchema = z
   .object({
     batch_ref: batchRefSchema,
     name: productNameSchema,
+    alias: nullableTrimmedTextSchema("alias", productAliasMaximumLength)
+      .describe(
+        "A user-provided Product nickname or a commonly used online name that the user has confirmed. Use null when it is missing or uncertain; never guess.",
+      )
+      .optional(),
+    brand: nullableTrimmedTextSchema("brand", 100)
+      .describe(
+        "Confirmed Product brand read from the Product or its packaging. Use null when it is missing or uncertain; never guess.",
+      )
+      .optional(),
     category: nullableTrimmedTextSchema("category", 100).optional(),
     size_label: nullableTrimmedTextSchema("size_label", 100).optional(),
     image_asset_id: imageAssetIdSchema.nullable().optional(),
@@ -442,6 +462,8 @@ export const uploadProductImagesMcpInputSchema = z
 export const updateProductInputSchema = z
   .object({
     name: productNameSchema,
+    alias: nullableTrimmedTextSchema("alias", productAliasMaximumLength).optional(),
+    brand: nullableTrimmedTextSchema("brand", 100).optional(),
     category: nullableTrimmedTextSchema("category", 100),
     size_label: nullableTrimmedTextSchema("size_label", 100),
     image_asset_id: imageAssetIdSchema.nullable(),
@@ -522,6 +544,14 @@ export const localInventoryImportSchema = z
         .object({
           id: localImportIdentifierSchema,
           name: z.string().trim().min(1),
+          alias: z
+            .string()
+            .trim()
+            .min(1)
+            .max(productAliasMaximumLength)
+            .nullable()
+            .default(null),
+          brand: z.string().trim().min(1).nullable().default(null),
           category: z.string().trim().min(1).nullable().default(null),
           size_label: z.string().trim().min(1).nullable().default(null),
           image_ref: z.string().trim().min(1).nullable().default(null),
@@ -541,6 +571,11 @@ export const localInventoryImportSchema = z
         .object({
           id: localImportIdentifierSchema,
           product_id: localImportIdentifierSchema.nullable().default(null),
+          created_at: z
+            .string()
+            .datetime({ offset: true })
+            .nullable()
+            .default(null),
           lifecycle_status: lifecycleStatusSchema,
           opened_on: isoDateSchema.nullable().default(null),
           opened_on_accuracy: openedOnAccuracySchema.nullable().default(null),

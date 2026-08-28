@@ -11,6 +11,8 @@ import { useAdminInventorySession } from "../features/session/useAdminInventoryS
  */
 export function BeautioApp() {
   const session = useAdminInventorySession();
+  const productionObserve =
+    import.meta.env.VITE_BEAUTIO_RUNTIME_MODE === "production-observe";
   const [dialogOpen, setDialogOpen] = useState(false);
   const lastResumeRefreshAt = useRef(0);
 
@@ -45,6 +47,7 @@ export function BeautioApp() {
       <LoginPage
         busy={session.phase === "unlocking"}
         message={session.unlockMessage}
+        readOnly={productionObserve}
         onUnlock={session.unlock}
         onDismissMessage={session.dismissUnlockMessage}
       />
@@ -57,6 +60,7 @@ export function BeautioApp() {
       inventory={session.inventory}
       readError={session.readError}
       statusMessage={session.statusMessage}
+      readOnly={productionObserve}
       onStatusMessage={session.setStatusMessage}
       onDismissReadError={session.dismissReadError}
       onRefresh={session.refresh}

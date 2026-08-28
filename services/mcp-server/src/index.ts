@@ -23,13 +23,13 @@ export const recordProductOpenedDescription =
   "Record that an existing non-terminal inventory item was opened on an explicit YYYY-MM-DD date. This changes persisted lifecycle facts, calculates PAO and usable-until dates in the core domain, is idempotent only for the same item and date, rejects conflicting dates and terminal items, and never guesses dates, time zones, or missing inventory.";
 
 export const getInventoryItemDescription =
-  "Read one existing inventory item by ID, including its shared Product ingredient text and shared notes plus this bottle's custom notes, and derive usability for an explicit YYYY-MM-DD as_of date. This tool is read-only, never creates inventory, and never guesses a date or time zone.";
+  "Read one existing inventory item by ID, including its Product alias, shared Product ingredient text and shared notes plus this bottle's custom notes, and derive usability for an explicit YYYY-MM-DD as_of date. This tool is read-only, never creates inventory, and never guesses a date or time zone.";
 
 export const uploadProductImagesDescription =
   "Only after the user confirms the selected Product display images, upload 1-10 supported local files as private temporary Beautio assets. This write has side effects, keeps unlinked assets for 24 hours, rejects the whole upload if any image fails, never accepts receipts or unselected scans by default, and must not be silently retried when the result is unknown.";
 
 export const createInventoryBatchDescription =
-  "Only after the user confirms the structured draft, atomically create Products and one InventoryItem per physical bottle, or reference an existing Product ID. Product ingredient_list_text and shared_notes are shared by every bottle linked to that new Product; custom_notes belongs only to one physical bottle. If the intended note scope is unclear, ask the user before calling. This write has side effects, rejects the whole batch when any item or image link is invalid, never guesses missing facts or derived dates, and must not be silently retried when the result is unknown.";
+  "Only after the user confirms the structured draft, atomically create Products and one InventoryItem per physical bottle, or reference an existing Product ID. Product alias, brand, ingredient_list_text, and shared_notes are shared by every bottle linked to that new Product; custom_notes belongs only to one physical bottle. alias may contain a user-provided nickname or a commonly used online name the user has confirmed. Use null for a missing or uncertain alias or brand rather than guessing. If the intended note scope is unclear, ask the user before calling. This write has side effects, rejects the whole batch when any item or image link is invalid, never guesses missing facts or derived dates, and must not be silently retried when the result is unknown.";
 
 export interface BeautioMcpServerOptions {
   readonly uploadRoot: string;

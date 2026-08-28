@@ -26,10 +26,10 @@ export const searchInventoryToolName = "search_inventory";
 export const fetchInventoryItemToolName = "fetch_inventory_item";
 
 export const searchInventoryToolDescription =
-  "Search the user's private Beautio inventory by Product name, category, size, ingredient text, shared notes, or one bottle's custom notes. With no query, list inventory in stable order. Results are compact summaries. To read full ingredients or notes, pass a matched complete inventory_item_id to fetch_inventory_item; never invent an ID from a name. Images never expose bytes, IDs, or legacy references. Optional as_of adds date-relative status; without it derived_status is null and the server never assumes today.";
+  "Search the user's private Beautio inventory by Product name, alias, brand, category, size, ingredient text, shared notes, or one bottle's custom notes. With no query, list inventory in stable order. Results are compact summaries. To read full Product details, ingredients, or notes, pass a matched complete inventory_item_id to fetch_inventory_item; never invent an ID from a name or alias. Images never expose bytes, IDs, or legacy references. Optional as_of adds date-relative status; without it derived_status is null and the server never assumes today.";
 
 export const fetchInventoryItemToolDescription =
-  "Fetch one private Beautio inventory item by its opaque inventory_item_id, including full Product ingredient text and shared notes plus this bottle's custom notes. Only has_image is exposed for images. Optional as_of adds date-relative status; without it derived_status is null and the server never assumes today. This tool is read-only.";
+  "Fetch one private Beautio inventory item by its opaque inventory_item_id, including the Product alias, full ingredient text and shared notes plus this bottle's custom notes. Only has_image is exposed for images. Optional as_of adds date-relative status; without it derived_status is null and the server never assumes today. This tool is read-only.";
 
 export interface ReadOnlyMcpRouteOptions {
   readonly publicOrigin: string;

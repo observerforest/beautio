@@ -3,6 +3,7 @@ import { BeautioError } from "./errors.ts";
 export const ingredientListTextMaximumLength = 5_000;
 export const sharedNotesMaximumLength = 1_000;
 export const customNotesMaximumLength = 1_000;
+export const productAliasMaximumLength = 10;
 
 /**
  * Reports whether free-form persisted text can be represented consistently by

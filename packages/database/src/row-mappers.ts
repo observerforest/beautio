@@ -13,6 +13,7 @@ import {
 export interface InventoryRow {
   readonly id: string;
   readonly product_id: string | null;
+  readonly created_at: string | null;
   readonly lifecycle_status: LifecycleStatus;
   readonly opened_on: string | null;
   readonly opened_on_accuracy: OpenedOnAccuracy | null;
@@ -26,6 +27,8 @@ export interface InventoryRow {
 export interface ProductRow {
   readonly id: string;
   readonly name: string;
+  readonly alias: string | null;
+  readonly brand: string | null;
   readonly category: string | null;
   readonly size_label: string | null;
   readonly image_asset_id: string | null;
@@ -49,6 +52,7 @@ export function mapInventoryRow(row: InventoryRow): InventoryItem {
   return createInventoryItem({
     id: row.id,
     productId: row.product_id,
+    createdAt: row.created_at,
     lifecycleStatus: row.lifecycle_status,
     openedOn: row.opened_on,
     openedOnAccuracy: row.opened_on_accuracy,
@@ -64,6 +68,8 @@ export function mapProductRow(row: ProductRow): Product {
   return createProduct({
     id: row.id,
     name: row.name,
+    alias: row.alias,
+    brand: row.brand,
     category: row.category,
     sizeLabel: row.size_label,
     imageAssetId: row.image_asset_id,

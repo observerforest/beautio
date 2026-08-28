@@ -5,6 +5,7 @@ import { Toast, ToastViewport } from "../../components/Toast.tsx";
 export interface LoginPageProps {
   readonly busy: boolean;
   readonly message: string;
+  readonly readOnly?: boolean;
   readonly onUnlock: (token: string) => Promise<boolean>;
   readonly onDismissMessage: () => void;
 }
@@ -19,6 +20,7 @@ export interface LoginPageProps {
 export function LoginPage({
   busy,
   message,
+  readOnly = false,
   onUnlock,
   onDismissMessage,
 }: LoginPageProps) {
@@ -58,6 +60,12 @@ export function LoginPage({
           关于你，也关于时间
         </p>
 
+        {readOnly ? (
+          <div className="mb-6 rounded-2xl bg-[#EEF1F4] px-4 py-3 text-xs leading-relaxed text-[#4A6272]">
+            生产数据只读观察 · 请输入本机只读密钥。生产管理密钥不会进入浏览器。
+          </div>
+        ) : null}
+
         <form onSubmit={handleSubmit} noValidate>
           <div className="mb-6 border-b border-[#E5D8CF] opacity-45">
             <label htmlFor="account-placeholder" className="mb-2 block text-[10px] tracking-[0.14em] text-[#9B7F7C]">
@@ -74,7 +82,7 @@ export function LoginPage({
 
           <div className="mb-3 border-b border-[#E5D8CF]">
             <label htmlFor="admin-token" className="mb-2 block text-[10px] tracking-[0.14em] text-[#9B7F7C]">
-              管理密钥
+              {readOnly ? "本机只读密钥" : "管理密钥"}
             </label>
             <div className="flex items-center">
               <input
@@ -87,7 +95,9 @@ export function LoginPage({
                 autoCapitalize="off"
                 spellCheck={false}
                 disabled={busy}
-                placeholder="输入当前实例的管理密钥"
+                placeholder={
+                  readOnly ? "输入本机只读密钥" : "输入当前实例的管理密钥"
+                }
                 className="min-w-0 flex-1 bg-transparent pb-3 text-sm font-light text-[#5A4C4A] outline-none placeholder:text-stone-300 disabled:opacity-50"
               />
               <button

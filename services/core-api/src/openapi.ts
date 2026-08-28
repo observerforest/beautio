@@ -1,3 +1,5 @@
+import { productAliasMaximumLength } from "@beautio/domain";
+
 const imageAssetSchema = {
   type: "object",
   additionalProperties: false,
@@ -72,9 +74,9 @@ export const beautioActionsOpenApiV1 = {
   openapi: "3.1.0",
   info: {
     title: "Beautio confirmed inventory actions",
-    version: "1.1.0",
+    version: "1.3.0",
     description:
-      "Private actions for uploading user-confirmed product images and atomically creating confirmed inventory with optional confirmed Product ingredient text, shared Product notes, and per-bottle custom notes. Draft recognition never writes by itself.",
+      "Private actions for uploading user-confirmed product images and atomically creating confirmed inventory with an optional confirmed Product alias and brand, ingredient text, shared Product notes, and per-bottle custom notes. Draft recognition never writes by itself.",
   },
   paths: {
     "/api/actions/upload-product-images": {
@@ -132,7 +134,7 @@ export const beautioActionsOpenApiV1 = {
         operationId: "create_inventory_batch",
         summary: "Create a confirmed inventory batch",
         description:
-          "Atomically creates confirmed Products and one InventoryItem per physical bottle. ingredient_list_text and shared_notes are shared Product fields; custom_notes belongs to one bottle. If note scope is unclear, ask before calling. Never guess missing fields or retry when a write result is unknown.",
+          "Atomically creates Products and one InventoryItem per bottle. alias and shared_notes are shared Product fields; custom_notes belongs to one bottle. Use only a user-provided or confirmed alias; never guess. Ask before calling if note scope is unclear. Never retry when a write result is unknown.",
         "x-openai-isConsequential": true,
         security: [{ bearerAuth: [] }],
         requestBody: {
@@ -219,6 +221,16 @@ function createBatchInputSchema(): Record<string, unknown> {
           properties: {
             batch_ref: referenceSchema(),
             name: { type: "string", minLength: 1, maxLength: 200 },
+            alias: {
+              ...nullableText(productAliasMaximumLength),
+              description:
+                "Optional user-provided Product nickname or commonly used online name that the user has confirmed. Use null when it is missing or uncertain; never guess or rely on an unverified lookup.",
+            },
+            brand: {
+              ...nullableText(100),
+              description:
+                "Optional confirmed brand shown on the Product or packaging. Use null when the brand is missing or uncertain; never infer one from an unrelated image.",
+            },
             category: nullableText(100),
             size_label: nullableText(100),
             image_asset_id: nullableString(),
@@ -298,6 +310,8 @@ function createBatchOutputSchema(): Record<string, unknown> {
             "batch_ref",
             "product_id",
             "name",
+            "alias",
+            "brand",
             "category",
             "size_label",
             "image_asset_id",
@@ -309,6 +323,8 @@ function createBatchOutputSchema(): Record<string, unknown> {
             batch_ref: { type: "string" },
             product_id: { type: "string" },
             name: { type: "string" },
+            alias: nullableString(),
+            brand: nullableString(),
             category: nullableString(),
             size_label: nullableString(),
             image_asset_id: nullableString(),

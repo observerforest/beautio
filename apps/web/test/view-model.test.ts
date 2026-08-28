@@ -49,6 +49,8 @@ test("one inventory item always produces one card with shared product facts", ()
   const product = {
     product_id: "shared-product",
     name: "Example serum",
+    alias: "Cloud Drop",
+    brand: "Beautio",
     category: "serum",
     size_label: "30 ml",
     image_asset_id: null,
@@ -155,6 +157,8 @@ test("managed images and date accuracy remain explicit in the view model", () =>
     product: {
       product_id: "product-one",
       name: "Example",
+      alias: null,
+      brand: null,
       category: null,
       size_label: null,
       image_asset_id: "asset-one",
@@ -222,28 +226,28 @@ test("inventory browsing separates active and terminal archive states with sourc
       lifecycle_status: "opened",
       usability_status: "usable",
       product_id: "product-opened",
-      product: createProduct("product-opened", { category: "精华" }),
+      product: createProduct("product-opened", { brand: "Alpha", category: "精华" }),
     }),
     createItem({
       inventory_item_id: "unopened",
       lifecycle_status: "unopened",
       usability_status: "unknown",
       product_id: "product-unopened",
-      product: createProduct("product-unopened", { category: "面霜" }),
+      product: createProduct("product-unopened", { brand: "Beta", category: "面霜" }),
     }),
     createItem({
       inventory_item_id: "finished",
       lifecycle_status: "finished",
       usability_status: "usable",
       product_id: "product-finished",
-      product: createProduct("product-finished", { category: "洁面" }),
+      product: createProduct("product-finished", { brand: "Gamma", category: "洁面" }),
     }),
     createItem({
       inventory_item_id: "discarded",
       lifecycle_status: "discarded",
       usability_status: "expired",
       product_id: "product-discarded",
-      product: createProduct("product-discarded", { category: "面膜" }),
+      product: createProduct("product-discarded", { brand: "Delta", category: "面膜" }),
     }),
   ] as const;
 
@@ -251,6 +255,7 @@ test("inventory browsing separates active and terminal archive states with sourc
   const archive = browse(items, { view: "archive", status: "opened" });
 
   assert.deepEqual(itemIds(active.items), ["opened", "unopened"]);
+  assert.deepEqual(active.brandChoices, ["Alpha", "Beta"]);
   assert.deepEqual(active.categoryChoices, ["精华", "面霜"]);
   assert.deepEqual(active.counts, {
     total: 4,
@@ -261,6 +266,7 @@ test("inventory browsing separates active and terminal archive states with sourc
     attention: 1,
   });
   assert.deepEqual(itemIds(archive.items), ["discarded", "finished"]);
+  assert.deepEqual(archive.brandChoices, ["Delta", "Gamma"]);
   assert.deepEqual(archive.categoryChoices, ["洁面", "面膜"]);
 });
 
@@ -312,6 +318,8 @@ test("inventory query is a lowercase substring over only existing searchable fac
       product_id: "product-alpha",
       product: createProduct("product-alpha", {
         name: "Cloud Serum",
+        alias: "Cloud Jar",
+        brand: "Cloud Lab",
         category: "Essence",
         size_label: "30 ML",
         shared_notes: "Night Routine",
@@ -330,6 +338,8 @@ test("inventory query is a lowercase substring over only existing searchable fac
 
   for (const query of [
     "cloud",
+    "cloud jar",
+    "lab",
     "ESSEN",
     "30 m",
     "alpha-4",
@@ -343,6 +353,36 @@ test("inventory query is a lowercase substring over only existing searchable fac
   }
   assert.deepEqual(itemIds(browse(items, { query: "expired" }).items), []);
   assert.deepEqual(itemIds(browse(items, { query: "2026-12" }).items), []);
+});
+
+test("brand filtering uses real view choices and matches casing variants together", () => {
+  const items = [
+    createItem({
+      inventory_item_id: "laneige-upper",
+      product_id: "product-laneige-upper",
+      product: createProduct("product-laneige-upper", { brand: "LANEIGE" }),
+    }),
+    createItem({
+      inventory_item_id: "laneige-lower",
+      product_id: "product-laneige-lower",
+      product: createProduct("product-laneige-lower", { brand: "laneige" }),
+    }),
+    createItem({
+      inventory_item_id: "olay",
+      product_id: "product-olay",
+      product: createProduct("product-olay", { brand: "OLAY" }),
+    }),
+    createItem({
+      inventory_item_id: "missing-brand",
+      product_id: "product-missing-brand",
+      product: createProduct("product-missing-brand", { brand: null }),
+    }),
+  ] as const;
+
+  const result = browse(items, { brand: "LANEIGE" });
+
+  assert.deepEqual(result.brandChoices, ["LANEIGE", "OLAY"]);
+  assert.deepEqual(itemIds(result.items), ["laneige-lower", "laneige-upper"]);
 });
 
 test("category filtering uses choices from the selected lifecycle view", () => {
@@ -375,10 +415,11 @@ test("category filtering uses choices from the selected lifecycle view", () => {
   assert.deepEqual(itemIds(result.items), ["serum-a", "serum-b"]);
 });
 
-test("deadline and name sorts put missing values last and use inventory ID ties", () => {
+test("deadline and recent-added sorts put missing values last and use inventory ID ties", () => {
   const items = [
     createItem({
       inventory_item_id: "same-date-z",
+      created_at: "2026-08-20T00:00:00.000Z",
       usable_until: "2027-01-01",
       product_id: "product-same-date-z",
       product: createProduct("product-same-date-z", { name: "Alpha" }),
@@ -390,12 +431,14 @@ test("deadline and name sorts put missing values last and use inventory ID ties"
     }),
     createItem({
       inventory_item_id: "earliest",
+      created_at: "2026-08-18T00:00:00.000Z",
       usable_until: "2026-12-31",
       product_id: "product-earliest",
       product: createProduct("product-earliest", { name: "beta" }),
     }),
     createItem({
       inventory_item_id: "same-date-a",
+      created_at: "2026-08-20T00:00:00.000Z",
       usable_until: "2027-01-01",
       product_id: "product-same-date-a",
       product: createProduct("product-same-date-a", { name: "Alpha" }),
@@ -407,7 +450,7 @@ test("deadline and name sorts put missing values last and use inventory ID ties"
     itemIds(browse(items, { sort: "deadline-asc" }).items),
     ["earliest", "same-date-a", "same-date-z", "missing"],
   );
-  assert.deepEqual(itemIds(browse(items, { sort: "name-asc" }).items), [
+  assert.deepEqual(itemIds(browse(items, { sort: "created-desc" }).items), [
     "same-date-a",
     "same-date-z",
     "earliest",
@@ -457,8 +500,9 @@ function browse(
     view: "active",
     status: "all",
     query: "",
+    brand: null,
     category: null,
-    sort: "name-asc",
+    sort: "created-desc",
     ...overrides,
   });
 }
@@ -474,6 +518,8 @@ function createProduct(
   return {
     product_id: productId,
     name: "Example",
+    alias: null,
+    brand: null,
     category: null,
     size_label: null,
     image_asset_id: null,
@@ -489,6 +535,7 @@ function createItem(
 ): InventoryListItemOutput {
   return inventoryListItemOutputSchema.parse({
     inventory_item_id: "inventory-test",
+    created_at: null,
     lifecycle_status: "unopened",
     opened_on: null,
     opened_on_accuracy: null,

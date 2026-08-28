@@ -12,10 +12,13 @@ const inventoryBody = {
   items: [
     {
       inventory_item_id: "inventory-one",
+      created_at: "2026-08-19T00:00:00.000Z",
       product_id: "product-one",
       product: {
         product_id: "product-one",
         name: "Example serum",
+        alias: "Cloud Drop",
+        brand: "Example Brand",
         category: null,
         size_label: "30 ml",
         image_asset_id: "asset-one",
@@ -80,6 +83,7 @@ test("inventory reads use the in-memory Admin Bearer token", async () => {
   const result = await client.readInventory("2026-08-19");
 
   assert.equal(result.items[0]?.opened_on_accuracy, "estimated");
+  assert.equal(result.items[0]?.created_at, "2026-08-19T00:00:00.000Z");
   assert.equal(calls.length, 1);
   assert.equal(calls[0]?.path, "/api/inventory?as_of=2026-08-19");
   assert.equal(
@@ -99,6 +103,8 @@ test("Product, InventoryItem facts, and custom notes use isolated frozen bodies"
         product: {
           product_id: "product/one",
           name: "Updated",
+          alias: "Cloud Jar",
+          brand: "Beautio",
           category: null,
           size_label: "50 ml",
           image_asset_id: null,
@@ -137,6 +143,8 @@ test("Product, InventoryItem facts, and custom notes use isolated frozen bodies"
 
   await client.updateProduct("product/one", {
     name: "Updated",
+    alias: "  Cloud Jar  ",
+    brand: "  Beautio  ",
     category: null,
     size_label: "50 ml",
     image_asset_id: null,
@@ -160,6 +168,8 @@ test("Product, InventoryItem facts, and custom notes use isolated frozen bodies"
   assert.equal(calls[0]?.init.method, "PUT");
   assert.deepEqual(JSON.parse(String(calls[0]?.init.body)), {
     name: "Updated",
+    alias: "Cloud Jar",
+    brand: "Beautio",
     category: null,
     size_label: "50 ml",
     image_asset_id: null,
@@ -201,6 +211,29 @@ test("Product, InventoryItem facts, and custom notes use isolated frozen bodies"
         "Bearer admin-secret",
     ),
   );
+  client.destroy();
+});
+
+test("an oversized Product alias is rejected before any browser request", async () => {
+  const calls: Array<{ readonly path: string; readonly init: RequestInit }> = [];
+  const client = new AdminApiClient("admin-secret", async (input, init = {}) => {
+    calls.push({ path: String(input), init });
+    return jsonResponse({});
+  });
+
+  await assert.rejects(
+    client.updateProduct("product-one", {
+      name: "Serum",
+      alias: "紫".repeat(11),
+      category: null,
+      size_label: null,
+      image_asset_id: null,
+      ingredient_list_text: null,
+      shared_notes: null,
+    }),
+    /INVALID_INPUT: alias must be at most 10 characters/,
+  );
+  assert.equal(calls.length, 0);
   client.destroy();
 });
 

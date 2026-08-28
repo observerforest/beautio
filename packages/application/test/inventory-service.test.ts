@@ -70,6 +70,8 @@ class RecordingInventoryRepository implements InventoryRepository {
     const updated = createProduct({
       id: existing.id,
       name: input.name,
+      alias: input.alias === undefined ? existing.alias : input.alias,
+      brand: input.brand === undefined ? existing.brand : input.brand,
       category: input.category,
       sizeLabel: input.sizeLabel,
       imageAssetId: input.imageAssetId,
@@ -379,6 +381,7 @@ test("inventory list is read-only and derives status for the explicit date", asy
     items: [
       {
         inventory_item_id: "inventory-visible",
+        created_at: null,
         lifecycle_status: "opened",
         opened_on: "2026-08-18",
         opened_on_accuracy: "legacy_unknown",
@@ -403,6 +406,7 @@ test("inventory list keeps bottles separate while sharing product facts", async 
   const product = createProduct({
     id: "product-shared",
     name: "Shared serum",
+    brand: "Beautio Lab",
     category: "serum",
     sizeLabel: "30 ml",
     imageRef: "/fixtures/shared-serum.webp",
@@ -523,6 +527,8 @@ test("BD-DATA-005 search matches every frozen literal field without returning lo
   const product = createProduct({
     id: "product-id-key",
     name: "ProductNameKey",
+    alias: "AliasKey",
+    brand: "BrandKey",
     category: "CategoryKey",
     sizeLabel: "SizeKey",
     imageAssetId: "managed-image",
@@ -552,6 +558,8 @@ test("BD-DATA-005 search matches every frozen literal field without returning lo
     "INVENTORY-ID-KEY",
     "PRODUCT-ID-KEY",
     "PRODUCTNAMEKEY",
+    "ALIASKEY",
+    "BRANDKEY",
     "CATEGORYKEY",
     "SIZEKEY",
     "INGREDIENTKEY",
@@ -576,6 +584,8 @@ test("BD-DATA-005 search matches every frozen literal field without returning lo
         inventory_item_id: "inventory-id-key",
         product_id: "product-id-key",
         product_name: "ProductNameKey",
+        alias: "AliasKey",
+        brand: "BrandKey",
         category: "CategoryKey",
         size_label: "SizeKey",
         lifecycle_status: "opened",
@@ -672,6 +682,8 @@ test("BD-DATA-005 fetch returns complete private facts without implicit status o
   const product = createProduct({
     id: "product-fetchable",
     name: "Fetchable serum",
+    alias: "Purple Jar",
+    brand: "Beautio Lab",
     category: "serum",
     sizeLabel: "15 ml",
     imageAssetId: "managed-image",
@@ -705,6 +717,8 @@ test("BD-DATA-005 fetch returns complete private facts without implicit status o
       product: {
         product_id: "product-fetchable",
         name: "Fetchable serum",
+        alias: "Purple Jar",
+        brand: "Beautio Lab",
         category: "serum",
         size_label: "15 ml",
         ingredient_list_text: "Water, Glycerin",
@@ -963,6 +977,8 @@ test("BD-DATA-004 Product update replaces normalized shared text", async () => {
 
   const result = await service.updateProduct(product.id, {
     name: "Serum",
+    alias: "  Purple Jar  ",
+    brand: "  Beautio Lab  ",
     category: null,
     size_label: null,
     image_asset_id: null,
@@ -971,11 +987,15 @@ test("BD-DATA-004 Product update replaces normalized shared text", async () => {
   });
 
   assert.equal(result.product.ingredient_list_text, "Water,\nGlycerin");
+  assert.equal(result.product.alias, "Purple Jar");
+  assert.equal(result.product.brand, "Beautio Lab");
   assert.equal(result.product.shared_notes, null);
   assert.equal(result.product.image_ref, "legacy-audit");
   assert.deepEqual(repository.updateProductFactsCalls[0], {
     productId: product.id,
     name: "Serum",
+    alias: "Purple Jar",
+    brand: "Beautio Lab",
     category: null,
     sizeLabel: null,
     imageAssetId: null,
@@ -984,6 +1004,92 @@ test("BD-DATA-004 Product update replaces normalized shared text", async () => {
     now: "2026-08-20T00:00:00.000Z",
     unlinkedExpiresAt: "2026-08-21T00:00:00.000Z",
   });
+});
+
+test("Product update preserves an existing brand when a legacy client omits it", async () => {
+  const product = createProduct({
+    id: "product-preserve-brand",
+    name: "Serum",
+    brand: "Existing Brand",
+  });
+  const repository = new RecordingInventoryRepository(null, [product]);
+  const service = new InventoryApplicationService(repository, {
+    clock: () => new Date("2026-08-20T00:00:00.000Z"),
+  });
+
+  const result = await service.updateProduct(product.id, {
+    name: "Renamed Serum",
+    category: null,
+    size_label: null,
+    image_asset_id: null,
+    ingredient_list_text: null,
+    shared_notes: null,
+  });
+
+  assert.equal(result.product.brand, "Existing Brand");
+  assert.equal(repository.updateProductFactsCalls[0]?.brand, undefined);
+});
+
+test("Product update reports the ten-character alias limit before persistence", async () => {
+  const product = createProduct({ id: "product-alias-limit", name: "Serum" });
+  const repository = new RecordingInventoryRepository(null, [product]);
+  const service = new InventoryApplicationService(repository);
+
+  await assert.rejects(
+    service.updateProduct(product.id, {
+      name: "Serum",
+      alias: "紫".repeat(11),
+      category: null,
+      size_label: null,
+      image_asset_id: null,
+      ingredient_list_text: null,
+      shared_notes: null,
+    }),
+    (error: unknown) => {
+      assert.ok(error instanceof BeautioError);
+      assert.equal(error.code, "INVALID_INPUT");
+      assert.equal(error.message, "alias must be at most 10 characters");
+      return true;
+    },
+  );
+
+  assert.equal(repository.updateProductFactsCalls.length, 0);
+  assert.deepEqual(await repository.findProductById(product.id), product);
+});
+
+test("Product update preserves an existing alias when a legacy client omits it and clears only on null", async () => {
+  const product = createProduct({
+    id: "product-preserve-alias",
+    name: "Serum",
+    alias: "Purple Jar",
+  });
+  const repository = new RecordingInventoryRepository(null, [product]);
+  const service = new InventoryApplicationService(repository, {
+    clock: () => new Date("2026-08-20T00:00:00.000Z"),
+  });
+
+  const preserved = await service.updateProduct(product.id, {
+    name: "Renamed Serum",
+    category: null,
+    size_label: null,
+    image_asset_id: null,
+    ingredient_list_text: null,
+    shared_notes: null,
+  });
+  assert.equal(preserved.product.alias, "Purple Jar");
+  assert.equal(repository.updateProductFactsCalls[0]?.alias, undefined);
+
+  const cleared = await service.updateProduct(product.id, {
+    name: "Renamed Serum",
+    alias: null,
+    category: null,
+    size_label: null,
+    image_asset_id: null,
+    ingredient_list_text: null,
+    shared_notes: null,
+  });
+  assert.equal(cleared.product.alias, null);
+  assert.equal(repository.updateProductFactsCalls[1]?.alias, null);
 });
 
 test("BD-DATA-004 oversized Product text leaves existing shared facts unchanged", async () => {
@@ -999,6 +1105,7 @@ test("BD-DATA-004 oversized Product text leaves existing shared facts unchanged"
   await assert.rejects(
     service.updateProduct(product.id, {
       name: "Changed name must not persist",
+      brand: null,
       category: null,
       size_label: null,
       image_asset_id: null,
@@ -1047,6 +1154,8 @@ test("setting a Product display image validates, timestamps, delegates, and retu
     product: {
       product_id: "product-shared",
       name: "Shared serum",
+      alias: null,
+      brand: null,
       category: "serum",
       size_label: "30 ml",
       image_asset_id: "image-asset-new",
@@ -1162,6 +1271,8 @@ test("rendition deletion failure keeps cleanup metadata for a later retry", asyn
 function productOutput(product: Product): {
   readonly product_id: string;
   readonly name: string;
+  readonly alias: string | null;
+  readonly brand: string | null;
   readonly category: string | null;
   readonly size_label: string | null;
   readonly image_asset_id: string | null;
@@ -1172,6 +1283,8 @@ function productOutput(product: Product): {
   return {
     product_id: product.id,
     name: product.name,
+    alias: product.alias,
+    brand: product.brand,
     category: product.category,
     size_label: product.sizeLabel,
     image_asset_id: product.imageAssetId,

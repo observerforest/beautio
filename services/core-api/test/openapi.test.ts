@@ -6,7 +6,7 @@ import {
 } from "../src/openapi.ts";
 
 test("Action OpenAPI exposes only the two consequential business writes", () => {
-  assert.equal(beautioActionsOpenApiV1.info.version, "1.1.0");
+  assert.equal(beautioActionsOpenApiV1.info.version, "1.3.0");
   assert.deepEqual(Object.keys(beautioActionsOpenApiV1.paths), [
     "/api/actions/upload-product-images",
     "/api/actions/create-inventory-batch",
@@ -39,6 +39,11 @@ test("Action batch schema distinguishes shared Product text from per-bottle note
   const inventoryItem = input.properties.inventory_items.items;
 
   assert.equal(product.additionalProperties, false);
+  assert.equal(product.properties.alias.anyOf[0]?.maxLength, 10);
+  assert.match(product.properties.alias.description, /confirmed/i);
+  assert.match(product.properties.alias.description, /never guess/i);
+  assert.equal(product.properties.brand.anyOf[0]?.maxLength, 100);
+  assert.match(product.properties.brand.description, /null.*uncertain/i);
   assert.equal(
     product.properties.ingredient_list_text.anyOf[0]?.maxLength,
     5000,
@@ -61,6 +66,8 @@ test("Action batch schema distinguishes shared Product text from per-bottle note
   const outputProduct = output.properties.products.items;
   const outputInventoryItem = output.properties.inventory_items.items;
   assert.ok(outputProduct.required.includes("ingredient_list_text"));
+  assert.ok(outputProduct.required.includes("alias"));
+  assert.ok(outputProduct.required.includes("brand"));
   assert.ok(outputProduct.required.includes("shared_notes"));
   assert.ok(outputInventoryItem.required.includes("custom_notes"));
 });
@@ -76,6 +83,14 @@ interface BatchInputSchemaView {
       readonly items: {
         readonly additionalProperties: false;
         readonly properties: {
+          readonly alias: {
+            readonly description: string;
+            readonly anyOf: readonly [{ readonly maxLength: number }, unknown];
+          };
+          readonly brand: {
+            readonly description: string;
+            readonly anyOf: readonly [{ readonly maxLength: number }, unknown];
+          };
           readonly ingredient_list_text: TextPropertySchemaView;
           readonly shared_notes: TextPropertySchemaView;
         };

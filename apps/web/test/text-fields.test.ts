@@ -15,5 +15,6 @@ test("optional editor text trims only the edges and clears whitespace", () => {
 
 test("character counters use the browser string length and require a limit", () => {
   assert.equal(textCharacterCountLabel("第一行\nsecond", 1_000), "10 / 1000");
+  assert.equal(textCharacterCountLabel("紫".repeat(11), 10), "11 / 10");
   assert.throws(() => textCharacterCountLabel("value", 0), RangeError);
 });

@@ -115,6 +115,7 @@ test("SQLite migrates a legacy inventory database without changing its row", asy
   assert.deepEqual(item, {
     id: "legacy-bottle",
     productId: null,
+    createdAt: null,
     lifecycleStatus: "opened",
     openedOn: "2026-08-18",
     openedOnAccuracy: "legacy_unknown",
@@ -176,6 +177,8 @@ test("SQLite adds a nullable image reference to an existing Product table", asyn
   assert.deepEqual(await repository.findProductById("legacy-product"), {
     id: "legacy-product",
     name: "Legacy product",
+    alias: null,
+    brand: null,
     category: "serum",
     sizeLabel: "30 ml",
     imageAssetId: null,
@@ -242,6 +245,8 @@ test("BD-DATA-002 migrates the 4ef93b5 schema without changing legacy image_ref"
   assert.deepEqual(await repository.findProductById("baseline-product"), {
     id: "baseline-product",
     name: "Baseline serum",
+    alias: null,
+    brand: null,
     category: "serum",
     sizeLabel: "30 ml",
     imageAssetId: null,
@@ -334,6 +339,8 @@ test("BD-DATA-004 migrates managed-image production shape without changing assoc
   assert.deepEqual(await migrated.findProductById("managed-product"), {
     id: "managed-product",
     name: "Managed serum",
+    alias: null,
+    brand: null,
     category: null,
     sizeLabel: "30 ml",
     imageAssetId: "managed-asset",
@@ -345,13 +352,19 @@ test("BD-DATA-004 migrates managed-image production shape without changing assoc
     (await migrated.findImageAssetById("managed-asset"))?.productId,
     "managed-product",
   );
-  assert.equal((await migrated.findById("managed-bottle"))?.customNotes, null);
+  const migratedBottle = await migrated.findById("managed-bottle");
+  assert.equal(migratedBottle?.customNotes, null);
+  assert.equal(migratedBottle?.createdAt, "2026-08-20T00:00:00.000Z");
   migrated.close();
 
   const reopened = new SqliteInventoryRepository(databasePath);
   assert.equal(
     (await reopened.findProductById("managed-product"))?.imageAssetId,
     "managed-asset",
+  );
+  assert.equal(
+    (await reopened.findById("managed-bottle"))?.createdAt,
+    "2026-08-20T00:00:00.000Z",
   );
   reopened.close();
 });
@@ -453,6 +466,7 @@ test("BD-DATA-002 inventory fact update and readback are one repository transact
   await repository.seedInventoryItem(
     createInventoryItem({
       id: "concurrent-update",
+      createdAt: "2026-08-19T00:00:00.000Z",
       lifecycleStatus: "unopened",
     }),
   );
@@ -474,7 +488,13 @@ test("BD-DATA-002 inventory fact update and readback are one repository transact
 
   assert.equal(firstResult.expiresOn, "2027-01-01");
   assert.equal(secondResult.expiresOn, "2028-02-02");
+  assert.equal(firstResult.createdAt, "2026-08-19T00:00:00.000Z");
+  assert.equal(secondResult.createdAt, "2026-08-19T00:00:00.000Z");
   assert.equal((await repository.findById("concurrent-update"))?.expiresOn, "2028-02-02");
+  assert.equal(
+    (await repository.findById("concurrent-update"))?.createdAt,
+    "2026-08-19T00:00:00.000Z",
+  );
   repository.close();
 });
 
@@ -627,7 +647,14 @@ test("BD-DATA-002 creates a minimal Product and separate bottles, then survives 
 
   const result = await service.createInventoryBatch({
     as_of: "2026-08-19",
-    products: [{ batch_ref: "product_1", name: "Example serum" }],
+    products: [
+      {
+        batch_ref: "product_1",
+        name: "Example serum",
+        alias: "Purple Jar",
+        brand: "Beautio Lab",
+      },
+    ],
     inventory_items: [
       {
         batch_ref: "bottle_1",
@@ -646,6 +673,8 @@ test("BD-DATA-002 creates a minimal Product and separate bottles, then survives 
   });
 
   assert.equal(result.products.length, 1);
+  assert.equal(result.products[0]?.alias, "Purple Jar");
+  assert.equal(result.products[0]?.brand, "Beautio Lab");
   assert.equal(result.products[0]?.category, null);
   assert.equal(result.products[0]?.size_label, null);
   assert.equal(result.products[0]?.image_asset_id, null);
@@ -666,13 +695,48 @@ test("BD-DATA-002 creates a minimal Product and separate bottles, then survives 
   repository.close();
 
   const reopened = new SqliteInventoryRepository(databasePath);
-  const readback = await new InventoryApplicationService(reopened).listInventory({
+  const reopenedService = new InventoryApplicationService(reopened);
+  const readback = await reopenedService.listInventory({
     as_of: "2026-08-19",
   });
   assert.equal(readback.items.length, 2);
   assert.equal(readback.items[0]?.product?.name, "Example serum");
+  assert.equal(readback.items[0]?.product?.alias, "Purple Jar");
+  assert.equal(readback.items[0]?.product?.brand, "Beautio Lab");
   assert.equal(readback.items[0]?.product_inventory_count, 2);
   assert.equal(readback.items[0]?.opened_on_accuracy, "estimated");
+  assert.deepEqual(
+    readback.items.map((item) => item.created_at),
+    ["2026-08-19T00:00:00.000Z", "2026-08-19T00:00:00.000Z"],
+  );
+  const legacyUpdate = await reopenedService.updateProduct(
+    result.products[0]?.product_id ?? "",
+    {
+      name: "Example serum renamed",
+      category: null,
+      size_label: null,
+      image_asset_id: null,
+      ingredient_list_text: null,
+      shared_notes: null,
+    },
+  );
+  assert.equal(legacyUpdate.product.alias, "Purple Jar");
+  assert.equal(legacyUpdate.product.brand, "Beautio Lab");
+  const explicitClear = await reopenedService.updateProduct(
+    result.products[0]?.product_id ?? "",
+    {
+      name: "Example serum renamed",
+      alias: null,
+      brand: null,
+      category: null,
+      size_label: null,
+      image_asset_id: null,
+      ingredient_list_text: null,
+      shared_notes: null,
+    },
+  );
+  assert.equal(explicitClear.product.alias, null);
+  assert.equal(explicitClear.product.brand, null);
   reopened.close();
 });
 
@@ -856,6 +920,8 @@ test("BD-DATA-004 custom notes update preserves terminal facts and sibling notes
 
   await service.updateProduct(product.id, {
     name: product.name,
+    alias: "Purple Jar",
+    brand: "Beautio Lab",
     category: null,
     size_label: null,
     image_asset_id: null,
@@ -1049,6 +1115,8 @@ test("BD-DATA-002 replacing a Product image atomically restarts the old asset cl
   await assert.rejects(
     service.updateProduct(productId, {
       name: "This edit must roll back",
+      alias: null,
+      brand: null,
       category: null,
       size_label: null,
       image_asset_id: expiredAsset.id,
@@ -1070,6 +1138,8 @@ test("BD-DATA-002 replacing a Product image atomically restarts the old asset cl
 
   await service.updateProduct(productId, {
     name: "Serum renamed",
+    alias: "Purple Jar",
+    brand: "Beautio Lab",
     category: null,
     size_label: null,
     image_asset_id: newAsset.id,
@@ -1080,6 +1150,8 @@ test("BD-DATA-002 replacing a Product image atomically restarts the old asset cl
   assert.deepEqual(await repository.findProductById(productId), {
     id: productId,
     name: "Serum renamed",
+    alias: "Purple Jar",
+    brand: "Beautio Lab",
     category: null,
     sizeLabel: null,
     imageAssetId: newAsset.id,

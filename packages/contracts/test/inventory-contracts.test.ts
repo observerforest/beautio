@@ -4,16 +4,52 @@ import {
   createInventoryBatchInputSchema,
   fetchInventoryInputSchema,
   fetchInventoryOutputSchema,
+  inventoryListItemOutputSchema,
   searchInventoryInputSchema,
   searchInventoryOutputSchema,
   setProductDisplayImageInputSchema,
   setProductDisplayImageOutputSchema,
+  updateProductInputSchema,
   updateInventoryItemCustomNotesInputSchema,
   updateInventoryItemCustomNotesOutputSchema,
   updateInventoryItemFactsInputSchema,
   uploadProductImagesMcpInputSchema,
   uploadProductImagesOutputSchema,
 } from "../src/index.ts";
+
+test("inventory list items normalize an omitted legacy creation timestamp to null", () => {
+  const item = {
+    inventory_item_id: "bottle-1",
+    created_at: "2026-08-19T00:00:00.000Z",
+    lifecycle_status: "unopened",
+    opened_on: null,
+    opened_on_accuracy: null,
+    expires_on: null,
+    pao_duration_months: null,
+    pao_deadline: null,
+    pao_deadline_accuracy: null,
+    usable_until: null,
+    usability_status: "unknown",
+    warnings: [],
+    custom_notes: null,
+    product_id: null,
+    product: null,
+    product_inventory_position: null,
+    product_inventory_count: null,
+  } as const;
+
+  assert.equal(inventoryListItemOutputSchema.safeParse(item).success, true);
+  assert.equal(
+    inventoryListItemOutputSchema.safeParse({ ...item, created_at: null })
+      .success,
+    true,
+  );
+  const { created_at: _createdAt, ...withoutCreationTime } = item;
+  assert.equal(
+    inventoryListItemOutputSchema.parse(withoutCreationTime).created_at,
+    null,
+  );
+});
 
 test("BD-DATA-005 search input is strict, normalized, and bounded", () => {
   assert.deepEqual(
@@ -73,6 +109,8 @@ test("BD-DATA-005 fetch output exposes image presence without managed or legacy 
       product: {
         product_id: "product-1",
         name: "Serum",
+        alias: "Purple Jar",
+        brand: "Beautio Lab",
         category: "serum",
         size_label: "30 ml",
         ingredient_list_text: "Water, Glycerin",
@@ -93,6 +131,31 @@ test("BD-DATA-005 fetch output exposes image presence without managed or legacy 
   };
 
   assert.equal(fetchInventoryOutputSchema.safeParse(output).success, true);
+  const legacyCompatible = {
+    ...output,
+    inventory_item: {
+      ...output.inventory_item,
+      product: {
+        product_id: output.inventory_item.product.product_id,
+        name: output.inventory_item.product.name,
+        category: output.inventory_item.product.category,
+        size_label: output.inventory_item.product.size_label,
+        ingredient_list_text: output.inventory_item.product.ingredient_list_text,
+        shared_notes: output.inventory_item.product.shared_notes,
+        has_image: output.inventory_item.product.has_image,
+      },
+    },
+  };
+  assert.equal(
+    fetchInventoryOutputSchema.parse(legacyCompatible).inventory_item.product
+      ?.brand,
+    null,
+  );
+  assert.equal(
+    fetchInventoryOutputSchema.parse(legacyCompatible).inventory_item.product
+      ?.alias,
+    null,
+  );
   assert.equal(
     fetchInventoryOutputSchema.safeParse({
       ...output,
@@ -133,6 +196,8 @@ test("BD-DATA-005 search output keeps long text out of result summaries", () => 
         inventory_item_id: "bottle-1",
         product_id: "product-1",
         product_name: "Serum",
+        alias: "Purple Jar",
+        brand: "Beautio Lab",
         category: "serum",
         size_label: "30 ml",
         lifecycle_status: "unopened",
@@ -319,6 +384,8 @@ test("Product display image output contract is strict", () => {
     product: {
       product_id: "product-shared",
       name: "Shared serum",
+      alias: null,
+      brand: null,
       category: "serum",
       size_label: "30 ml",
       image_asset_id: "image-asset-new",
@@ -345,6 +412,8 @@ test("BD-DATA-004 batch text fields preserve content and normalize missing value
       {
         batch_ref: "product_1",
         name: "Serum",
+        alias: "  Purple Jar  ",
+        brand: "  Beautio Lab  ",
         ingredient_list_text: "  Water,\nGlycerin  ",
         shared_notes: "   ",
       },
@@ -360,8 +429,56 @@ test("BD-DATA-004 batch text fields preserve content and normalize missing value
   });
 
   assert.equal(parsed.products[0]?.ingredient_list_text, "Water,\nGlycerin");
+  assert.equal(parsed.products[0]?.alias, "Purple Jar");
+  assert.equal(parsed.products[0]?.brand, "Beautio Lab");
   assert.equal(parsed.products[0]?.shared_notes, null);
   assert.equal(parsed.inventory_items[0]?.custom_notes, "Keep upright");
+});
+
+test("Product aliases accept ten characters and reject longer input without truncation", () => {
+  const createBatch = (alias: string) => ({
+    as_of: "2026-08-20",
+    products: [{ batch_ref: "product_1", name: "Serum", alias }],
+    inventory_items: [
+      {
+        batch_ref: "bottle_1",
+        product_ref: { kind: "new" as const, batch_ref: "product_1" },
+        lifecycle_status: "unopened" as const,
+      },
+    ],
+  });
+  const updateProduct = (alias: string) => ({
+    name: "Serum",
+    alias,
+    category: null,
+    size_label: null,
+    image_asset_id: null,
+    ingredient_list_text: null,
+    shared_notes: null,
+  });
+
+  assert.equal(
+    createInventoryBatchInputSchema.safeParse(createBatch("紫".repeat(10)))
+      .success,
+    true,
+  );
+  assert.equal(
+    updateProductInputSchema.safeParse(updateProduct("紫".repeat(10))).success,
+    true,
+  );
+
+  for (const result of [
+    createInventoryBatchInputSchema.safeParse(createBatch("紫".repeat(11))),
+    updateProductInputSchema.safeParse(updateProduct("紫".repeat(11))),
+  ]) {
+    assert.equal(result.success, false);
+    if (!result.success) {
+      assert.match(
+        result.error.issues[0]?.message ?? "",
+        /INVALID_INPUT: alias must be at most 10 characters/,
+      );
+    }
+  }
 });
 
 test("BD-DATA-004 text boundaries are strict without truncation or Product patching", () => {

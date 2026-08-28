@@ -65,9 +65,14 @@ COPY --from=build /workspace/packages/domain/src packages/domain/src
 COPY --from=build /workspace/packages/image-storage/src packages/image-storage/src
 COPY --from=build /workspace/services/core-api/src services/core-api/src
 
-RUN install -d -o node -g node /var/lib/beautio /var/lib/beautio/images
+RUN chmod -R a+rX /app \
+  && install -d -o node -g node /var/lib/beautio /var/lib/beautio/images
 
 USER node
+
+RUN test -r /app/services/core-api/src/http.ts \
+  && test -r /app/packages/image-storage/src/index.ts \
+  && node --input-type=module -e "await import('file:///app/packages/image-storage/src/index.ts')"
 
 EXPOSE 8787
 VOLUME ["/var/lib/beautio"]

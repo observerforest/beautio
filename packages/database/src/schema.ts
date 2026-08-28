@@ -1,3 +1,4 @@
+import { productAliasMaximumLength } from "@beautio/domain";
 import { DatabaseSync } from "node:sqlite";
 
 interface TableInfoRow {
@@ -13,8 +14,11 @@ export function applySchema(database: DatabaseSync): void {
   addImageAssetReferenceToLegacyProducts(database);
   addOpeningAccuracyToLegacyInventory(database);
   addTextFieldsToLegacyProducts(database);
+  addBrandToLegacyProducts(database);
+  addAliasToLegacyProducts(database);
   addCustomNotesToLegacyInventory(database);
   rebuildProductsForNullableCategory(database);
+  addInventoryCreationTimestamp(database);
   database.exec(`
     CREATE UNIQUE INDEX IF NOT EXISTS products_image_asset_unique
     ON products(image_asset_id)
@@ -31,6 +35,15 @@ function createCurrentTables(database: DatabaseSync): void {
     CREATE TABLE IF NOT EXISTS products (
       id TEXT PRIMARY KEY,
       name TEXT NOT NULL CHECK (length(trim(name)) > 0),
+      alias TEXT CHECK (
+        alias IS NULL OR (
+          length(trim(alias)) > 0 AND
+          length(trim(alias)) <= ${productAliasMaximumLength}
+        )
+      ),
+      brand TEXT CHECK (
+        brand IS NULL OR length(trim(brand)) > 0
+      ),
       category TEXT CHECK (
         category IS NULL OR length(trim(category)) > 0
       ),
@@ -58,6 +71,9 @@ function createCurrentTables(database: DatabaseSync): void {
     CREATE TABLE IF NOT EXISTS inventory_items (
       id TEXT PRIMARY KEY,
       product_id TEXT REFERENCES products(id),
+      created_at TEXT CHECK (
+        created_at IS NULL OR length(trim(created_at)) > 0
+      ),
       lifecycle_status TEXT NOT NULL CHECK (
         lifecycle_status IN ('unopened', 'opened', 'finished', 'discarded')
       ),
@@ -170,6 +186,31 @@ function addTextFieldsToLegacyProducts(database: DatabaseSync): void {
   }
 }
 
+function addBrandToLegacyProducts(database: DatabaseSync): void {
+  if (tableHasColumn(database, "products", "brand")) {
+    return;
+  }
+  database.exec(
+    `ALTER TABLE products ADD COLUMN brand TEXT CHECK (
+      brand IS NULL OR length(trim(brand)) > 0
+    )`,
+  );
+}
+
+function addAliasToLegacyProducts(database: DatabaseSync): void {
+  if (tableHasColumn(database, "products", "alias")) {
+    return;
+  }
+  database.exec(
+    `ALTER TABLE products ADD COLUMN alias TEXT CHECK (
+      alias IS NULL OR (
+        length(trim(alias)) > 0 AND
+        length(trim(alias)) <= ${productAliasMaximumLength}
+      )
+    )`,
+  );
+}
+
 function addCustomNotesToLegacyInventory(database: DatabaseSync): void {
   if (tableHasColumn(database, "inventory_items", "custom_notes")) {
     return;
@@ -197,6 +238,15 @@ function rebuildProductsForNullableCategory(database: DatabaseSync): void {
     CREATE TABLE products_next (
       id TEXT PRIMARY KEY,
       name TEXT NOT NULL CHECK (length(trim(name)) > 0),
+      alias TEXT CHECK (
+        alias IS NULL OR (
+          length(trim(alias)) > 0 AND
+          length(trim(alias)) <= ${productAliasMaximumLength}
+        )
+      ),
+      brand TEXT CHECK (
+        brand IS NULL OR length(trim(brand)) > 0
+      ),
       category TEXT CHECK (
         category IS NULL OR length(trim(category)) > 0
       ),
@@ -223,6 +273,8 @@ function rebuildProductsForNullableCategory(database: DatabaseSync): void {
     INSERT INTO products_next (
       id,
       name,
+      alias,
+      brand,
       category,
       size_label,
       image_asset_id,
@@ -233,6 +285,8 @@ function rebuildProductsForNullableCategory(database: DatabaseSync): void {
     SELECT
       id,
       name,
+      alias,
+      brand,
       category,
       size_label,
       image_asset_id,
@@ -244,6 +298,41 @@ function rebuildProductsForNullableCategory(database: DatabaseSync): void {
     ALTER TABLE products_next RENAME TO products;
     COMMIT;
   `);
+}
+
+function addInventoryCreationTimestamp(database: DatabaseSync): void {
+  if (tableHasColumn(database, "inventory_items", "created_at")) {
+    return;
+  }
+
+  database.exec("BEGIN IMMEDIATE");
+  try {
+    database.exec(`
+      ALTER TABLE inventory_items ADD COLUMN created_at TEXT CHECK (
+        created_at IS NULL OR length(trim(created_at)) > 0
+      )
+    `);
+    database.exec(`
+      UPDATE inventory_items
+      SET created_at = (
+        SELECT image_assets.created_at
+        FROM products
+        JOIN image_assets ON image_assets.id = products.image_asset_id
+        WHERE products.id = inventory_items.product_id
+          AND image_assets.product_id = products.id
+          AND image_assets.status = 'linked'
+          AND image_assets.created_at = strftime(
+            '%Y-%m-%dT%H:%M:%fZ',
+            image_assets.created_at
+          )
+      )
+      WHERE created_at IS NULL
+    `);
+    database.exec("COMMIT");
+  } catch (error) {
+    database.exec("ROLLBACK");
+    throw error;
+  }
 }
 
 function tableColumns(

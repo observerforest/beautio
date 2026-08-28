@@ -50,6 +50,71 @@ By default, local development uses ignored paths:
 .local/managed-images/
 ```
 
+### Local built preview
+
+Use the built management page and the managed Core API as one same-origin
+process when checking the production serving path locally:
+
+```sh
+pnpm local:preview
+```
+
+Activate the repository's Node.js 24 runtime first (for example, `nvm use` when
+using nvm); the launcher refuses older or newer major versions.
+
+Open <http://127.0.0.1:8787> and use `111` as the local-only Admin key. This
+command builds the Web app before every start, serves the immutable build from
+the Core API, and reuses the ignored local database and managed-image paths
+shown above. It does not start the Vite server on port 4173.
+
+The launcher fixes the listener to loopback, uses deliberately non-production
+Action configuration, removes any inherited public origin or Cloudflare Access
+configuration, and disables the remote MCP route. It refuses to start while
+port 8787 is occupied, so stop `pnpm dev` before using it. Local overrides use
+the explicitly local names `BEAUTIO_LOCAL_ADMIN_TOKEN`,
+`BEAUTIO_LOCAL_ACTION_TOKEN`, `BEAUTIO_LOCAL_DB_PATH`, and
+`BEAUTIO_LOCAL_IMAGE_STORAGE_ROOT`; do not place production credentials in
+them.
+
+This path reproduces the production application entry point and same-origin
+static serving, but not the container OS, TLS, reverse proxy, Cloudflare Access,
+or public networking. The Docker image remains the final production artifact.
+
+### Read-only production observer
+
+To inspect current production inventory through the local built UI without
+copying its SQLite database or exposing its Admin key to the browser, place the
+production `URL` and `Admin Key` in the ignored private file
+`.local/beautio-production-credentials.txt`, set that file to mode `0600`, and
+run:
+
+```sh
+BEAUTIO_PROD_OBSERVE_EXPECTED_ORIGIN="https://your-production.example" pnpm prod:observe
+```
+
+Open <http://127.0.0.1:8787> and use `111` as the local read-only key. The
+dedicated observer never opens a local or production SQLite file. It keeps the
+production key inside the loopback process and permits only exact inventory and
+protected-image GET routes; redirects, retries, write methods, Admin/Action
+routes, MCP, OpenAPI, unexpected query parameters, response types, and oversized
+responses are rejected before data reaches the browser. The UI also removes all
+editing entry points and labels the session as production read-only.
+
+The observer build is isolated under ignored
+`.local/production-observe-web/`; it never overwrites the normal `apps/web/dist`
+served by `local:preview` or a production image.
+
+The required expected origin is an independent target pin. It must exactly
+match the credential file's bare HTTPS `URL`; a mismatch stops startup before
+the Admin key can be attached to any network request.
+
+This is a live view rather than a snapshot: each refresh performs a new bounded
+read against the production HTTPS API. It trusts other processes on the same
+computer because the default local key is intentionally memorable. Override it
+with `BEAUTIO_PROD_OBSERVE_LOCAL_TOKEN` when that local trust assumption is not
+appropriate. `BEAUTIO_PROD_OBSERVE_CREDENTIALS` selects another private file,
+and `BEAUTIO_PROD_OBSERVE_PORT` selects another loopback port.
+
 The page keeps one card per physical bottle. Product name, category, size, one display image, confirmed packaging ingredient text, and shared notes are shared by every bottle linked to that Product. Product edits therefore appear on every related card. Each bottle has separate custom notes. Inventory fact edits accept only direct lifecycle facts; PAO deadline, final usable-until date, status, and warnings are recalculated by the shared core and re-read after saving. Custom notes use a separate narrow route and remain editable for terminal history.
 
 Opening dates preserve `exact`, `estimated`, or legacy-without-evidence semantics. An estimated opening and its derived PAO deadline remain visibly estimated until corrected. Terminal `finished` and `discarded` history cannot be rewritten through the active-inventory editor.

@@ -34,6 +34,8 @@ try {
       createProduct({
         id: product.id,
         name: product.name,
+        alias: product.alias,
+        brand: product.brand,
         category: product.category,
         sizeLabel: product.size_label,
         imageRef: product.image_ref,
@@ -45,6 +47,7 @@ try {
       createInventoryItem({
         id: item.id,
         productId: item.product_id,
+        createdAt: item.created_at,
         lifecycleStatus: item.lifecycle_status,
         openedOn: item.opened_on,
         openedOnAccuracy: item.opened_on_accuracy,

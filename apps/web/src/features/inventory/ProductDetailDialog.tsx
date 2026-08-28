@@ -21,6 +21,7 @@ export interface ProductDetailDialogProps {
   readonly asOf: string;
   readonly client: AdminApiClient;
   readonly feedback: string;
+  readonly readOnly?: boolean;
   readonly onClose: () => void;
   readonly onEditProduct: () => void;
   readonly onEditBottle: () => void;
@@ -40,6 +41,7 @@ export function ProductDetailDialog({
   asOf,
   client,
   feedback,
+  readOnly = false,
   onClose,
   onEditProduct,
   onEditBottle,
@@ -89,22 +91,26 @@ export function ProductDetailDialog({
           {bottleLabel === null ? null : <span className="ml-auto text-[11px] text-white/65">{bottleLabel}</span>}
         </div>
         <h3 className="break-words text-lg font-semibold leading-snug">{productName}</h3>
-        <p className="mt-0.5 text-xs text-white/65">{item.product?.category ?? "品类未记录"} · {item.product?.size_label ?? "规格未记录"}</p>
+        <p className="mt-0.5 text-xs text-white/65">{item.product?.brand ?? "品牌未记录"} · {item.product?.category ?? "品类未记录"} · {item.product?.size_label ?? "规格未记录"}</p>
       </div>
     </header>
   );
 
   const footer = (
     <div className="space-y-3">
-      <p className="text-[11px] text-[#A8A3A0]" role="status" aria-live="polite">{feedback}</p>
-      <div className="flex gap-2">
-        <button type="button" onClick={onEditProduct} disabled={item.product === null} title={item.product === null ? "这条库存没有关联 Product" : undefined} className="flex-1 rounded-2xl bg-[#F5F3F1] py-3 text-sm text-[#5A4C4A] disabled:opacity-45">
-          编辑产品资料
-        </button>
-        <button type="button" onClick={onEditBottle} disabled={terminal} title={terminal ? "已结束库存不能修改生命周期事实" : undefined} className="flex-1 rounded-2xl bg-[linear-gradient(120deg,#9B7F7C,#B3A0AD)] py-3 text-sm font-medium text-white disabled:opacity-45">
-          编辑这瓶
-        </button>
-      </div>
+      <p className="text-[11px] text-[#A8A3A0]" role="status" aria-live="polite">
+        {readOnly ? "生产实时数据 · 当前为本地只读观察模式。" : feedback}
+      </p>
+      {readOnly ? null : (
+        <div className="flex gap-2">
+          <button type="button" onClick={onEditProduct} disabled={item.product === null} title={item.product === null ? "这条库存没有关联 Product" : undefined} className="flex-1 rounded-2xl bg-[#F5F3F1] py-3 text-sm text-[#5A4C4A] disabled:opacity-45">
+            编辑产品资料
+          </button>
+          <button type="button" onClick={onEditBottle} disabled={terminal} title={terminal ? "已结束库存不能修改生命周期事实" : undefined} className="flex-1 rounded-2xl bg-[linear-gradient(120deg,#9B7F7C,#B3A0AD)] py-3 text-sm font-medium text-white disabled:opacity-45">
+            编辑这瓶
+          </button>
+        </div>
+      )}
     </div>
   );
 
@@ -118,10 +124,12 @@ export function ProductDetailDialog({
           </section>
 
           <DetailSection title="产品资料" badge="共享 · 影响全部瓶" tone="shared">
-            <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
-              <InfoCell label="产品名称" value={item.product?.name ?? "未记录"} />
+            <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+              <InfoCell label="产品名称" value={item.product?.name ?? "未记录"} className="col-span-2" />
+              <InfoCell label="产品别名" value={item.product?.alias ?? "未记录"} className="col-span-2" />
+              <InfoCell label="品牌" value={item.product?.brand ?? "未记录"} />
               <InfoCell label="品类" value={item.product?.category ?? "未记录"} />
-              <InfoCell label="规格" value={item.product?.size_label ?? "未记录"} />
+              <InfoCell label="规格" value={item.product?.size_label ?? "未记录"} className="col-span-2" />
             </div>
             <LongFact label="成分表原文" value={item.product?.ingredient_list_text ?? null} />
             <LongFact label="共享备注" value={item.product?.shared_notes ?? null} />
@@ -139,7 +147,11 @@ export function ProductDetailDialog({
             <div className="rounded-2xl bg-[#F5F3F1] px-4 py-3">
               <div className="mb-1 flex items-center justify-between gap-3">
                 <span className="text-[10px] text-[#A8A3A0]">自定义备注（仅这瓶）</span>
-                <button type="button" onClick={onEditNotes} className="rounded-full bg-[#EEF1F4] px-2 py-0.5 text-[10px] text-[#4A6272]">编辑</button>
+                {readOnly ? (
+                  <span className="rounded-full bg-[#EEF1F4] px-2 py-0.5 text-[10px] text-[#4A6272]">只读</span>
+                ) : (
+                  <button type="button" onClick={onEditNotes} className="rounded-full bg-[#EEF1F4] px-2 py-0.5 text-[10px] text-[#4A6272]">编辑</button>
+                )}
               </div>
               <p className={`whitespace-pre-wrap break-words text-xs leading-relaxed ${item.custom_notes === null ? "text-[#B8B2AF]" : "text-[#5A4C4A]"}`}>{item.custom_notes ?? "未填写"}</p>
             </div>
@@ -183,9 +195,9 @@ function DetailSection({ title, badge, tone, children }: { readonly title: strin
   );
 }
 
-function InfoCell({ label, value }: { readonly label: string; readonly value: string }) {
+function InfoCell({ label, value, className = "" }: { readonly label: string; readonly value: string; readonly className?: string }) {
   return (
-    <div className="min-w-0 rounded-2xl bg-[#F5F3F1] px-3 py-2.5">
+    <div className={`min-w-0 rounded-2xl bg-[#F5F3F1] px-3 py-2.5 ${className}`}>
       <span className="block text-[10px] text-[#A8A3A0]">{label}</span>
       <span className="mt-0.5 block break-words text-xs font-medium leading-snug text-[#5A4C4A]">{value}</span>
     </div>

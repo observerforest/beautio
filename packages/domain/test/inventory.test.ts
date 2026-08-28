@@ -201,6 +201,8 @@ test("BD-DATA-002 Product keeps genuinely missing shared facts as null", () => {
   assert.deepEqual(product, {
     id: "product-minimal",
     name: "Serum",
+    alias: null,
+    brand: null,
     category: null,
     sizeLabel: null,
     imageAssetId: null,
@@ -214,6 +216,8 @@ test("BD-DATA-004 normalizes Product shared text and bottle custom notes", () =>
   const product = createProduct({
     id: "product-with-text",
     name: "Serum",
+    alias: "  Purple Jar  ",
+    brand: "  Beautio Lab  ",
     ingredientListText: "  Water,\nGlycerin  ",
     sharedNotes: "  Reformulated package copy  ",
   });
@@ -224,6 +228,8 @@ test("BD-DATA-004 normalizes Product shared text and bottle custom notes", () =>
   });
 
   assert.equal(product.ingredientListText, "Water,\nGlycerin");
+  assert.equal(product.alias, "Purple Jar");
+  assert.equal(product.brand, "Beautio Lab");
   assert.equal(product.sharedNotes, "Reformulated package copy");
   assert.equal(item.customNotes, "Finished before travel");
   assert.equal(
@@ -242,6 +248,26 @@ test("BD-DATA-004 normalizes Product shared text and bottle custom notes", () =>
       customNotes: "   ",
     }).customNotes,
     null,
+  );
+});
+
+test("Product aliases reject more than ten characters without truncation", () => {
+  assert.throws(
+    () =>
+      createProduct({
+        id: "product-alias-limit",
+        name: "Serum",
+        alias: "紫".repeat(11),
+      }),
+    (error: unknown) => {
+      assert.ok(error instanceof BeautioError);
+      assert.equal(error.code, "INVALID_INPUT");
+      assert.equal(
+        error.message,
+        "product_alias must be at most 10 characters",
+      );
+      return true;
+    },
   );
 });
 

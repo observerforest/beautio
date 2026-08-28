@@ -328,6 +328,8 @@ export class InventoryApplicationService {
       return createProduct({
         id: productId,
         name: productInput.name,
+        alias: productInput.alias ?? null,
+        brand: productInput.brand ?? null,
         category: productInput.category ?? null,
         sizeLabel: productInput.size_label ?? null,
         imageAssetId: productInput.image_asset_id ?? null,
@@ -355,6 +357,7 @@ export class InventoryApplicationService {
       }
     }
 
+    const now = this.currentTimestamp();
     const inventoryItems = input.inventory_items.map((itemInput) => {
       const productId =
         itemInput.product_ref.kind === "existing"
@@ -367,7 +370,11 @@ export class InventoryApplicationService {
         );
       }
       return createInventoryItemFromFacts(
-        { id: this.generateId("inventory_item"), productId },
+        {
+          id: this.generateId("inventory_item"),
+          productId,
+          createdAt: now,
+        },
         {
           lifecycleStatus: itemInput.lifecycle_status,
           openedOn: itemInput.opened_on ?? null,
@@ -379,7 +386,6 @@ export class InventoryApplicationService {
       );
     });
 
-    const now = this.currentTimestamp();
     await this.#repository.createBatch({ products, inventoryItems, now });
 
     const committedProducts = await Promise.all(
@@ -427,6 +433,8 @@ export class InventoryApplicationService {
     const product = await this.#repository.updateProductFacts({
       productId: normalizedProductId,
       name: input.name,
+      ...(input.alias === undefined ? {} : { alias: input.alias }),
+      ...(input.brand === undefined ? {} : { brand: input.brand }),
       category: input.category,
       sizeLabel: input.size_label,
       imageAssetId: input.image_asset_id,
@@ -496,7 +504,7 @@ export class InventoryApplicationService {
     validateEditedOpeningAccuracy(existing, input);
 
     const updated = createInventoryItemFromFacts(
-      { id: existing.id, productId },
+      { id: existing.id, productId, createdAt: existing.createdAt },
       {
         lifecycleStatus: input.lifecycle_status,
         openedOn: input.opened_on,

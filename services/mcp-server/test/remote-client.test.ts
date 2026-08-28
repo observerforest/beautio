@@ -134,6 +134,8 @@ test("remote client calls each fixed Action route once with strict response vali
             product: {
               product_id: "product-1",
               name: "Confirmed product",
+              alias: null,
+              brand: null,
               category: null,
               size_label: null,
               image_asset_id: "asset-1",
@@ -188,6 +190,46 @@ test("remote client calls each fixed Action route once with strict response vali
       "/api/actions/codex/set-product-display-image",
     ],
   );
+});
+
+test("remote client reports the Product alias limit before sending a write", async (context) => {
+  const fixture = await tokenFixture(context);
+  let fetchCalls = 0;
+  const client = await createRemoteBeautioClient({
+    origin: "https://beautio.example",
+    tokenFilePath: fixture.tokenPath,
+    fetchImplementation: async () => {
+      fetchCalls += 1;
+      return jsonResponse({});
+    },
+  });
+
+  await assert.rejects(
+    client.createInventoryBatch({
+      as_of: "2026-08-20",
+      products: [
+        {
+          batch_ref: "product_alias_limit",
+          name: "Serum",
+          alias: "紫".repeat(11),
+        },
+      ],
+      inventory_items: [
+        {
+          batch_ref: "bottle_alias_limit",
+          product_ref: { kind: "new", batch_ref: "product_alias_limit" },
+          lifecycle_status: "unopened",
+        },
+      ],
+    }),
+    (error: unknown) => {
+      assert.ok(error instanceof BeautioError);
+      assert.equal(error.code, "INVALID_INPUT");
+      assert.equal(error.message, "alias must be at most 10 characters");
+      return true;
+    },
+  );
+  assert.equal(fetchCalls, 0);
 });
 
 test("remote client rejects inventory responses that do not match the requested identity or opening date", async (context) => {
@@ -296,6 +338,8 @@ test("remote client rejects create responses that are not correlated to batch or
       {
         batch_ref: "new_a",
         name: "New A",
+        alias: "Purple Jar",
+        brand: "Beautio Lab",
         ingredient_list_text: "  Aqua,\nGlycerin  ",
         shared_notes: "  shared A  ",
       },
@@ -379,6 +423,24 @@ test("remote client rejects create responses that are not correlated to batch or
         ),
         inventory_items: valid.inventory_items.map((item, index) =>
           index === 1 ? { ...item, product_id: "existing-product" } : item,
+        ),
+      },
+    },
+    {
+      name: "Product alias",
+      response: {
+        ...valid,
+        products: valid.products.map((product, index) =>
+          index === 0 ? { ...product, alias: "different" } : product,
+        ),
+      },
+    },
+    {
+      name: "Product brand",
+      response: {
+        ...valid,
+        products: valid.products.map((product, index) =>
+          index === 0 ? { ...product, brand: "different" } : product,
         ),
       },
     },
@@ -720,6 +782,8 @@ function validCreateOutput(): CreateInventoryBatchOutput {
         batch_ref: "new_a",
         product_id: "generated-product-a",
         name: "New A",
+        alias: "Purple Jar",
+        brand: "Beautio Lab",
         category: null,
         size_label: null,
         image_asset_id: null,
@@ -731,6 +795,8 @@ function validCreateOutput(): CreateInventoryBatchOutput {
         batch_ref: "new_b",
         product_id: "generated-product-b",
         name: "New B",
+        alias: null,
+        brand: null,
         category: null,
         size_label: null,
         image_asset_id: null,

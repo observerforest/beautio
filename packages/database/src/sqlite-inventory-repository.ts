@@ -7,6 +7,7 @@ import type {
 } from "@beautio/application";
 import {
   BeautioError,
+  createInventoryItem,
   type ImageAsset,
   type InventoryItem,
   type Product,
@@ -65,6 +66,7 @@ export class SqliteInventoryRepository implements InventoryRepository {
         `SELECT
           id,
           product_id,
+          created_at,
           lifecycle_status,
           opened_on,
           opened_on_accuracy,
@@ -114,7 +116,12 @@ export class SqliteInventoryRepository implements InventoryRepository {
             `Product ${item.productId ?? ""} does not exist`,
           );
         }
-        this.insertInventoryItem(item);
+        this.insertInventoryItem(
+          createInventoryItem({
+            ...item,
+            createdAt: input.now,
+          }),
+        );
       }
     });
   }
@@ -143,6 +150,8 @@ export class SqliteInventoryRepository implements InventoryRepository {
         .prepare(
           `UPDATE products SET
             name = ?,
+            alias = ?,
+            brand = ?,
             category = ?,
             size_label = ?,
             image_asset_id = ?,
@@ -152,6 +161,8 @@ export class SqliteInventoryRepository implements InventoryRepository {
         )
         .run(
           input.name,
+          input.alias === undefined ? existing.alias : input.alias,
+          input.brand === undefined ? existing.brand : input.brand,
           input.category,
           input.sizeLabel,
           input.imageAssetId,

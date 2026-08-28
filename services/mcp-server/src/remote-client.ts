@@ -574,6 +574,8 @@ function validateCreateCorrelation(
     if (
       actual === undefined ||
       actual.batch_ref !== expected.batch_ref ||
+      actual.alias !== (expected.alias ?? null) ||
+      actual.brand !== (expected.brand ?? null) ||
       actual.ingredient_list_text !== (expected.ingredient_list_text ?? null) ||
       actual.shared_notes !== (expected.shared_notes ?? null) ||
       productIdsByBatchRef.has(actual.batch_ref) ||
@@ -614,8 +616,20 @@ function validateCreateCorrelation(
 function parseInput<T>(schema: OutputSchema<T>, value: unknown): T {
   try {
     return schema.parse(value);
-  } catch {
-    throw new BeautioError("INVALID_INPUT", "input does not match the tool contract");
+  } catch (error) {
+    const issues =
+      isRecord(error) && Array.isArray(error.issues) ? error.issues : [];
+    const specificMessage = issues
+      .map((issue) => (isRecord(issue) ? issue.message : undefined))
+      .find(
+        (message): message is string =>
+          typeof message === "string" && message.startsWith("INVALID_INPUT: "),
+      );
+    throw new BeautioError(
+      "INVALID_INPUT",
+      specificMessage?.slice("INVALID_INPUT: ".length) ??
+        "input does not match the tool contract",
+    );
   }
 }
 

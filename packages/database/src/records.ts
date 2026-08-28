@@ -24,6 +24,7 @@ export function readInventoryItem(
       `SELECT
         id,
         product_id,
+        created_at,
         lifecycle_status,
         opened_on,
         opened_on_accuracy,
@@ -48,6 +49,8 @@ export function readProduct(
       `SELECT
         id,
         name,
+        alias,
+        brand,
         category,
         size_label,
         image_asset_id,
@@ -90,17 +93,21 @@ export function insertProduct(database: DatabaseSync, product: Product): void {
         `INSERT INTO products (
           id,
           name,
+          alias,
+          brand,
           category,
           size_label,
           image_asset_id,
           image_ref,
           ingredient_list_text,
           shared_notes
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         product.id,
         product.name,
+        product.alias,
+        product.brand,
         product.category,
         product.sizeLabel,
         product.imageAssetId,
@@ -123,6 +130,7 @@ export function insertInventoryItem(
         `INSERT INTO inventory_items (
           id,
           product_id,
+          created_at,
           lifecycle_status,
           opened_on,
           opened_on_accuracy,
@@ -131,11 +139,12 @@ export function insertInventoryItem(
           pao_deadline,
           usable_until,
           custom_notes
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         item.id,
         item.productId,
+        item.createdAt,
         item.lifecycleStatus,
         item.openedOn,
         item.openedOnAccuracy,

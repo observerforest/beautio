@@ -1,7 +1,9 @@
 import {
   addCalendarMonthsClamped,
   parseNullableDate,
+  parseNullableIsoInstant,
   type IsoDate,
+  type IsoInstant,
 } from "./dates.ts";
 import { BeautioError } from "./errors.ts";
 import {
@@ -9,6 +11,7 @@ import {
   ingredientListTextMaximumLength,
   normalizeNullableText,
   normalizeOptionalText,
+  productAliasMaximumLength,
   requireText,
   sharedNotesMaximumLength,
 } from "./text.ts";
@@ -53,6 +56,8 @@ export type ImageAssetStatus = (typeof imageAssetStatuses)[number];
 export interface Product {
   readonly id: string;
   readonly name: string;
+  readonly alias: string | null;
+  readonly brand: string | null;
   readonly category: string | null;
   readonly sizeLabel: string | null;
   readonly imageAssetId: string | null;
@@ -64,6 +69,7 @@ export interface Product {
 export interface InventoryItem {
   readonly id: string;
   readonly productId: string | null;
+  readonly createdAt: IsoInstant | null;
   readonly lifecycleStatus: LifecycleStatus;
   readonly openedOn: IsoDate | null;
   readonly openedOnAccuracy: OpenedOnAccuracy | null;
@@ -127,6 +133,7 @@ export interface EditableInventoryFacts {
 export function createInventoryItem(input: {
   readonly id: string;
   readonly productId?: string | null;
+  readonly createdAt?: string | null;
   readonly lifecycleStatus: LifecycleStatus;
   readonly openedOn?: string | null;
   readonly openedOnAccuracy?: OpenedOnAccuracy | null;
@@ -142,6 +149,7 @@ export function createInventoryItem(input: {
   }
 
   const productId = normalizeOptionalText(input.productId, "product_id");
+  const createdAt = parseNullableIsoInstant(input.createdAt, "created_at");
 
   const openedOn = parseNullableDate(input.openedOn, "opened_on");
   const openedOnAccuracy =
@@ -197,6 +205,7 @@ export function createInventoryItem(input: {
   return {
     id,
     productId,
+    createdAt,
     lifecycleStatus: input.lifecycleStatus,
     openedOn,
     openedOnAccuracy,
@@ -217,6 +226,8 @@ export function createInventoryItem(input: {
 export function createProduct(input: {
   readonly id: string;
   readonly name: string;
+  readonly alias?: string | null;
+  readonly brand?: string | null;
   readonly category?: string | null;
   readonly sizeLabel?: string | null;
   readonly imageAssetId?: string | null;
@@ -227,6 +238,12 @@ export function createProduct(input: {
   return {
     id: requireText(input.id, "product_id"),
     name: requireText(input.name, "product_name"),
+    alias: normalizeNullableText(
+      input.alias,
+      "product_alias",
+      productAliasMaximumLength,
+    ),
+    brand: normalizeOptionalText(input.brand, "product_brand"),
     category: normalizeOptionalText(input.category, "product_category"),
     sizeLabel: normalizeOptionalText(input.sizeLabel, "size_label"),
     imageAssetId: normalizeOptionalText(input.imageAssetId, "image_asset_id"),
@@ -252,7 +269,11 @@ export function createProduct(input: {
  * @returns A validated item whose PAO and usable deadlines are recalculated.
  */
 export function createInventoryItemFromFacts(
-  identity: { readonly id: string; readonly productId: string },
+  identity: {
+    readonly id: string;
+    readonly productId: string;
+    readonly createdAt?: string | null;
+  },
   facts: EditableInventoryFacts,
 ): InventoryItem {
   const openedOn = parseNullableDate(facts.openedOn, "opened_on");
@@ -293,6 +314,7 @@ export function createInventoryItemFromFacts(
   return createInventoryItem({
     id: identity.id,
     productId: identity.productId,
+    createdAt: identity.createdAt ?? null,
     lifecycleStatus: facts.lifecycleStatus,
     openedOn,
     openedOnAccuracy: facts.openedOnAccuracy,

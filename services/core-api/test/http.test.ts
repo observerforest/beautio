@@ -236,6 +236,8 @@ test("Action upload and batch creation share persisted state with Admin read and
         {
           batch_ref: "product_1",
           name: "Confirmed serum",
+          alias: "Purple Jar",
+          brand: "Beautio Lab",
           category: null,
           size_label: null,
           image_asset_id: imageAssetId,
@@ -272,6 +274,8 @@ test("Action upload and batch creation share persisted state with Admin read and
   const batch = (await batchResponse.json()) as {
     readonly products: readonly [{
       readonly product_id: string;
+      readonly alias: string | null;
+      readonly brand: string | null;
       readonly ingredient_list_text: string | null;
       readonly shared_notes: string | null;
     }];
@@ -285,6 +289,8 @@ test("Action upload and batch creation share persisted state with Admin read and
     ];
   };
   assert.equal(batch.products[0].ingredient_list_text, "Aqua,\nGlycerin");
+  assert.equal(batch.products[0].alias, "Purple Jar");
+  assert.equal(batch.products[0].brand, "Beautio Lab");
   assert.equal(batch.products[0].shared_notes, "Shared Product note");
   assert.equal(batch.inventory_items[0].custom_notes, "First bottle note");
   assert.equal(batch.inventory_items[1].custom_notes, "Second bottle note");
@@ -384,6 +390,8 @@ test("Action upload and batch creation share persisted state with Admin read and
     `${fixture.origin}/api/admin/products/${encodeURIComponent(productId)}`,
     {
       name: "Corrected shared serum",
+      alias: "Purple Jar",
+      brand: "Beautio",
       category: "精华",
       size_label: "30 ml",
       image_asset_id: imageAssetId,
@@ -395,6 +403,8 @@ test("Action upload and batch creation share persisted state with Admin read and
   assert.equal(productUpdate.status, 200);
   const productUpdateBody = (await productUpdate.json()) as {
     readonly product: {
+      readonly alias: string | null;
+      readonly brand: string | null;
       readonly ingredient_list_text: string | null;
       readonly shared_notes: string | null;
     };
@@ -403,6 +413,8 @@ test("Action upload and batch creation share persisted state with Admin read and
     productUpdateBody.product.ingredient_list_text,
     "Aqua,\nGlycerin, Ceramide",
   );
+  assert.equal(productUpdateBody.product.alias, "Purple Jar");
+  assert.equal(productUpdateBody.product.brand, "Beautio");
   assert.equal(productUpdateBody.product.shared_notes, "Corrected shared note");
 
   const customNotesUpdate = await putJson(
@@ -608,6 +620,8 @@ test("Codex Action bridge persists uploads, reads, writes, and shared Product im
         {
           batch_ref: "shared_product",
           name: "Shared Product facts stay intact",
+          alias: "Shared Jar",
+          brand: "Beautio Lab",
           category: "serum",
           size_label: "30 ml",
           image_asset_id: null,
@@ -672,6 +686,8 @@ test("Codex Action bridge persists uploads, reads, writes, and shared Product im
     product: {
       product_id: batch.products[0].product_id,
       name: "Shared Product facts stay intact",
+      alias: "Shared Jar",
+      brand: "Beautio Lab",
       category: "serum",
       size_label: "30 ml",
       image_asset_id: upload.assets[0].image_asset_id,
@@ -974,6 +990,39 @@ test("HTTP maps strict batch errors and serves versioned Actions OpenAPI", async
       message: "input does not match the tool contract",
     },
   });
+
+  const oversizedAlias = await postJson(
+    `${fixture.origin}/api/actions/create-inventory-batch`,
+    {
+      as_of: "2026-08-19",
+      products: [
+        {
+          batch_ref: "product_alias_limit",
+          name: "Serum",
+          alias: "紫".repeat(11),
+        },
+      ],
+      inventory_items: [
+        {
+          batch_ref: "bottle_alias_limit",
+          product_ref: { kind: "new", batch_ref: "product_alias_limit" },
+          lifecycle_status: "unopened",
+        },
+      ],
+    },
+    ACTION_TOKEN,
+  );
+  assert.equal(oversizedAlias.status, 400);
+  assert.deepEqual(await oversizedAlias.json(), {
+    error: {
+      code: "INVALID_INPUT",
+      message: "alias must be at most 10 characters",
+    },
+  });
+  assert.deepEqual(
+    await fixture.application.listInventory({ as_of: "2026-08-19" }),
+    { as_of: "2026-08-19", items: [] },
+  );
 
   const openapi = await fetch(`${fixture.origin}/openapi/beautio-actions-v1.json`, {
     headers: authorization(ACTION_TOKEN),

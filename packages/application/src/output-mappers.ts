@@ -52,6 +52,8 @@ function toReadInventoryProductOutput(
   return {
     product_id: product.id,
     name: product.name,
+    alias: product.alias,
+    brand: product.brand,
     category: product.category,
     size_label: product.sizeLabel,
     ingredient_list_text: product.ingredientListText,
@@ -70,6 +72,8 @@ export function toInventorySearchItemOutput(
     inventory_item_id: complete.inventory_item_id,
     product_id: complete.product_id,
     product_name: product?.name ?? null,
+    alias: product?.alias ?? null,
+    brand: product?.brand ?? null,
     category: product?.category ?? null,
     size_label: product?.sizeLabel ?? null,
     lifecycle_status: complete.lifecycle_status,
@@ -94,6 +98,8 @@ export function inventoryMatchesQuery(
     item.id,
     product === null ? null : item.productId,
     product?.name ?? null,
+    product?.alias ?? null,
+    product?.brand ?? null,
     product?.category ?? null,
     product?.sizeLabel ?? null,
     product?.ingredientListText ?? null,
@@ -128,6 +134,8 @@ export function toInventoryStateOutput(
 export function toProductOutput(product: Product): {
   readonly product_id: string;
   readonly name: string;
+  readonly alias: string | null;
+  readonly brand: string | null;
   readonly category: string | null;
   readonly size_label: string | null;
   readonly image_asset_id: string | null;
@@ -138,6 +146,8 @@ export function toProductOutput(product: Product): {
   return {
     product_id: product.id,
     name: product.name,
+    alias: product.alias,
+    brand: product.brand,
     category: product.category,
     size_label: product.sizeLabel,
     image_asset_id: product.imageAssetId,
@@ -156,6 +166,7 @@ export function toInventoryListItemOutput(
 ): InventoryListItemOutput {
   return {
     ...toInventoryStateOutput(deriveInventorySnapshot(item, asOf)),
+    created_at: item.createdAt,
     product_id: item.productId,
     product: product === null ? null : toProductOutput(product),
     product_inventory_position: productInventoryPosition,

@@ -171,10 +171,13 @@ export function StatusTabs({
 
 export interface BrowseToolbarProps {
   readonly query: string;
+  readonly brand: string | null;
+  readonly brands: readonly string[];
   readonly category: string | null;
   readonly categories: readonly string[];
   readonly sort: InventorySortOption;
   readonly onQueryChange: (query: string) => void;
+  readonly onBrandChange: (brand: string | null) => void;
   readonly onCategoryChange: (category: string | null) => void;
   readonly onSortChange: (sort: InventorySortOption) => void;
 }
@@ -210,7 +213,7 @@ export function InventorySearchField({
         value={query}
         onChange={(event) => onQueryChange(event.target.value)}
         autoComplete="off"
-        placeholder={compact ? "搜索产品、品类" : "搜索产品、品类或备注"}
+        placeholder={compact ? "搜索产品、别名或品牌" : "搜索产品、别名、品牌、品类或备注"}
         className={`min-w-0 flex-1 bg-transparent font-light text-[#5A4C4A] outline-none placeholder:text-stone-400 ${
           compact ? "text-xs" : "text-sm"
         }`}
@@ -220,47 +223,61 @@ export function InventorySearchField({
 }
 
 export interface InventoryFilterControlsProps {
+  readonly brand: string | null;
+  readonly brands: readonly string[];
   readonly category: string | null;
   readonly categories: readonly string[];
   readonly sort: InventorySortOption;
+  readonly onBrandChange: (brand: string | null) => void;
   readonly onCategoryChange: (category: string | null) => void;
   readonly onSortChange: (sort: InventorySortOption) => void;
 }
 
 /**
- * 在不可用的品牌筛选旁渲染有真实数据支持的品类与排序控件。
- * Renders the factual category and sort controls beside the unavailable brand chip.
+ * 渲染由真实库存数据支持的品牌、品类与排序控件。
+ * Renders the brand, category, and sort controls backed by real inventory data.
  *
  * @param props - 当前筛选、可用品类与切换回调。 / Current filters, available categories, and change callbacks.
  * @returns 可复用的 Figma 筛选胶囊行。 / The reusable Figma filter-chip row.
  */
 export function InventoryFilterControls({
+  brand,
+  brands,
   category,
   categories,
   sort,
+  onBrandChange,
   onCategoryChange,
   onSortChange,
 }: InventoryFilterControlsProps) {
+  const brandOptions: readonly SelectMenuOption<string>[] = [
+    { value: "", label: "全部品牌" },
+    ...brands.map((choice) => ({ value: choice, label: choice })),
+  ];
   const categoryOptions: readonly SelectMenuOption<string>[] = [
     { value: "", label: "全部品类" },
     ...categories.map((choice) => ({ value: choice, label: choice })),
   ];
   const sortOptions: readonly SelectMenuOption<InventorySortOption>[] = [
     { value: "deadline-asc", label: "按临期排序", icon: "calendar" },
-    { value: "name-asc", label: "按名称排序", icon: "sort" },
+    { value: "created-desc", label: "按最近添加", icon: "sort" },
   ];
 
   return (
-    <div className="flex min-w-0 items-center gap-2 pb-1 md:pb-0">
-      <button
-        type="button"
-        aria-disabled="true"
-        data-beautio-select-trigger="compact"
-        title="当前数据还没有品牌字段"
-        className="flex shrink-0 items-center gap-1.5 rounded-full border border-[#D8D4D1] px-3 py-1.5 text-xs text-[#7A7572]"
-      >
-        <Icon name="tag" className="size-3" />品牌<Icon name="chevron-down" className="size-3" />
-      </button>
+    <div className="flex min-w-0 items-center gap-2 overflow-x-auto pb-1 md:overflow-visible md:pb-0">
+      <SelectMenu
+        value={brand ?? ""}
+        options={brandOptions}
+        onChange={(nextBrand) => onBrandChange(nextBrand || null)}
+        ariaLabel="按品牌筛选"
+        leadingIcon="tag"
+        triggerLabel={brand ?? "品牌"}
+        variant="compact"
+        disabled={brands.length === 0}
+        className="shrink-0"
+        buttonClassName="flex items-center gap-1.5 rounded-full border border-[#D8D4D1] px-3 py-1.5 text-xs text-[#7A7572] transition-all disabled:cursor-not-allowed disabled:opacity-45"
+        menuClassName="left-0"
+      />
 
       <SelectMenu
         value={category ?? ""}
@@ -292,18 +309,21 @@ export function InventoryFilterControls({
 }
 
 /**
- * 只渲染当前 contracts 支持的浏览控件，并让缺失能力保持无操作。
- * Renders only browse controls backed by current contracts and marks absent capabilities inert.
+ * 渲染当前 contracts 支持的真实库存浏览控件。
+ * Renders the factual inventory browsing controls backed by current contracts.
  *
- * @param props - 受控搜索、品类、排序值与回调。 / Controlled search, category, sorting values and callbacks.
- * @returns 不伪造品牌、录入时间或添加行为的响应式 Figma 工具栏。 / Responsive Figma toolbar without fake brand, recorded-at, or add behavior.
+ * @param props - 受控搜索、品牌、品类、排序值与回调。 / Controlled search, brand, category, sorting values and callbacks.
+ * @returns 只使用真实库存事实的响应式 Figma 工具栏。 / Responsive Figma toolbar backed only by real inventory facts.
  */
 export function BrowseToolbar({
   query,
+  brand,
+  brands,
   category,
   categories,
   sort,
   onQueryChange,
+  onBrandChange,
   onCategoryChange,
   onSortChange,
 }: BrowseToolbarProps) {
@@ -311,9 +331,12 @@ export function BrowseToolbar({
     <form className="flex min-w-0 flex-col gap-3 md:flex-row md:items-center" role="search" onSubmit={(event) => event.preventDefault()}>
       <InventorySearchField query={query} onQueryChange={onQueryChange} />
       <InventoryFilterControls
+        brand={brand}
+        brands={brands}
         category={category}
         categories={categories}
         sort={sort}
+        onBrandChange={onBrandChange}
         onCategoryChange={onCategoryChange}
         onSortChange={onSortChange}
       />

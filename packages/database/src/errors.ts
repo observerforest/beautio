@@ -27,6 +27,7 @@ export function assertInventoryMatches(
 ): void {
   if (
     existing.productId !== incoming.productId ||
+    existing.createdAt !== incoming.createdAt ||
     existing.lifecycleStatus !== incoming.lifecycleStatus ||
     existing.openedOn !== incoming.openedOn ||
     existing.openedOnAccuracy !== incoming.openedOnAccuracy ||
