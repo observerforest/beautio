@@ -1,6 +1,6 @@
 import { Icon } from "../../components/Icon.tsx";
 import { Logo } from "../../components/Logo.tsx";
-import type { InventoryBrowseCounts, InventoryCollectionView } from "../../view-model.ts";
+import type { InventoryBrowseCounts, InventoryCollectionView } from "./models/index.ts";
 import { CollectionTabs } from "./InventoryControls.tsx";
 
 export interface DesktopSidebarProps {

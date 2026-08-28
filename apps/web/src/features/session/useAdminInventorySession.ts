@@ -1,7 +1,8 @@
 import type { InventoryListOutput } from "@beautio/contracts";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { AdminApiClient, AdminApiError } from "../../admin-api.ts";
-import { localDateForApi } from "../../view-model.ts";
+import { isAbortError } from "../../utils/is-abort-error.ts";
+import { localDateForApi } from "../../utils/local-date-for-api.ts";
 
 export type SessionPhase = "locked" | "unlocking" | "unlocked";
 
@@ -203,8 +204,4 @@ function errorMessage(error: unknown): string {
     return "无法连接 Beautio 服务，请确认本地服务正在运行。";
   }
   return "发生了未知错误，请稍后再试。";
-}
-
-function isAbortError(error: unknown): boolean {
-  return error instanceof DOMException && error.name === "AbortError";
 }

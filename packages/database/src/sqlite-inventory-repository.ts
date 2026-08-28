@@ -7,69 +7,34 @@ import type {
 } from "@beautio/application";
 import {
   BeautioError,
-  createInventoryItem,
-  createProduct,
   type ImageAsset,
-  type ImageAssetStatus,
-  type ImageMediaType,
   type InventoryItem,
-  type LifecycleStatus,
-  type OpenedOnAccuracy,
   type Product,
 } from "@beautio/domain";
 import { DatabaseSync } from "node:sqlite";
+import { mapSqliteConflict } from "./errors.ts";
+import {
+  importInventoryData as importInventoryDataWithOperations,
+  type InventoryImportData,
+  type InventoryImportResult,
+} from "./import.ts";
+import {
+  mapImageAssetRow,
+  mapInventoryRow,
+  type ImageAssetRow,
+  type InventoryRow,
+} from "./row-mappers.ts";
+import {
+  insertInventoryItem as insertInventoryItemRecord,
+  insertProduct as insertProductRecord,
+  readImageAsset as readImageAssetRecord,
+  readInventoryItem as readInventoryItemRecord,
+  readProduct as readProductRecord,
+  updateInventoryRow as updateInventoryRecord,
+} from "./records.ts";
+import { applySchema } from "./schema.ts";
 
-interface InventoryRow {
-  readonly id: string;
-  readonly product_id: string | null;
-  readonly lifecycle_status: LifecycleStatus;
-  readonly opened_on: string | null;
-  readonly opened_on_accuracy: OpenedOnAccuracy | null;
-  readonly expires_on: string | null;
-  readonly pao_duration_months: number | null;
-  readonly pao_deadline: string | null;
-  readonly usable_until: string | null;
-  readonly custom_notes: string | null;
-}
-
-interface ProductRow {
-  readonly id: string;
-  readonly name: string;
-  readonly category: string | null;
-  readonly size_label: string | null;
-  readonly image_asset_id: string | null;
-  readonly image_ref: string | null;
-  readonly ingredient_list_text: string | null;
-  readonly shared_notes: string | null;
-}
-
-interface ImageAssetRow {
-  readonly id: string;
-  readonly storage_key: string;
-  readonly media_type: ImageMediaType;
-  readonly byte_size: number;
-  readonly status: ImageAssetStatus;
-  readonly product_id: string | null;
-  readonly expires_at: string;
-  readonly created_at: string;
-}
-
-interface TableInfoRow {
-  readonly name: string;
-  readonly notnull: 0 | 1;
-}
-
-export interface InventoryImportData {
-  readonly products: readonly Product[];
-  readonly inventoryItems: readonly InventoryItem[];
-}
-
-export interface InventoryImportResult {
-  readonly productsInserted: number;
-  readonly productsExisting: number;
-  readonly inventoryItemsInserted: number;
-  readonly inventoryItemsExisting: number;
-}
+export type { InventoryImportData, InventoryImportResult } from "./import.ts";
 
 export class SqliteInventoryRepository implements InventoryRepository {
   readonly #database: DatabaseSync;
@@ -85,24 +50,7 @@ export class SqliteInventoryRepository implements InventoryRepository {
     }
 
     this.#database = new DatabaseSync(databasePath);
-    this.#database.exec("PRAGMA foreign_keys = OFF");
-    this.createCurrentTables();
-    this.addProductReferenceToLegacyInventory();
-    this.addImageReferenceToLegacyProducts();
-    this.addImageAssetReferenceToLegacyProducts();
-    this.addOpeningAccuracyToLegacyInventory();
-    this.addTextFieldsToLegacyProducts();
-    this.addCustomNotesToLegacyInventory();
-    this.rebuildProductsForNullableCategory();
-    this.#database.exec(`
-      CREATE UNIQUE INDEX IF NOT EXISTS products_image_asset_unique
-      ON products(image_asset_id)
-      WHERE image_asset_id IS NOT NULL;
-      CREATE UNIQUE INDEX IF NOT EXISTS image_assets_product_unique
-      ON image_assets(product_id)
-      WHERE product_id IS NOT NULL;
-    `);
-    this.#database.exec("PRAGMA foreign_keys = ON");
+    applySchema(this.#database);
   }
 
   /** @inheritdoc */
@@ -468,43 +416,13 @@ export class SqliteInventoryRepository implements InventoryRepository {
   async importInventoryData(
     data: InventoryImportData,
   ): Promise<InventoryImportResult> {
-    const result = {
-      productsInserted: 0,
-      productsExisting: 0,
-      inventoryItemsInserted: 0,
-      inventoryItemsExisting: 0,
-    };
-
-    return this.inImmediateTransaction(() => {
-      for (const product of data.products) {
-        if (product.imageAssetId !== null) {
-          throw new BeautioError(
-            "INVALID_INPUT",
-            "local import cannot create managed image associations",
-          );
-        }
-        const existing = this.readProduct(product.id);
-        if (existing === null) {
-          this.insertProduct(product);
-          result.productsInserted += 1;
-        } else {
-          assertProductMatches(existing, product);
-          result.productsExisting += 1;
-        }
-      }
-
-      for (const item of data.inventoryItems) {
-        const existing = this.readInventoryItem(item.id);
-        if (existing === null) {
-          this.insertInventoryItem(item);
-          result.inventoryItemsInserted += 1;
-        } else {
-          assertInventoryMatches(existing, item);
-          result.inventoryItemsExisting += 1;
-        }
-      }
-
-      return result;
+    return importInventoryDataWithOperations(data, {
+      readProduct: (productId) => this.readProduct(productId),
+      readInventoryItem: (inventoryItemId) =>
+        this.readInventoryItem(inventoryItemId),
+      insertProduct: (product) => this.insertProduct(product),
+      insertInventoryItem: (item) => this.insertInventoryItem(item),
+      inImmediateTransaction: (action) => this.inImmediateTransaction(action),
     });
   }
 
@@ -517,391 +435,28 @@ export class SqliteInventoryRepository implements InventoryRepository {
     this.#database.close();
   }
 
-  private createCurrentTables(): void {
-    this.#database.exec(`
-      CREATE TABLE IF NOT EXISTS products (
-        id TEXT PRIMARY KEY,
-        name TEXT NOT NULL CHECK (length(trim(name)) > 0),
-        category TEXT CHECK (
-          category IS NULL OR length(trim(category)) > 0
-        ),
-        size_label TEXT CHECK (
-          size_label IS NULL OR length(trim(size_label)) > 0
-        ),
-        image_asset_id TEXT REFERENCES image_assets(id),
-        image_ref TEXT CHECK (
-          image_ref IS NULL OR length(trim(image_ref)) > 0
-        ),
-        ingredient_list_text TEXT CHECK (
-          ingredient_list_text IS NULL OR (
-            length(trim(ingredient_list_text)) > 0 AND
-            length(trim(ingredient_list_text)) <= 5000
-          )
-        ),
-        shared_notes TEXT CHECK (
-          shared_notes IS NULL OR (
-            length(trim(shared_notes)) > 0 AND
-            length(trim(shared_notes)) <= 1000
-          )
-        )
-      ) STRICT;
-
-      CREATE TABLE IF NOT EXISTS inventory_items (
-        id TEXT PRIMARY KEY,
-        product_id TEXT REFERENCES products(id),
-        lifecycle_status TEXT NOT NULL CHECK (
-          lifecycle_status IN ('unopened', 'opened', 'finished', 'discarded')
-        ),
-        opened_on TEXT,
-        opened_on_accuracy TEXT CHECK (
-          opened_on_accuracy IS NULL OR
-          opened_on_accuracy IN ('exact', 'estimated', 'legacy_unknown')
-        ),
-        expires_on TEXT,
-        pao_duration_months INTEGER CHECK (
-          pao_duration_months IS NULL OR
-          (pao_duration_months >= 1 AND pao_duration_months <= 120)
-        ),
-        pao_deadline TEXT,
-        usable_until TEXT,
-        custom_notes TEXT CHECK (
-          custom_notes IS NULL OR (
-            length(trim(custom_notes)) > 0 AND
-            length(trim(custom_notes)) <= 1000
-          )
-        )
-      ) STRICT;
-
-      CREATE TABLE IF NOT EXISTS image_assets (
-        id TEXT PRIMARY KEY,
-        storage_key TEXT NOT NULL UNIQUE CHECK (length(trim(storage_key)) > 0),
-        media_type TEXT NOT NULL CHECK (
-          media_type IN ('image/jpeg', 'image/png', 'image/webp')
-        ),
-        byte_size INTEGER NOT NULL CHECK (byte_size > 0),
-        status TEXT NOT NULL CHECK (
-          status IN ('staging', 'temporary', 'linked', 'pending_cleanup')
-        ),
-        product_id TEXT REFERENCES products(id),
-        expires_at TEXT NOT NULL CHECK (length(trim(expires_at)) > 0),
-        created_at TEXT NOT NULL CHECK (length(trim(created_at)) > 0),
-        CHECK (
-          (status = 'linked' AND product_id IS NOT NULL) OR
-          (status <> 'linked' AND product_id IS NULL)
-        )
-      ) STRICT;
-    `);
-  }
-
-  private addProductReferenceToLegacyInventory(): void {
-    if (this.tableHasColumn("inventory_items", "product_id")) {
-      return;
-    }
-    this.#database.exec(
-      "ALTER TABLE inventory_items ADD COLUMN product_id TEXT REFERENCES products(id)",
-    );
-  }
-
-  private addImageReferenceToLegacyProducts(): void {
-    if (this.tableHasColumn("products", "image_ref")) {
-      return;
-    }
-    this.#database.exec(
-      `ALTER TABLE products ADD COLUMN image_ref TEXT CHECK (
-        image_ref IS NULL OR length(trim(image_ref)) > 0
-      )`,
-    );
-  }
-
-  private addImageAssetReferenceToLegacyProducts(): void {
-    if (this.tableHasColumn("products", "image_asset_id")) {
-      return;
-    }
-    this.#database.exec(
-      "ALTER TABLE products ADD COLUMN image_asset_id TEXT REFERENCES image_assets(id)",
-    );
-  }
-
-  private addOpeningAccuracyToLegacyInventory(): void {
-    if (!this.tableHasColumn("inventory_items", "opened_on_accuracy")) {
-      this.#database.exec(
-        `ALTER TABLE inventory_items ADD COLUMN opened_on_accuracy TEXT CHECK (
-          opened_on_accuracy IS NULL OR
-          opened_on_accuracy IN ('exact', 'estimated', 'legacy_unknown')
-        )`,
-      );
-    }
-    this.#database.exec(
-      `UPDATE inventory_items
-      SET opened_on_accuracy = 'legacy_unknown'
-      WHERE opened_on IS NOT NULL AND opened_on_accuracy IS NULL`,
-    );
-  }
-
-  private addTextFieldsToLegacyProducts(): void {
-    if (!this.tableHasColumn("products", "ingredient_list_text")) {
-      this.#database.exec(
-        `ALTER TABLE products ADD COLUMN ingredient_list_text TEXT CHECK (
-          ingredient_list_text IS NULL OR (
-            length(trim(ingredient_list_text)) > 0 AND
-            length(trim(ingredient_list_text)) <= 5000
-          )
-        )`,
-      );
-    }
-    if (!this.tableHasColumn("products", "shared_notes")) {
-      this.#database.exec(
-        `ALTER TABLE products ADD COLUMN shared_notes TEXT CHECK (
-          shared_notes IS NULL OR (
-            length(trim(shared_notes)) > 0 AND
-            length(trim(shared_notes)) <= 1000
-          )
-        )`,
-      );
-    }
-  }
-
-  private addCustomNotesToLegacyInventory(): void {
-    if (this.tableHasColumn("inventory_items", "custom_notes")) {
-      return;
-    }
-    this.#database.exec(
-      `ALTER TABLE inventory_items ADD COLUMN custom_notes TEXT CHECK (
-        custom_notes IS NULL OR (
-          length(trim(custom_notes)) > 0 AND
-          length(trim(custom_notes)) <= 1000
-        )
-      )`,
-    );
-  }
-
-  private rebuildProductsForNullableCategory(): void {
-    const category = this.tableColumns("products").find(
-      (column) => column.name === "category",
-    );
-    if (category === undefined || category.notnull === 0) {
-      return;
-    }
-
-    this.#database.exec(`
-      BEGIN IMMEDIATE;
-      CREATE TABLE products_next (
-        id TEXT PRIMARY KEY,
-        name TEXT NOT NULL CHECK (length(trim(name)) > 0),
-        category TEXT CHECK (
-          category IS NULL OR length(trim(category)) > 0
-        ),
-        size_label TEXT CHECK (
-          size_label IS NULL OR length(trim(size_label)) > 0
-        ),
-        image_asset_id TEXT REFERENCES image_assets(id),
-        image_ref TEXT CHECK (
-          image_ref IS NULL OR length(trim(image_ref)) > 0
-        ),
-        ingredient_list_text TEXT CHECK (
-          ingredient_list_text IS NULL OR (
-            length(trim(ingredient_list_text)) > 0 AND
-            length(trim(ingredient_list_text)) <= 5000
-          )
-        ),
-        shared_notes TEXT CHECK (
-          shared_notes IS NULL OR (
-            length(trim(shared_notes)) > 0 AND
-            length(trim(shared_notes)) <= 1000
-          )
-        )
-      ) STRICT;
-      INSERT INTO products_next (
-        id,
-        name,
-        category,
-        size_label,
-        image_asset_id,
-        image_ref,
-        ingredient_list_text,
-        shared_notes
-      )
-      SELECT
-        id,
-        name,
-        category,
-        size_label,
-        image_asset_id,
-        image_ref,
-        ingredient_list_text,
-        shared_notes
-      FROM products;
-      DROP TABLE products;
-      ALTER TABLE products_next RENAME TO products;
-      COMMIT;
-    `);
-  }
-
-  private tableColumns(tableName: string): readonly TableInfoRow[] {
-    return this.#database
-      .prepare(`PRAGMA table_info(${tableName})`)
-      .all() as unknown as readonly TableInfoRow[];
-  }
-
-  private tableHasColumn(tableName: string, columnName: string): boolean {
-    return this.tableColumns(tableName).some(
-      (column) => column.name === columnName,
-    );
-  }
-
   private readInventoryItem(inventoryItemId: string): InventoryItem | null {
-    const row = this.#database
-      .prepare(
-        `SELECT
-          id,
-          product_id,
-          lifecycle_status,
-          opened_on,
-          opened_on_accuracy,
-          expires_on,
-          pao_duration_months,
-          pao_deadline,
-          usable_until,
-          custom_notes
-        FROM inventory_items
-        WHERE id = ?`,
-      )
-      .get(inventoryItemId) as InventoryRow | undefined;
-    return row === undefined ? null : mapInventoryRow(row);
+    return readInventoryItemRecord(this.#database, inventoryItemId);
   }
 
   private readProduct(productId: string): Product | null {
-    const row = this.#database
-      .prepare(
-        `SELECT
-          id,
-          name,
-          category,
-          size_label,
-          image_asset_id,
-          image_ref,
-          ingredient_list_text,
-          shared_notes
-        FROM products
-        WHERE id = ?`,
-      )
-      .get(productId) as ProductRow | undefined;
-    return row === undefined ? null : mapProductRow(row);
+    return readProductRecord(this.#database, productId);
   }
 
   private readImageAsset(imageAssetId: string): ImageAsset | null {
-    const row = this.#database
-      .prepare(
-        `SELECT
-          id,
-          storage_key,
-          media_type,
-          byte_size,
-          status,
-          product_id,
-          expires_at,
-          created_at
-        FROM image_assets
-        WHERE id = ?`,
-      )
-      .get(imageAssetId) as ImageAssetRow | undefined;
-    return row === undefined ? null : mapImageAssetRow(row);
+    return readImageAssetRecord(this.#database, imageAssetId);
   }
 
   private insertProduct(product: Product): void {
-    try {
-      this.#database
-        .prepare(
-          `INSERT INTO products (
-            id,
-            name,
-            category,
-            size_label,
-            image_asset_id,
-            image_ref,
-            ingredient_list_text,
-            shared_notes
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-        )
-        .run(
-          product.id,
-          product.name,
-          product.category,
-          product.sizeLabel,
-          product.imageAssetId,
-          product.imageRef,
-          product.ingredientListText,
-          product.sharedNotes,
-        );
-    } catch (error) {
-      throw mapSqliteConflict(error, `Product ${product.id} conflicts`);
-    }
+    insertProductRecord(this.#database, product);
   }
 
   private insertInventoryItem(item: InventoryItem): void {
-    try {
-      this.#database
-        .prepare(
-          `INSERT INTO inventory_items (
-            id,
-            product_id,
-            lifecycle_status,
-            opened_on,
-            opened_on_accuracy,
-            expires_on,
-            pao_duration_months,
-            pao_deadline,
-            usable_until,
-            custom_notes
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        )
-        .run(
-          item.id,
-          item.productId,
-          item.lifecycleStatus,
-          item.openedOn,
-          item.openedOnAccuracy,
-          item.expiresOn,
-          item.paoDurationMonths,
-          item.paoDeadline,
-          item.usableUntil,
-          item.customNotes,
-        );
-    } catch (error) {
-      throw mapSqliteConflict(error, `inventory item ${item.id} conflicts`);
-    }
+    insertInventoryItemRecord(this.#database, item);
   }
 
   private updateInventoryRow(item: InventoryItem): void {
-    const result = this.#database
-      .prepare(
-        `UPDATE inventory_items SET
-          lifecycle_status = ?,
-          opened_on = ?,
-          opened_on_accuracy = ?,
-          expires_on = ?,
-          pao_duration_months = ?,
-          pao_deadline = ?,
-          usable_until = ?
-        WHERE id = ?`,
-      )
-      .run(
-        item.lifecycleStatus,
-        item.openedOn,
-        item.openedOnAccuracy,
-        item.expiresOn,
-        item.paoDurationMonths,
-        item.paoDeadline,
-        item.usableUntil,
-        item.id,
-      );
-
-    if (result.changes !== 1) {
-      throw new BeautioError(
-        "INVENTORY_ITEM_NOT_FOUND",
-        `inventory item ${item.id} does not exist`,
-      );
-    }
+    updateInventoryRecord(this.#database, item);
   }
 
   private assertImageCanBeLinked(imageAssetId: string, now: string): void {
@@ -1005,107 +560,4 @@ export class SqliteInventoryRepository implements InventoryRepository {
       throw error;
     }
   }
-}
-
-function mapInventoryRow(row: InventoryRow): InventoryItem {
-  return createInventoryItem({
-    id: row.id,
-    productId: row.product_id,
-    lifecycleStatus: row.lifecycle_status,
-    openedOn: row.opened_on,
-    openedOnAccuracy: row.opened_on_accuracy,
-    expiresOn: row.expires_on,
-    paoDurationMonths: row.pao_duration_months,
-    paoDeadline: row.pao_deadline,
-    usableUntil: row.usable_until,
-    customNotes: row.custom_notes,
-  });
-}
-
-function mapProductRow(row: ProductRow): Product {
-  return createProduct({
-    id: row.id,
-    name: row.name,
-    category: row.category,
-    sizeLabel: row.size_label,
-    imageAssetId: row.image_asset_id,
-    imageRef: row.image_ref,
-    ingredientListText: row.ingredient_list_text,
-    sharedNotes: row.shared_notes,
-  });
-}
-
-function mapImageAssetRow(row: ImageAssetRow): ImageAsset {
-  return {
-    id: row.id,
-    storageKey: row.storage_key,
-    mediaType: row.media_type,
-    byteSize: row.byte_size,
-    status: row.status,
-    productId: row.product_id,
-    expiresAt: row.expires_at,
-    createdAt: row.created_at,
-  };
-}
-
-function assertProductMatches(existing: Product, incoming: Product): void {
-  if (
-    existing.name !== incoming.name ||
-    existing.category !== incoming.category ||
-    existing.sizeLabel !== incoming.sizeLabel ||
-    existing.imageAssetId !== incoming.imageAssetId ||
-    existing.imageRef !== incoming.imageRef ||
-    existing.ingredientListText !== incoming.ingredientListText ||
-    existing.sharedNotes !== incoming.sharedNotes
-  ) {
-    throw importConflict("product", incoming.id);
-  }
-}
-
-function assertInventoryMatches(
-  existing: InventoryItem,
-  incoming: InventoryItem,
-): void {
-  if (
-    existing.productId !== incoming.productId ||
-    existing.lifecycleStatus !== incoming.lifecycleStatus ||
-    existing.openedOn !== incoming.openedOn ||
-    existing.openedOnAccuracy !== incoming.openedOnAccuracy ||
-    existing.expiresOn !== incoming.expiresOn ||
-    existing.paoDurationMonths !== incoming.paoDurationMonths ||
-    existing.paoDeadline !== incoming.paoDeadline ||
-    existing.usableUntil !== incoming.usableUntil ||
-    existing.customNotes !== incoming.customNotes
-  ) {
-    throw importConflict("inventory item", incoming.id);
-  }
-}
-
-function importConflict(entityName: string, id: string): BeautioError {
-  return new BeautioError(
-    "INVALID_INPUT",
-    `${entityName} ${id} already exists with different data`,
-  );
-}
-
-function mapSqliteConflict(error: unknown, message: string): BeautioError {
-  if (error instanceof BeautioError) {
-    return error;
-  }
-  if (isSqliteConstraintError(error)) {
-    return new BeautioError("BATCH_CONFLICT", message);
-  }
-  return new BeautioError("INTERNAL_ERROR", "database write failed");
-}
-
-function isSqliteConstraintError(
-  error: unknown,
-): error is { readonly errcode: number } {
-  return (
-    typeof error === "object" &&
-    error !== null &&
-    "errcode" in error &&
-    typeof error.errcode === "number" &&
-    (error.errcode & 0xff) === 19
-  );
 }

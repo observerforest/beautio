@@ -9,7 +9,6 @@ import {
   canPreserveLegacyAccuracy,
   inventoryCardViews,
   lifecycleLabel,
-  localDateForApi,
   managedImageAssetId,
   openedOnAccuracy,
   paoDeadlineAccuracy,
@@ -19,7 +18,8 @@ import {
   type InventoryBrowseOptions,
   usabilityLabel,
   warningLabel,
-} from "../src/view-model.ts";
+} from "../src/features/inventory/models/index.ts";
+import { localDateForApi } from "../src/utils/local-date-for-api.ts";
 
 test("inventory summary keeps lifecycle and usability counts independent", () => {
   const items: readonly InventoryListItemOutput[] = [

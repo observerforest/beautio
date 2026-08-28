@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { AdminApiClient, AdminApiError, type PrivateImageVariant } from "../../admin-api.ts";
-import type { ProductImageChoice } from "../../view-model.ts";
+import { isAbortError } from "../../utils/is-abort-error.ts";
+import type { ProductImageChoice } from "./models/index.ts";
 
 export type ProductImageState =
   | { readonly status: "empty"; readonly src: null }
@@ -92,8 +93,4 @@ function initialState(choice: ProductImageChoice): ProductImageState {
   if (choice.kind === "none") return { status: "empty", src: null };
   if (choice.kind === "legacy") return { status: "ready", src: choice.imageRef };
   return { status: "loading", src: null };
-}
-
-function isAbortError(error: unknown): boolean {
-  return error instanceof DOMException && error.name === "AbortError";
 }
