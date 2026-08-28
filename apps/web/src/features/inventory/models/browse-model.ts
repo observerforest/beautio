@@ -89,6 +89,14 @@ export function projectInventoryBrowse(
   };
 }
 
+/**
+ * 判断库存记录是否属于指定的生命周期视图。
+ * Determines whether an inventory item belongs to the requested lifecycle view.
+ *
+ * @param item - 待分类的库存记录。 / Inventory item to classify.
+ * @param view - 目标活跃或归档视图。 / Target active or archive view.
+ * @returns 未开封和已开封记录属于活跃视图；其他生命周期属于归档视图。 / True when unopened or opened items target the active view, or any other lifecycle targets the archive view.
+ */
 function itemBelongsToView(
   item: InventoryListItemOutput,
   view: InventoryCollectionView,
@@ -98,6 +106,14 @@ function itemBelongsToView(
   return view === "active" ? isActive : !isActive;
 }
 
+/**
+ * 判断库存记录是否匹配一个具体的活跃状态筛选器。
+ * Determines whether an inventory item matches one concrete active-state filter.
+ *
+ * @param item - 待检查的库存记录。 / Inventory item to inspect.
+ * @param status - 已排除“全部”的状态筛选器。 / Status filter with the all option excluded.
+ * @returns 关注筛选器使用统一的风险判断；其他筛选器直接匹配生命周期。 / Whether the attention predicate or lifecycle value matches the requested filter.
+ */
 function itemMatchesStatus(
   item: InventoryListItemOutput,
   status: Exclude<InventoryStatusFilter, "all">,
@@ -108,6 +124,14 @@ function itemMatchesStatus(
   return item.lifecycle_status === status;
 }
 
+/**
+ * 在库存标识、产品资料和备注字段中执行不区分大小写的包含搜索。
+ * Performs a case-insensitive substring search across inventory identity, product facts, and note fields.
+ *
+ * @param item - 待搜索的库存记录。 / Inventory item to search.
+ * @param normalizedQuery - 已由调用方去除首尾空白并转为小写的非空搜索词。 / Non-empty query already trimmed and lowercased by the caller.
+ * @returns 任一已记录的可搜索字段包含搜索词时返回 true。 / True when any recorded searchable field contains the query.
+ */
 function itemMatchesQuery(
   item: InventoryListItemOutput,
   normalizedQuery: string,
@@ -131,6 +155,13 @@ function itemMatchesQuery(
   );
 }
 
+/**
+ * 为选定的库存排序方式构造确定性比较器。
+ * Builds a deterministic comparator for the selected inventory sort mode.
+ *
+ * @param sort - 期限升序或名称升序。 / Deadline-ascending or name-ascending sort mode.
+ * @returns 缺失主排序值排在末尾、主值相同时以库存 ID 决胜的比较器。 / A comparator that places missing primary values last and breaks primary ties by inventory ID.
+ */
 function inventoryComparator(
   sort: InventorySortOption,
 ): (left: InventoryListItemOutput, right: InventoryListItemOutput) => number {
@@ -148,18 +179,41 @@ function inventoryComparator(
   };
 }
 
+/**
+ * 比较两个可空文本值，并把缺失值稳定地排在已记录值之后。
+ * Compares nullable text values while consistently placing missing values after recorded values.
+ *
+ * @param left - 左侧可空文本。 / Nullable text on the left.
+ * @param right - 右侧可空文本。 / Nullable text on the right.
+ * @returns 左值靠前时为 -1、相等时为 0、靠后时为 1；非空比较不区分大小写。 / -1 when left sorts first, 0 when equal, or 1 when right sorts first; non-null comparison is case-insensitive.
+ */
 function compareNullableText(left: string | null, right: string | null): number {
   if (left === null) return right === null ? 0 : 1;
   if (right === null) return -1;
   return compareText(left.toLowerCase(), right.toLowerCase());
 }
 
+/**
+ * 使用 JavaScript 字符串顺序比较两个文本值。
+ * Compares two text values using JavaScript string ordering.
+ *
+ * @param left - 左侧文本。 / Text on the left.
+ * @param right - 右侧文本。 / Text on the right.
+ * @returns 左值靠前时为 -1、完全相等时为 0、靠后时为 1；不执行本地化排序。 / -1 when left sorts first, 0 when equal, or 1 when right sorts first; no locale-aware collation is performed.
+ */
 function compareText(left: string, right: string): number {
   if (left < right) return -1;
   if (left > right) return 1;
   return 0;
 }
 
+/**
+ * 从完整库存源计算浏览导航所需的各类计数。
+ * Computes the browse-navigation counts from the complete inventory source.
+ *
+ * @param items - 未经当前视图、搜索或分类筛选的完整库存列表。 / Complete inventory list before view, query, or category filtering.
+ * @returns 总数、活跃数、归档数、开封数、未开封数以及仅限活跃库存的关注数。 / Total, active, archive, opened, unopened, and active-only attention counts.
+ */
 function inventoryBrowseCounts(
   items: readonly InventoryListItemOutput[],
 ): InventoryBrowseCounts {
@@ -183,6 +237,13 @@ function inventoryBrowseCounts(
   );
 }
 
+/**
+ * 提取当前生命周期视图中可用的唯一产品分类。
+ * Extracts the unique product categories available in the current lifecycle view.
+ *
+ * @param items - 已限定到当前生命周期视图的库存列表。 / Inventory items already limited to the current lifecycle view.
+ * @returns 去除缺失值和完全重复值后按确定性文本顺序排列的分类。 / Categories with missing and exactly duplicated values removed, sorted by deterministic text order.
+ */
 function inventoryCategoryChoices(
   items: readonly InventoryListItemOutput[],
 ): readonly string[] {
@@ -195,6 +256,16 @@ function inventoryCategoryChoices(
   )].sort(compareText);
 }
 
+/**
+ * 根据当前视图是否有来源数据以及搜索是否生效选择空状态文案。
+ * Selects empty-state copy from source availability and active query context.
+ *
+ * @param viewItemCount - 应用搜索和状态筛选前，当前生命周期视图中的记录数。 / Number of items in the lifecycle view before query and status filtering.
+ * @param filteredItemCount - 应用全部浏览条件后的记录数。 / Number of items after all browse conditions are applied.
+ * @param view - 当前活跃或归档视图。 / Current active or archive view.
+ * @param normalizedQuery - 已去除首尾空白并转为小写的搜索词。 / Trimmed and lowercased query.
+ * @returns 有结果时返回 null；否则返回视图为空、搜索无结果或筛选无结果文案。 / Null when results exist; otherwise copy for an empty view, unmatched query, or unmatched filters.
+ */
 function inventoryBrowseEmptyCopy(
   viewItemCount: number,
   filteredItemCount: number,
