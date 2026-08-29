@@ -90,6 +90,8 @@ export interface ModalShellProps {
   readonly toast?: ReactNode;
   readonly busy?: boolean;
   readonly wide?: boolean;
+  readonly animateMobileEnter?: boolean;
+  readonly animateMobileExit?: boolean;
   readonly onClose: () => void;
 }
 
@@ -97,7 +99,7 @@ export interface ModalShellProps {
  * 承载原生模态对话框，同时保留 Figma 的底部抽屉与桌面卡片几何形态。
  * Hosts a native modal dialog while preserving the Figma bottom-sheet and desktop-card geometry.
  *
- * @param props - 对话框文案、正文、可选首屏/页脚/浮层提示、忙碌状态与关闭回调；可选区域可通过渲染函数接入统一关闭流程。 / Dialog copy, body, optional hero/footer/overlay notice, busy state, and close callback; optional slots can join the shared close flow through render functions.
+ * @param props - 对话框文案、正文、可选首屏/页脚/浮层提示、忙碌状态、移动端动效策略与关闭回调；可选区域可通过渲染函数接入统一关闭流程。 / Dialog copy, body, optional hero/footer/overlay notice, busy state, mobile motion policy, and close callback; optional slots can join the shared close flow through render functions.
  * @returns 可访问模态框；写入进行时会阻止 Escape 与背景点击关闭。 / An accessible modal that blocks Escape and backdrop dismissal while a write is pending.
  */
 export function ModalShell({
@@ -109,6 +111,8 @@ export function ModalShell({
   toast,
   busy = false,
   wide = false,
+  animateMobileEnter = true,
+  animateMobileExit = true,
   onClose,
 }: ModalShellProps) {
   const dialogRef = useRef<HTMLDialogElement>(null);
@@ -131,7 +135,8 @@ export function ModalShell({
   const requestClose = useCallback(() => {
     if (busy || closingRef.current) return;
     closingRef.current = true;
-    const shouldAnimate = window.matchMedia("(max-width: 767px)").matches
+    const shouldAnimate = animateMobileExit
+      && window.matchMedia("(max-width: 767px)").matches
       && !window.matchMedia("(prefers-reduced-motion: reduce)").matches;
     if (!shouldAnimate) {
       finishClose();
@@ -140,7 +145,7 @@ export function ModalShell({
 
     setClosing(true);
     closeFallbackTimerRef.current = window.setTimeout(finishClose, MOBILE_DIALOG_EXIT_FALLBACK_MS);
-  }, [busy, finishClose]);
+  }, [animateMobileExit, busy, finishClose]);
 
   const resolvedHero = typeof hero === "function" ? hero(requestClose) : hero;
   const resolvedFooter = typeof footer === "function" ? footer(requestClose) : footer;
@@ -166,6 +171,8 @@ export function ModalShell({
       className="beautio-dialog"
       aria-labelledby={titleId}
       aria-busy={busy || closing}
+      data-mobile-enter-motion={animateMobileEnter ? "true" : "false"}
+      data-mobile-exit-motion={animateMobileExit ? "true" : "false"}
       data-closing={closing ? "true" : undefined}
       onCancel={(event) => {
         event.preventDefault();

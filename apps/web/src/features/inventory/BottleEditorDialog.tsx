@@ -181,6 +181,8 @@ export function BottleEditorDialog({
       subtitle="编辑这瓶"
       footer={footer}
       busy={busy}
+      animateMobileEnter={false}
+      animateMobileExit={false}
       onClose={onCancel}
       toast={error.length === 0 ? null : (
         <ToastViewport><Toast message={error} onDismiss={() => setError("")} /></ToastViewport>

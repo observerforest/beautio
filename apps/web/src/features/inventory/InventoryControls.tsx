@@ -27,8 +27,14 @@ export function CollectionTabs({ view, counts, compact = false, onChange }: Coll
     { key: "archive" as const, label: "已归档", count: counts.archive, icon: "archive" as const },
   ];
   if (compact) {
+    const activeIndex = view === "active" ? 0 : 1;
     return (
-      <div className="flex min-w-0 items-center gap-1 overflow-x-auto" role="tablist" aria-label="库存范围">
+      <div className="relative grid min-w-0 grid-cols-3 items-center" role="tablist" aria-label="库存范围">
+        <span
+          aria-hidden="true"
+          className="pointer-events-none absolute bottom-0 left-0 h-0.5 w-1/3 rounded-full bg-[#AEB7C1] transition-transform duration-300 ease-[cubic-bezier(0.4,0,0.2,1)]"
+          style={{ transform: `translateX(${activeIndex * 100}%)` }}
+        />
         {definitions.map((definition) => {
           const selected = definition.key === view;
           return (
@@ -38,13 +44,14 @@ export function CollectionTabs({ view, counts, compact = false, onChange }: Coll
               role="tab"
               aria-selected={selected}
               onClick={() => onChange(definition.key)}
-              className={`shrink-0 border-b-2 px-2.5 pb-2 pt-1 text-xs transition-colors ${
+              className={`flex min-w-0 items-center justify-center gap-1 py-2.5 text-xs duration-200 transition-colors ${
                 selected
-                  ? "border-[#9B7F7C] font-medium text-[#5A4C4A]"
-                  : "border-transparent text-[#A8A3A0]"
+                  ? "font-medium text-[#AEB7C1]"
+                  : "font-normal text-[#A8A3A0]"
               }`}
             >
-              {definition.label} <span className="ml-0.5 text-[10px]">{definition.count}</span>
+              <Icon name={definition.icon} className="size-3.5 shrink-0" />
+              <span className="truncate">{definition.label}</span>
             </button>
           );
         })}
@@ -54,9 +61,10 @@ export function CollectionTabs({ view, counts, compact = false, onChange }: Coll
           aria-selected="false"
           disabled
           title="愿望清单即将开放"
-          className="shrink-0 border-b-2 border-transparent px-2.5 pb-2 pt-1 text-xs text-[#CBC6C3]"
+          className="flex min-w-0 items-center justify-center gap-1 py-2.5 text-xs font-normal text-[#A8A3A0]"
         >
-          愿望清单
+          <Icon name="heart" className="size-3.5 shrink-0" />
+          <span className="truncate">愿望清单</span>
         </button>
       </div>
     );
@@ -206,14 +214,14 @@ export function InventorySearchField({
         compact ? "flex-1 px-3 py-2" : "flex-1 px-4 py-2.5 md:max-w-[380px]"
       }`}
     >
-      <Icon name="search" className={`shrink-0 text-[#B0AAA7] ${compact ? "size-3.5" : "size-4"}`} />
+      <Icon name="search" className="size-4 shrink-0 text-[#B0AAA7]" />
       <span className="sr-only">搜索库存</span>
       <input
         type="search"
         value={query}
         onChange={(event) => onQueryChange(event.target.value)}
         autoComplete="off"
-        placeholder={compact ? "搜索产品、别名或品牌" : "搜索产品、别名、品牌、品类或备注"}
+        placeholder={compact ? "搜索产品、品牌" : "搜索产品、别名、品牌、品类或备注"}
         className={`min-w-0 flex-1 bg-transparent font-light text-[#5A4C4A] outline-none placeholder:text-stone-400 ${
           compact ? "text-xs" : "text-sm"
         }`}
@@ -254,17 +262,22 @@ export function InventoryFilterControls({
     { value: "", label: "全部品牌" },
     ...brands.map((choice) => ({ value: choice, label: choice })),
   ];
+  const orderedCategories = [
+    ...categories.filter((choice) => choice !== "其他"),
+    ...categories.filter((choice) => choice === "其他"),
+  ];
   const categoryOptions: readonly SelectMenuOption<string>[] = [
     { value: "", label: "全部品类" },
-    ...categories.map((choice) => ({ value: choice, label: choice })),
+    ...orderedCategories.map((choice) => ({ value: choice, label: choice })),
   ];
   const sortOptions: readonly SelectMenuOption<InventorySortOption>[] = [
     { value: "deadline-asc", label: "按临期排序", icon: "calendar" },
     { value: "created-desc", label: "按最近添加", icon: "sort" },
   ];
+  const selectedSortLabel = sortOptions.find((option) => option.value === sort)?.label ?? "排序";
 
   return (
-    <div className="flex min-w-0 items-center gap-2 overflow-x-auto pb-1 md:overflow-visible md:pb-0">
+    <div className="flex min-w-0 items-center gap-2 overflow-visible">
       <SelectMenu
         value={brand ?? ""}
         options={brandOptions}
@@ -285,7 +298,7 @@ export function InventoryFilterControls({
         onChange={(nextCategory) => onCategoryChange(nextCategory || null)}
         ariaLabel="按品类筛选"
         leadingIcon="category"
-        triggerLabel="品类"
+        triggerLabel={category ?? "全部品类"}
         variant="compact"
         className="shrink-0"
         buttonClassName="flex items-center gap-1.5 rounded-full border border-[#D8D4D1] px-3 py-1.5 text-xs text-[#7A7572] transition-all"
@@ -298,7 +311,7 @@ export function InventoryFilterControls({
         onChange={onSortChange}
         ariaLabel="库存排序"
         leadingIcon="sort"
-        triggerLabel="排序"
+        triggerLabel={selectedSortLabel}
         variant="compact"
         className="shrink-0"
         buttonClassName="flex items-center gap-1.5 rounded-full border border-[#D8D4D1] px-3 py-1.5 text-xs text-[#7A7572] transition-all"

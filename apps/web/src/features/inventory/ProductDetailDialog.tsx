@@ -13,7 +13,7 @@ import {
   type ProductImageChoice,
 } from "./models/index.ts";
 import { ImageViewer } from "./ImageViewer.tsx";
-import { dateWithAccuracy, displayValue } from "./utils/inventory-format.ts";
+import { displayValue } from "./utils/inventory-format.ts";
 import { useProductImage } from "./useProductImage.ts";
 
 export interface ProductDetailDialogProps {
@@ -22,6 +22,7 @@ export interface ProductDetailDialogProps {
   readonly client: AdminApiClient;
   readonly feedback: string;
   readonly readOnly?: boolean;
+  readonly animateMobileEnter?: boolean;
   readonly onClose: () => void;
   readonly onEditProduct: () => void;
   readonly onEditBottle: () => void;
@@ -42,6 +43,7 @@ export function ProductDetailDialog({
   client,
   feedback,
   readOnly = false,
+  animateMobileEnter = true,
   onClose,
   onEditProduct,
   onEditBottle,
@@ -57,6 +59,8 @@ export function ProductDetailDialog({
   );
   const image = useProductImage(client, detailChoice, "original", onUnauthorized);
   const terminal = item.lifecycle_status === "finished" || item.lifecycle_status === "discarded";
+  const openingAccuracy = openedOnAccuracy(item);
+  const deadlineAccuracy = paoDeadlineAccuracy(item);
   const bottleLabel =
     item.product_inventory_count !== null &&
     item.product_inventory_count > 1 &&
@@ -76,11 +80,11 @@ export function ProductDetailDialog({
         )}
         <div className="absolute inset-0 bg-[linear-gradient(to_top,rgba(60,45,43,0.68)_0%,transparent_58%)]" />
       </div>
-      <button type="button" onClick={requestClose} className="absolute right-4 top-4 flex size-9 items-center justify-center rounded-full bg-white/20 text-[#7A7572] shadow-[0_2px_10px_rgba(90,76,74,0.16)] backdrop-blur transition-colors hover:bg-white/35" aria-label="关闭库存详情">
+      <button type="button" onClick={requestClose} className="absolute right-4 top-4 flex size-9 items-center justify-center rounded-full bg-[#F5F3F1] text-[#7A7572] shadow-[0_2px_6px_rgba(90,76,74,0.12)] transition-colors hover:bg-white focus-visible:outline-none" aria-label="关闭库存详情">
         <Icon name="x" />
       </button>
       {image.status === "ready" ? (
-        <button type="button" onClick={() => setViewerOpen(true)} className="absolute right-4 top-16 rounded-full bg-black/20 px-3 py-1.5 text-[10px] text-white backdrop-blur">
+        <button type="button" onClick={() => setViewerOpen(true)} className="absolute right-4 top-16 rounded-full bg-black/20 px-2.5 py-1 text-[9px] text-white/90 backdrop-blur">
           查看完整原图
         </button>
       ) : null}
@@ -88,7 +92,7 @@ export function ProductDetailDialog({
         <div className="mb-1.5 flex flex-wrap items-center gap-2">
           <span className="rounded-full bg-[#FBF3F2] px-2.5 py-0.5 text-[11px] font-medium text-[#9B7F7C]">{lifecycleLabel(item.lifecycle_status)}</span>
           <span className="rounded-full bg-white/20 px-2.5 py-0.5 text-[11px] font-medium backdrop-blur">{usabilityLabel(item.usability_status)}</span>
-          {bottleLabel === null ? null : <span className="ml-auto text-[11px] text-white/65">{bottleLabel}</span>}
+          {bottleLabel === null ? null : <span className="ml-auto rounded-full bg-black/25 px-2.5 py-0.5 text-[10px] font-medium text-white shadow-sm backdrop-blur">{bottleLabel}</span>}
         </div>
         <h3 className="break-words text-lg font-semibold leading-snug">{productName}</h3>
         <p className="mt-0.5 text-xs text-white/65">{item.product?.brand ?? "品牌未记录"} · {item.product?.category ?? "品类未记录"} · {item.product?.size_label ?? "规格未记录"}</p>
@@ -116,53 +120,84 @@ export function ProductDetailDialog({
 
   return (
     <>
-      <ModalShell title={productName} hero={hero} footer={footer} onClose={onClose} wide>
+      <ModalShell
+        title={productName}
+        hero={hero}
+        footer={footer}
+        animateMobileEnter={animateMobileEnter}
+        onClose={onClose}
+        wide
+      >
         <div className="space-y-5 px-5 py-5">
           <section className="flex items-start gap-2 rounded-2xl bg-[#F5F3F1] px-4 py-3 text-[11px] leading-relaxed text-[#7A7572]">
             <Icon name="info" className="mt-0.5 size-3.5 shrink-0" />
             <p>产品成分与共享备注属于同款 Product；自定义备注只属于当前瓶。期限和可用状态由服务端计算。</p>
           </section>
 
-          <DetailSection title="产品资料" badge="共享 · 影响全部瓶" tone="shared">
-            <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
-              <InfoCell label="产品名称" value={item.product?.name ?? "未记录"} className="col-span-2" />
-              <InfoCell label="产品别名" value={item.product?.alias ?? "未记录"} className="col-span-2" />
-              <InfoCell label="品牌" value={item.product?.brand ?? "未记录"} />
-              <InfoCell label="品类" value={item.product?.category ?? "未记录"} />
+          <DetailSection
+            title="产品资料"
+            identifier={`Product ID · ${displayValue(item.product_id)}`}
+            badge="共享 · 影响全部瓶"
+            tone="shared"
+          >
+            <div className="grid grid-cols-6 gap-2">
+              <InfoCell label="产品名称" value={item.product?.name ?? "未记录"} className="col-span-6 sm:col-span-3" />
+              <InfoCell label="产品别名" value={item.product?.alias ?? "未记录"} className="col-span-6 sm:col-span-3" />
+              <InfoCell label="品牌" value={item.product?.brand ?? "未记录"} className="col-span-2" />
+              <InfoCell label="品类" value={item.product?.category ?? "未记录"} className="col-span-2" />
               <InfoCell label="规格" value={item.product?.size_label ?? "未记录"} className="col-span-2" />
             </div>
             <LongFact label="成分表原文" value={item.product?.ingredient_list_text ?? null} />
             <LongFact label="共享备注" value={item.product?.shared_notes ?? null} />
-            <p className="break-all text-[10px] text-[#B0AAA7]">Product ID · {displayValue(item.product_id)}</p>
           </DetailSection>
 
-          <DetailSection title="这一瓶" badge="仅当前瓶" tone="bottle">
+          <DetailSection
+            title="这一瓶"
+            identifier={`Inventory ID · ${item.inventory_item_id}`}
+            badge="仅当前瓶"
+            tone="bottle"
+          >
             <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
               <InfoCell label="生命周期" value={lifecycleLabel(item.lifecycle_status)} />
-              <InfoCell label="开封日期" value={dateWithAccuracy(item.opened_on, openedOnAccuracy(item))} />
+              <InfoCell
+                label="开封日期"
+                value={displayValue(item.opened_on)}
+                accessory={<AccuracyBadge accuracy={openingAccuracy} />}
+              />
               <InfoCell label="包装过期日" value={displayValue(item.expires_on)} />
               <InfoCell label="PAO" value={item.pao_duration_months === null ? "未记录" : `${item.pao_duration_months} 个月`} />
-              <InfoCell label="状态判断日" value={asOf} />
             </div>
-            <div className="rounded-2xl bg-[#F5F3F1] px-4 py-3">
-              <div className="mb-1 flex items-center justify-between gap-3">
-                <span className="text-[10px] text-[#A8A3A0]">自定义备注（仅这瓶）</span>
+            <div className="relative rounded-2xl bg-[#F5F3F1] px-3 py-2">
+              <div className="pr-7">
+                <span className="block text-[10px] text-[#A8A3A0]">自定义备注（仅这瓶）</span>
                 {readOnly ? (
-                  <span className="rounded-full bg-[#EEF1F4] px-2 py-0.5 text-[10px] text-[#4A6272]">只读</span>
+                  <span className="absolute right-3 top-2 rounded-full bg-[#EEF1F4] px-2 py-0.5 text-[10px] text-[#4A6272]">只读</span>
                 ) : (
-                  <button type="button" onClick={onEditNotes} className="rounded-full bg-[#EEF1F4] px-2 py-0.5 text-[10px] text-[#4A6272]">编辑</button>
+                  <button
+                    type="button"
+                    onClick={onEditNotes}
+                    className="absolute right-3 top-2 flex size-6 items-center justify-center rounded-full bg-[#EEF1F4] text-[#4A6272] transition-colors hover:bg-[#DDE4EA]"
+                    aria-label="编辑自定义备注"
+                    title="编辑自定义备注"
+                  >
+                    <Icon name="edit" className="size-3" />
+                  </button>
                 )}
               </div>
-              <p className={`whitespace-pre-wrap break-words text-xs leading-relaxed ${item.custom_notes === null ? "text-[#B8B2AF]" : "text-[#5A4C4A]"}`}>{item.custom_notes ?? "未填写"}</p>
+              <p className={`mt-0.5 whitespace-pre-wrap break-words text-xs leading-snug ${item.custom_notes === null ? "text-[#B8B2AF]" : "text-[#5A4C4A]"}`}>{item.custom_notes ?? "未填写"}</p>
             </div>
-            <p className="break-all text-[10px] text-[#B0AAA7]">Inventory ID · {item.inventory_item_id}</p>
           </DetailSection>
 
-          <DetailSection title="服务端派生结果" badge="只读" tone="derived">
-            <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
-              <InfoCell label="PAO 截止日" value={dateWithAccuracy(item.pao_deadline, paoDeadlineAccuracy(item))} />
-              <InfoCell label="最终可用至" value={displayValue(item.usable_until)} />
-              <InfoCell label="可用状态" value={usabilityLabel(item.usability_status)} />
+          <DetailSection title="服务端派生结果" identifier={`截至 ${asOf}`} badge="只读" tone="derived">
+            <div className="grid grid-cols-3 gap-2">
+              <InfoCell
+                label="PAO 截止日"
+                value={displayValue(item.pao_deadline)}
+                accessory={<AccuracyBadge accuracy={deadlineAccuracy} derived />}
+                derived
+              />
+              <InfoCell label="最终可用至" value={displayValue(item.usable_until)} derived />
+              <InfoCell label="可用状态" value={usabilityLabel(item.usability_status)} derived />
             </div>
             <div className="rounded-2xl bg-[#FBF6F5] px-4 py-3">
               <p className="mb-1 text-[10px] text-[#9B7F7C]">系统警告</p>
@@ -182,26 +217,77 @@ export function ProductDetailDialog({
   );
 }
 
-function DetailSection({ title, badge, tone, children }: { readonly title: string; readonly badge: string; readonly tone: "shared" | "bottle" | "derived"; readonly children: React.ReactNode }) {
+function DetailSection({
+  title,
+  identifier,
+  badge,
+  tone,
+  children,
+}: {
+  readonly title: string;
+  readonly identifier?: string;
+  readonly badge: string;
+  readonly tone: "shared" | "bottle" | "derived";
+  readonly children: React.ReactNode;
+}) {
   const badgeClass = tone === "shared" ? "bg-[#EEF1F4] text-[#4A6272]" : tone === "bottle" ? "bg-[#FBF6F5] text-[#7A6260]" : "bg-[#F3F0ED] text-[#7A7572]";
   return (
     <section className="space-y-3">
-      <div className="flex items-center justify-between gap-3">
-        <h4 className="text-xs font-semibold uppercase tracking-[0.06em] text-[#A8A3A0]">{title}</h4>
-        <span className={`rounded-full px-2 py-0.5 text-[10px] ${badgeClass}`}>{badge}</span>
+      <div className="flex items-start justify-between gap-3">
+        <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-1">
+          <h4 className="shrink-0 text-xs font-semibold uppercase tracking-[0.06em] text-[#A8A3A0]">{title}</h4>
+          {identifier === undefined ? null : <span className="break-all text-[9px] text-[#B0AAA7]">{identifier}</span>}
+        </div>
+        <span className={`shrink-0 rounded-full px-2 py-0.5 text-[10px] ${badgeClass}`}>{badge}</span>
       </div>
       {children}
     </section>
   );
 }
 
-function InfoCell({ label, value, className = "" }: { readonly label: string; readonly value: string; readonly className?: string }) {
+function InfoCell({
+  label,
+  value,
+  accessory,
+  derived = false,
+  className = "",
+}: {
+  readonly label: string;
+  readonly value: string;
+  readonly accessory?: React.ReactNode;
+  readonly derived?: boolean;
+  readonly className?: string;
+}) {
   return (
-    <div className={`min-w-0 rounded-2xl bg-[#F5F3F1] px-3 py-2.5 ${className}`}>
-      <span className="block text-[10px] text-[#A8A3A0]">{label}</span>
+    <div className={`min-w-0 rounded-2xl px-3 py-2.5 ${derived ? "bg-[#EEF1F4]" : "bg-[#F5F3F1]"} ${className}`}>
+      <span className="flex min-w-0 items-center justify-between gap-1 text-[10px] text-[#A8A3A0]">
+        <span className="min-w-0">{label}</span>
+        {accessory}
+      </span>
       <span className="mt-0.5 block break-words text-xs font-medium leading-snug text-[#5A4C4A]">{value}</span>
     </div>
   );
+}
+
+function AccuracyBadge({
+  accuracy,
+  derived = false,
+}: {
+  readonly accuracy: ReturnType<typeof paoDeadlineAccuracy>;
+  readonly derived?: boolean;
+}) {
+  if (accuracy === null) return null;
+  const label = {
+    exact: "精确",
+    estimated: "估算",
+    legacy_unknown: "未知",
+  }[accuracy];
+  const toneClass = accuracy === "exact"
+    ? `${derived ? "bg-[#DDE4EA]" : "bg-[#EEF1F4]"} text-[#4A6272]`
+    : accuracy === "estimated"
+      ? "bg-[#FBF6F5] text-[#9B7F7C]"
+      : "bg-[#F3F0ED] text-[#7A7572]";
+  return <span className={`shrink-0 rounded-full px-1 py-0.5 text-[8px] leading-none ${toneClass}`}>{label}</span>;
 }
 
 function LongFact({ label, value }: { readonly label: string; readonly value: string | null }) {

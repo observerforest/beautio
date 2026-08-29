@@ -74,6 +74,7 @@ export function InventoryPage({
   const [desktopSettingsOpen, setDesktopSettingsOpen] = useState(false);
   const [selectedInventoryItemId, setSelectedInventoryItemId] = useState<string | null>(null);
   const [dialogMode, setDialogMode] = useState<DialogMode>("detail");
+  const [animateDetailEnter, setAnimateDetailEnter] = useState(true);
   const [editorItemFingerprint, setEditorItemFingerprint] = useState<string | null>(null);
   const [dialogFeedback, setDialogFeedback] = useState("选择编辑入口后才会产生可保存的修改。");
 
@@ -172,6 +173,7 @@ export function InventoryPage({
 
   const openDetail = (item: InventoryListItemOutput): void => {
     setDialogFeedback("选择编辑入口后才会产生可保存的修改。");
+    setAnimateDetailEnter(true);
     setDialogMode("detail");
     setEditorItemFingerprint(null);
     setSelectedInventoryItemId(item.inventory_item_id);
@@ -179,6 +181,7 @@ export function InventoryPage({
 
   const closeDialog = (): void => {
     setSelectedInventoryItemId(null);
+    setAnimateDetailEnter(true);
     setDialogMode("detail");
     setEditorItemFingerprint(null);
   };
@@ -191,6 +194,7 @@ export function InventoryPage({
 
   const openEditor = (mode: Exclude<DialogMode, "detail">): void => {
     if (readOnly || selectedItem === null) return;
+    setAnimateDetailEnter(false);
     setEditorItemFingerprint(inventoryItemFingerprint(selectedItem));
     setDialogMode(mode);
   };
@@ -243,7 +247,7 @@ export function InventoryPage({
       />
 
       <div className="flex h-dvh min-h-0 flex-col overflow-hidden md:ml-60 md:block md:min-h-screen md:overflow-visible">
-        <header className="z-20 shrink-0 border-b border-[#E5D8CF]/60 bg-white md:hidden">
+        <header className="z-20 shrink-0 bg-white shadow-[0_1px_0_rgba(229,216,207,0.5)] md:hidden">
           <div className="beautio-safe-top px-5">
             <div className="mb-4 flex items-center gap-3">
               <Logo className="h-6 w-auto max-w-[110px] object-contain object-left" />
@@ -287,7 +291,7 @@ export function InventoryPage({
       </div>
 
       {mobilePage === "inventory" && !readOnly ? (
-        <button type="button" disabled title="添加产品即将开放" className="fixed bottom-24 right-5 z-30 flex size-12 items-center justify-center rounded-full bg-[linear-gradient(135deg,#9B7F7C,#B3A0AD)] text-white opacity-45 shadow-[0_4px_18px_rgba(155,127,124,0.38)] md:hidden" aria-label="添加产品即将开放">
+        <button type="button" disabled title="添加产品即将开放" className="fixed bottom-24 right-5 z-30 flex size-12 items-center justify-center rounded-full bg-[linear-gradient(135deg,#9B7F7C,#B3A0AD)] text-white shadow-[0_4px_18px_rgba(155,127,124,0.38)] md:hidden" aria-label="添加产品即将开放">
           <Icon name="plus" />
         </button>
       ) : null}
@@ -326,6 +330,7 @@ export function InventoryPage({
           asOf={inventory.as_of}
           client={client}
           feedback={dialogFeedback}
+          animateDetailEnter={animateDetailEnter}
           onClose={closeDialog}
           onMode={openEditor}
           onReturn={returnToDetail}
@@ -473,6 +478,7 @@ interface InventoryDialogProps {
   readonly asOf: string;
   readonly client: AdminApiClient;
   readonly feedback: string;
+  readonly animateDetailEnter: boolean;
   readonly onClose: () => void;
   readonly onMode: (mode: Exclude<DialogMode, "detail">) => void;
   readonly onReturn: (message: string) => void;
@@ -487,6 +493,7 @@ function InventoryDialog({
   asOf,
   client,
   feedback,
+  animateDetailEnter,
   onClose,
   onMode,
   onReturn,
@@ -540,6 +547,7 @@ function InventoryDialog({
       asOf={asOf}
       client={client}
       feedback={feedback}
+      animateMobileEnter={animateDetailEnter}
       readOnly={readOnly}
       onClose={onClose}
       onEditProduct={() => onMode("edit-product")}
