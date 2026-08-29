@@ -15,6 +15,21 @@ export function BeautioApp() {
     import.meta.env.VITE_BEAUTIO_RUNTIME_MODE === "production-observe";
   const [dialogOpen, setDialogOpen] = useState(false);
   const lastResumeRefreshAt = useRef(0);
+  const unlocked =
+    session.phase === "unlocked" &&
+    session.client !== null &&
+    session.inventory !== null;
+  const systemSurfaceColor = unlocked ? "#ffffff" : "#f5f3f1";
+
+  useEffect(() => {
+    document.documentElement.style.setProperty(
+      "--beautio-system-surface",
+      systemSurfaceColor,
+    );
+    document
+      .querySelector<HTMLMetaElement>('meta[name="theme-color"]')
+      ?.setAttribute("content", systemSurfaceColor);
+  }, [systemSurfaceColor]);
 
   useEffect(() => {
     const refreshAfterResume = (): void => {
@@ -38,11 +53,7 @@ export function BeautioApp() {
     };
   }, [dialogOpen, session.phase, session.refresh]);
 
-  if (
-    session.phase !== "unlocked" ||
-    session.client === null ||
-    session.inventory === null
-  ) {
+  if (!unlocked) {
     return (
       <LoginPage
         busy={session.phase === "unlocking"}

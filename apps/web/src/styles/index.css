@@ -18,6 +18,7 @@
   --beautio-bg: #f5f3f1;
   --beautio-paper: #ffffff;
   --beautio-danger: #a4515c;
+  --beautio-system-surface: #f5f3f1;
 }
 
 * {
@@ -27,22 +28,27 @@
 html {
   min-width: 320px;
   min-height: 100%;
-  background: var(--beautio-bg);
+  background: var(--beautio-system-surface);
 }
 
 body {
   min-width: 320px;
-  min-height: 100vh;
+  min-height: 100dvh;
   margin: 0;
-  background: var(--beautio-bg);
+  background: var(--beautio-system-surface);
   -webkit-font-smoothing: antialiased;
+}
+
+#app {
+  min-height: 100dvh;
+  background: var(--beautio-system-surface);
 }
 
 button,
 input,
 select,
 textarea {
-  font: inherit;
+  font-family: inherit;
 }
 
 button,
@@ -59,6 +65,15 @@ textarea:disabled {
 
 button {
   -webkit-tap-highlight-color: transparent;
+}
+
+input[type="date"] {
+  display: block;
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+  inline-size: 100%;
+  max-inline-size: 100%;
 }
 
 img {
@@ -105,6 +120,25 @@ img {
 
 [data-beautio-select-menu="field"] {
   min-width: 100%;
+}
+
+[data-beautio-select-menu] {
+  scrollbar-color: color-mix(in srgb, var(--beautio-mauve) 32%, transparent) transparent;
+  scrollbar-width: thin;
+}
+
+[data-beautio-select-menu]::-webkit-scrollbar {
+  width: 2px;
+}
+
+[data-beautio-select-menu]::-webkit-scrollbar-track {
+  margin-block: 8px;
+  background: transparent;
+}
+
+[data-beautio-select-menu]::-webkit-scrollbar-thumb {
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--beautio-mauve) 32%, transparent);
 }
 
 ::selection {
@@ -202,20 +236,20 @@ img {
 }
 
 @media (max-width: 767px) {
-  .beautio-dialog[open] .beautio-dialog-surface {
+  .beautio-dialog[data-mobile-enter-motion="true"][open] .beautio-dialog-surface {
     animation: beautio-dialog-sheet-enter 320ms cubic-bezier(0.22, 1, 0.36, 1) both;
   }
 
-  .beautio-dialog[open]::backdrop {
+  .beautio-dialog[data-mobile-enter-motion="true"][open]::backdrop {
     animation: beautio-dialog-backdrop-enter 240ms ease-out both;
   }
 
-  .beautio-dialog[data-closing="true"] .beautio-dialog-surface {
+  .beautio-dialog[data-mobile-exit-motion="true"][data-closing="true"] .beautio-dialog-surface {
     pointer-events: none;
     animation: beautio-dialog-sheet-exit 280ms cubic-bezier(0.4, 0, 1, 1) both;
   }
 
-  .beautio-dialog[data-closing="true"]::backdrop {
+  .beautio-dialog[data-mobile-exit-motion="true"][data-closing="true"]::backdrop {
     animation: beautio-dialog-backdrop-exit 220ms ease-in both;
   }
 }
@@ -241,7 +275,7 @@ img {
 }
 
 .beautio-safe-top {
-  padding-top: max(4rem, env(safe-area-inset-top, 4rem));
+  padding-top: calc(env(safe-area-inset-top, 0px) + 1rem);
 }
 
 .beautio-safe-bottom {

@@ -188,6 +188,8 @@ export function ProductEditorDialog({
       subtitle="编辑产品资料"
       footer={footer}
       busy={busy}
+      animateMobileEnter={false}
+      animateMobileExit={false}
       onClose={onCancel}
       toast={error.length === 0 ? null : (
         <ToastViewport><Toast message={error} onDismiss={() => setError("")} /></ToastViewport>

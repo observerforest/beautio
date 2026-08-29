@@ -5,7 +5,7 @@ import { ModalShell } from "../../components/ModalShell.tsx";
 import { Toast, ToastViewport } from "../../components/Toast.tsx";
 import { isAbortError } from "../../utils/is-abort-error.ts";
 import { normalizeOptionalEditorText, textCharacterCountLabel } from "../../text-fields.ts";
-import { editorInputClass, Field, ScopeNotice } from "./EditorPrimitives.tsx";
+import { editorInputClass, EditorFooter, Field } from "./EditorPrimitives.tsx";
 import { inventoryErrorMessage } from "./utils/inventory-format.ts";
 
 const NOTES_MAXIMUM = 1_000;
@@ -77,14 +77,16 @@ export function NotesEditorDialog({ item, client, onCancel, onCommitted, onUnaut
   };
 
   const footer = (requestClose: () => void) => (
-    <div className="space-y-3">
-      <ScopeNotice shared={false}>仅对当前这一瓶生效，不影响其他瓶或 Product 资料。</ScopeNotice>
-      <p className="text-[11px] text-[#A8A3A0]" role="status" aria-live="polite">{progress}</p>
-      <div className="flex justify-end gap-2">
-        <button type="button" onClick={requestClose} disabled={busy} className="rounded-2xl px-4 py-2.5 text-sm text-[#A8A3A0] disabled:opacity-45">取消</button>
-        <button type="submit" form={formId} disabled={busy || writeCompleted} className="rounded-2xl bg-[linear-gradient(120deg,#9B7F7C,#B3A0AD)] px-5 py-2.5 text-sm font-medium text-white disabled:opacity-45">{busy ? "保存中…" : "保存备注"}</button>
-      </div>
-    </div>
+    <EditorFooter
+      shared={false}
+      notice="仅对当前这一瓶生效，不影响其他瓶或产品资料"
+      progress={progress}
+      formId={formId}
+      saveLabel="保存备注"
+      busy={busy}
+      saveDisabled={busy || writeCompleted}
+      onCancel={requestClose}
+    />
   );
 
   return (
@@ -93,6 +95,8 @@ export function NotesEditorDialog({ item, client, onCancel, onCommitted, onUnaut
       subtitle="编辑自定义备注"
       footer={footer}
       busy={busy}
+      animateMobileEnter={false}
+      animateMobileExit={false}
       onClose={onCancel}
       toast={error.length === 0 ? null : (
         <ToastViewport><Toast message={error} onDismiss={() => setError("")} /></ToastViewport>

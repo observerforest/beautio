@@ -138,37 +138,40 @@ export function SelectMenu<Value extends string>({
 
       {open ? (
         <div
-          id={listboxId}
-          role="listbox"
-          aria-label={ariaLabel}
-          data-beautio-select-menu={variant}
           className={`absolute top-full z-50 mt-2 min-w-full overflow-hidden rounded-2xl bg-white py-0 shadow-[0_8px_32px_rgba(90,76,74,0.14)] ${menuClassName}`}
         >
-          {options.map((option, index) => (
-            <div key={option.value}>
-              <button
-                ref={(node) => {
-                  optionRefs.current[index] = node;
-                }}
-                id={`${listboxId}-${index}`}
-                type="button"
-                role="option"
-                aria-selected={option.value === value}
-                data-beautio-select-option
-                onPointerEnter={() => setActiveIndex(index)}
-                onClick={() => choose(option)}
-                className={`flex w-full items-center gap-3 px-4 py-3.5 text-left text-sm transition-colors ${
-                  index === activeIndex
-                    ? "bg-[#FBF6F5] text-[#9B7F7C]"
-                    : "bg-white text-[#5A4C4A] hover:bg-stone-50"
-                }`}
-              >
-                {option.icon === undefined ? null : <Icon name={option.icon} className="size-4 shrink-0" />}
-                <span className="whitespace-nowrap">{option.label}</span>
-              </button>
-              {index === options.length - 1 ? null : <div role="separator" className="mx-4 h-px bg-[#F2EFED]" />}
-            </div>
-          ))}
+          <div
+            id={listboxId}
+            role="listbox"
+            aria-label={ariaLabel}
+            data-beautio-select-menu={variant}
+          >
+            {options.map((option, index) => (
+              <div key={option.value}>
+                <button
+                  ref={(node) => {
+                    optionRefs.current[index] = node;
+                  }}
+                  id={`${listboxId}-${index}`}
+                  type="button"
+                  role="option"
+                  aria-selected={option.value === value}
+                  data-beautio-select-option
+                  onPointerEnter={() => setActiveIndex(index)}
+                  onClick={() => choose(option)}
+                  className={`flex w-full items-center gap-3 px-4 py-3.5 text-left text-sm transition-colors ${
+                    index === activeIndex
+                      ? "bg-[#FBF6F5] text-[#9B7F7C]"
+                      : "bg-white text-[#5A4C4A] hover:bg-stone-50"
+                  }`}
+                >
+                  {option.icon === undefined ? null : <Icon name={option.icon} className="size-4 shrink-0" />}
+                  <span className="whitespace-nowrap">{option.label}</span>
+                </button>
+                {index === options.length - 1 ? null : <div role="separator" className="mx-4 h-px bg-[#F2EFED]" />}
+              </div>
+            ))}
+          </div>
         </div>
       ) : null}
     </div>
