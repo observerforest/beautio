@@ -46,6 +46,7 @@ export function SelectMenu<Value extends string>({
   const listboxId = useId();
   const rootRef = useRef<HTMLDivElement>(null);
   const internalTriggerRef = useRef<HTMLButtonElement>(null);
+  const optionRefs = useRef<Array<HTMLButtonElement | null>>([]);
   const selectedIndex = Math.max(0, options.findIndex((option) => option.value === value));
   const [open, setOpen] = useState(false);
   const [activeIndex, setActiveIndex] = useState(selectedIndex);
@@ -59,6 +60,11 @@ export function SelectMenu<Value extends string>({
     document.addEventListener("pointerdown", handlePointerDown);
     return () => document.removeEventListener("pointerdown", handlePointerDown);
   }, [open]);
+
+  useEffect(() => {
+    if (!open) return;
+    optionRefs.current[activeIndex]?.scrollIntoView({ block: "nearest" });
+  }, [activeIndex, open]);
 
   const assignTriggerRef = (node: HTMLButtonElement | null): void => {
     internalTriggerRef.current = node;
@@ -141,6 +147,9 @@ export function SelectMenu<Value extends string>({
           {options.map((option, index) => (
             <div key={option.value}>
               <button
+                ref={(node) => {
+                  optionRefs.current[index] = node;
+                }}
                 id={`${listboxId}-${index}`}
                 type="button"
                 role="option"

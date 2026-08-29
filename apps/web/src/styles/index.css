@@ -97,6 +97,10 @@ img {
 
 [data-beautio-select-menu="compact"] {
   min-width: 172px;
+  max-height: min(16rem, 50dvh);
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
 }
 
 [data-beautio-select-menu="field"] {
