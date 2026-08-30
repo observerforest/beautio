@@ -1,6 +1,7 @@
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { BeautioApp } from "./app/BeautioApp.tsx";
+import { I18nProvider } from "./i18n.tsx";
 import "./styles/index.css";
 
 const root = document.querySelector<HTMLDivElement>("#app");
@@ -10,6 +11,8 @@ if (root === null) {
 
 createRoot(root).render(
   <StrictMode>
-    <BeautioApp />
+    <I18nProvider>
+      <BeautioApp />
+    </I18nProvider>
   </StrictMode>,
 );

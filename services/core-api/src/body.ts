@@ -1,7 +1,31 @@
 import { sourceRefSchema } from "@beautio/contracts";
 import { BeautioError } from "@beautio/domain";
 import type { IncomingMessage } from "node:http";
+import { createRequire } from "node:module";
 import { invalidInput } from "./responses.ts";
+
+interface StreamingJsonParser {
+  readonly isEnded: boolean;
+  onValue: (element: { readonly value?: unknown }) => void;
+  write(input: Iterable<number> | string): void;
+  end(): void;
+}
+
+interface StreamingJsonParserConstructor {
+  new (options: {
+    readonly paths: readonly string[];
+    readonly stringBufferSize: number;
+    readonly numberBufferSize: number;
+  }): StreamingJsonParser;
+}
+
+// @streamparser/json 0.0.26 has an exactOptionalPropertyTypes conflict in its
+// declarations. Loading the pinned runtime through Node's CJS export
+// keeps strict checking local instead of disabling dependency checks globally.
+const require = createRequire(import.meta.url);
+const { JSONParser } = require("@streamparser/json") as {
+  readonly JSONParser: StreamingJsonParserConstructor;
+};
 
 export const JSON_BODY_LIMIT = 1024 * 1024;
 const ADMIN_MULTIPART_LIMIT = 21 * 1024 * 1024;
@@ -25,6 +49,117 @@ export async function readJson(
   } catch {
     throw invalidInput();
   }
+}
+
+/**
+ * Parses one JSON value directly from the request stream without retaining an
+ * additional whole-body Buffer and UTF-8 string.
+ *
+ * @param request - Incoming request whose body contains one JSON value.
+ * @param maximumBytes - Maximum encoded request size accepted from the client.
+ * @param signal - Optional deadline or disconnect signal.
+ * @returns The single parsed JSON value.
+ */
+export function readStreamingJson(
+  request: IncomingMessage,
+  maximumBytes: number,
+  signal?: AbortSignal,
+): Promise<unknown> {
+  const contentType = request.headers["content-type"] ?? "";
+  if (mediaType(contentType) !== "application/json") {
+    return Promise.reject(invalidInput());
+  }
+
+  return new Promise((resolve, reject) => {
+    const parser = new JSONParser({
+      paths: ["$"],
+      stringBufferSize: 64 * 1024,
+      numberBufferSize: 64,
+    });
+    const missingRoot = Symbol("missing JSON root");
+    let root: unknown | typeof missingRoot = missingRoot;
+    let total = 0;
+    let settled = false;
+
+    parser.onValue = ({ value }) => {
+      if (root !== missingRoot) {
+        throw invalidInput();
+      }
+      root = value;
+    };
+
+    const removeListeners = (keepErrorListener = false): void => {
+      request.removeListener("data", onData);
+      request.removeListener("end", onEnd);
+      if (!keepErrorListener) {
+        request.removeListener("error", onError);
+      }
+      signal?.removeEventListener("abort", onAbort);
+    };
+    const rejectAndDrain = (error: BeautioError): void => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      removeListeners(true);
+      request.once("close", () => request.removeListener("error", onError));
+      request.resume();
+      reject(error);
+    };
+    const onData = (chunk: Buffer): void => {
+      total += chunk.byteLength;
+      if (total > maximumBytes) {
+        rejectAndDrain(
+          new BeautioError("UPLOAD_TOO_LARGE", "request body is too large"),
+        );
+        return;
+      }
+      try {
+        parser.write(chunk);
+      } catch {
+        rejectAndDrain(invalidInput());
+      }
+    };
+    const onEnd = (): void => {
+      if (settled) {
+        return;
+      }
+      try {
+        if (!parser.isEnded) {
+          parser.end();
+        }
+      } catch {
+        rejectAndDrain(invalidInput());
+        return;
+      }
+      if (root === missingRoot) {
+        rejectAndDrain(invalidInput());
+        return;
+      }
+      settled = true;
+      removeListeners();
+      resolve(root);
+    };
+    const onError = (): void => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      removeListeners();
+      reject(
+        new BeautioError("INVALID_INPUT", "request body could not be read"),
+      );
+    };
+    const onAbort = (): void => rejectAndDrain(actionTimedOut());
+
+    request.on("data", onData);
+    request.once("end", onEnd);
+    request.once("error", onError);
+    signal?.addEventListener("abort", onAbort, { once: true });
+    if (signal?.aborted === true) {
+      onAbort();
+    }
+  });
 }
 
 export async function readMcpJson(

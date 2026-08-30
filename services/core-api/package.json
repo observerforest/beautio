@@ -18,6 +18,7 @@
     "@beautio/image-storage": "workspace:*",
     "@modelcontextprotocol/node": "2.0.0",
     "@modelcontextprotocol/server": "2.0.0",
+    "@streamparser/json": "0.0.26",
     "jose": "6.2.9",
     "zod": "4.4.3"
   },

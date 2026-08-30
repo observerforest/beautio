@@ -18,13 +18,17 @@ export function displayValue(value: string | null): string {
  *
  * @param value - 已记录的 YYYY-MM-DD 日期或 null。 / Recorded YYYY-MM-DD date or null.
  * @param accuracy - 精确、估算、旧版或缺失的证据标记。 / Exact, estimated, legacy, or absent evidence marker.
+ * @param translate - Optional interface-copy translator; user-entered values are never translated.
  * @returns 明确的日期与精度文案，或缺失标签。 / Explicit date and accuracy copy, or a missing label.
  */
 export function dateWithAccuracy(
   value: string | null,
   accuracy: OpenedOnAccuracy | null,
+  translate: (source: string) => string = (source) => source,
 ): string {
-  return value === null ? "未记录" : `${value}（${accuracyLabel(accuracy)}）`;
+  return value === null
+    ? translate("未记录")
+    : `${value} (${translate(accuracyLabel(accuracy))})`;
 }
 
 /**

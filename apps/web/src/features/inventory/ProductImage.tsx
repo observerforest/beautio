@@ -1,5 +1,6 @@
 import { AdminApiClient, type PrivateImageVariant } from "../../admin-api.ts";
 import type { ProductImageChoice } from "./models/index.ts";
+import { useI18n } from "../../i18n.tsx";
 import { useProductImage } from "./useProductImage.ts";
 
 export interface ProductImageProps {
@@ -30,6 +31,7 @@ export function ProductImage({
   placeholderClassName = "h-full w-full",
   onUnauthorized,
 }: ProductImageProps) {
+  const { t } = useI18n();
   const image = useProductImage(client, choice, variant, onUnauthorized);
   if (image.status === "ready") {
     return (
@@ -44,11 +46,11 @@ export function ProductImage({
     );
   }
 
-  const copy = {
+  const copy = t({
     empty: "暂无图片",
     loading: "正在读取图片",
     error: "图片读取失败",
-  }[image.status];
+  }[image.status]);
   return (
     <div
       className={`flex items-center justify-center bg-[linear-gradient(145deg,#F8F5F3,#EEE9E6)] ${placeholderClassName}`}

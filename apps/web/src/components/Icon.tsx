@@ -8,6 +8,7 @@ export type IconName =
   | "camera"
   | "category"
   | "chevron-down"
+  | "chevron-left"
   | "chevron-right"
   | "chevron-up"
   | "edit"
@@ -55,6 +56,8 @@ export function Icon({ name, className = "size-4", ...props }: IconProps) {
       return <svg {...common} strokeWidth="2.2"><path d="m18 15-6-6-6 6" strokeLinecap="round" strokeLinejoin="round" /></svg>;
     case "chevron-right":
       return <svg {...common} strokeWidth="1.8"><path d="m9 18 6-6-6-6" strokeLinecap="round" strokeLinejoin="round" /></svg>;
+    case "chevron-left":
+      return <svg {...common} strokeWidth="1.8"><path d="m15 18-6-6 6-6" strokeLinecap="round" strokeLinejoin="round" /></svg>;
     case "tag":
       return <svg {...common} strokeWidth="1.8"><path d="m20.59 13.41-7.17 7.17a2 2 0 0 1-2.83 0L2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.82Z" /><circle cx="7" cy="7" r="1.5" fill="currentColor" /></svg>;
     case "category":

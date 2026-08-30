@@ -1,7 +1,9 @@
 import type {
+  BackupInventoryRepository,
   InventoryBatchPersistenceInput,
+  InventoryBackupReplacement,
+  InventoryBackupSnapshot,
   InventoryItemCustomNotesPersistenceInput,
-  InventoryRepository,
   ProductFactsPersistenceInput,
   ProductImagePersistenceInput,
 } from "@beautio/application";
@@ -12,6 +14,7 @@ import {
   type InventoryItem,
   type Product,
 } from "@beautio/domain";
+import { randomUUID } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
 import { mapSqliteConflict } from "./errors.ts";
 import {
@@ -22,8 +25,10 @@ import {
 import {
   mapImageAssetRow,
   mapInventoryRow,
+  mapProductRow,
   type ImageAssetRow,
   type InventoryRow,
+  type ProductRow,
 } from "./row-mappers.ts";
 import {
   insertInventoryItem as insertInventoryItemRecord,
@@ -37,7 +42,7 @@ import { applySchema } from "./schema.ts";
 
 export type { InventoryImportData, InventoryImportResult } from "./import.ts";
 
-export class SqliteInventoryRepository implements InventoryRepository {
+export class SqliteInventoryRepository implements BackupInventoryRepository {
   readonly #database: DatabaseSync;
 
   /**
@@ -81,6 +86,184 @@ export class SqliteInventoryRepository implements InventoryRepository {
       .all() as unknown as readonly InventoryRow[];
 
     return rows.map(mapInventoryRow);
+  }
+
+  /** @inheritdoc */
+  async readBackupSnapshot(): Promise<InventoryBackupSnapshot> {
+    return this.inImmediateTransaction(() => {
+      const products = this.#database
+        .prepare(
+          `SELECT
+            id,
+            name,
+            alias,
+            brand,
+            category,
+            size_label,
+            image_asset_id,
+            image_ref,
+            ingredient_list_text,
+            shared_notes
+          FROM products
+          ORDER BY id ASC`,
+        )
+        .all() as unknown as readonly ProductRow[];
+      const inventoryItems = this.#database
+        .prepare(
+          `SELECT
+            id,
+            product_id,
+            created_at,
+            lifecycle_status,
+            opened_on,
+            opened_on_accuracy,
+            expires_on,
+            pao_duration_months,
+            pao_deadline,
+            usable_until,
+            custom_notes
+          FROM inventory_items
+          ORDER BY id ASC`,
+        )
+        .all() as unknown as readonly InventoryRow[];
+      const imageAssets = this.#database
+        .prepare(
+          `SELECT
+            id,
+            storage_key,
+            media_type,
+            byte_size,
+            status,
+            product_id,
+            expires_at,
+            created_at
+          FROM image_assets
+          WHERE status = 'linked' AND product_id IS NOT NULL
+          ORDER BY id ASC`,
+        )
+        .all() as unknown as readonly ImageAssetRow[];
+
+      return {
+        products: products.map(mapProductRow),
+        inventoryItems: inventoryItems.map(mapInventoryRow),
+        imageAssets: imageAssets.map(mapImageAssetRow),
+      };
+    });
+  }
+
+  /** @inheritdoc */
+  async replaceFromBackup(
+    replacement: InventoryBackupReplacement,
+  ): Promise<readonly ImageAsset[]> {
+    return this.inImmediateTransaction(() => {
+      const stagingIds = new Set(
+        replacement.imageAssets.map((entry) => entry.stagingImageAssetId),
+      );
+      const existingAssets = this.readAllImageAssets();
+      for (const entry of replacement.imageAssets) {
+        const staged = existingAssets.find(
+          (asset) => asset.id === entry.stagingImageAssetId,
+        );
+        if (
+          staged === undefined ||
+          staged.status !== "staging" ||
+          staged.productId !== null ||
+          staged.storageKey !== entry.imageAsset.storageKey ||
+          staged.mediaType !== entry.imageAsset.mediaType ||
+          staged.byteSize !== entry.imageAsset.byteSize
+        ) {
+          throw new BeautioError(
+            "BATCH_CONFLICT",
+            "backup staging image metadata is inconsistent",
+          );
+        }
+      }
+      const displacedAssets = existingAssets.filter(
+        (asset) => !stagingIds.has(asset.id),
+      );
+      const occupiedIds = new Set(existingAssets.map((asset) => asset.id));
+
+      this.#database.exec(`
+        DELETE FROM inventory_items;
+        UPDATE products SET image_asset_id = NULL;
+      `);
+
+      const cleanupAssets: ImageAsset[] = [];
+      for (const asset of displacedAssets) {
+        let cleanupId: string;
+        do {
+          cleanupId = `restore-cleanup-${randomUUID()}`;
+        } while (occupiedIds.has(cleanupId));
+        occupiedIds.add(cleanupId);
+        const renamed = this.#database
+          .prepare(
+            `UPDATE image_assets
+            SET id = ?, status = 'pending_cleanup', product_id = NULL
+            WHERE id = ?`,
+          )
+          .run(cleanupId, asset.id);
+        if (renamed.changes !== 1) {
+          throw new BeautioError(
+            "BATCH_CONFLICT",
+            `displaced image asset ${asset.id} could not be retained for cleanup`,
+          );
+        }
+        cleanupAssets.push({
+          ...asset,
+          id: cleanupId,
+          status: "pending_cleanup",
+          productId: null,
+        });
+      }
+
+      this.#database.exec("DELETE FROM products");
+
+      for (const entry of replacement.imageAssets) {
+        const asset = entry.imageAsset;
+        const promoted = this.#database
+          .prepare(
+            `UPDATE image_assets
+            SET id = ?, status = 'temporary', product_id = NULL,
+              expires_at = ?, created_at = ?
+            WHERE id = ? AND status = 'staging' AND product_id IS NULL`,
+          )
+          .run(
+            asset.id,
+            asset.expiresAt,
+            asset.createdAt,
+            entry.stagingImageAssetId,
+          );
+        if (promoted.changes !== 1) {
+          throw new BeautioError(
+            "BATCH_CONFLICT",
+            `backup staging image ${entry.stagingImageAssetId} could not be promoted`,
+          );
+        }
+      }
+      for (const product of replacement.products) {
+        this.insertProduct(product);
+      }
+      for (const entry of replacement.imageAssets) {
+        const asset = entry.imageAsset;
+        const result = this.#database
+          .prepare(
+            `UPDATE image_assets
+            SET status = 'linked', product_id = ?
+            WHERE id = ? AND status = 'temporary' AND product_id IS NULL`,
+          )
+          .run(asset.productId, asset.id);
+        if (result.changes !== 1) {
+          throw new BeautioError(
+            "BATCH_CONFLICT",
+            `backup image asset ${asset.id} could not be linked`,
+          );
+        }
+      }
+      for (const item of replacement.inventoryItems) {
+        this.insertInventoryItem(item);
+      }
+      return cleanupAssets;
+    });
   }
 
   /** @inheritdoc */
@@ -456,6 +639,25 @@ export class SqliteInventoryRepository implements InventoryRepository {
 
   private readImageAsset(imageAssetId: string): ImageAsset | null {
     return readImageAssetRecord(this.#database, imageAssetId);
+  }
+
+  private readAllImageAssets(): readonly ImageAsset[] {
+    const rows = this.#database
+      .prepare(
+        `SELECT
+          id,
+          storage_key,
+          media_type,
+          byte_size,
+          status,
+          product_id,
+          expires_at,
+          created_at
+        FROM image_assets
+        ORDER BY id ASC`,
+      )
+      .all() as unknown as readonly ImageAssetRow[];
+    return rows.map(mapImageAssetRow);
   }
 
   private insertProduct(product: Product): void {

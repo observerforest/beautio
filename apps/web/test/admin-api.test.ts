@@ -1,11 +1,22 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import type { BeautioBackup } from "@beautio/contracts";
 import {
   AdminApiClient,
   AdminApiError,
+  prepareBeautioBackupFile,
   type FetchLike,
   type ObjectUrlApi,
 } from "../src/admin-api.ts";
+
+const emptyBackup: BeautioBackup = {
+  format: "beautio-backup",
+  version: 1,
+  created_at: "2026-08-30T00:00:00.000Z",
+  products: [],
+  inventory_items: [],
+  images: [],
+};
 
 const inventoryBody = {
   as_of: "2026-08-19",
@@ -91,6 +102,55 @@ test("inventory reads use the in-memory Admin Bearer token", async () => {
     "Bearer admin-secret",
   );
   assert.doesNotMatch(calls[0]?.path ?? "", /admin-secret/);
+  client.destroy();
+});
+
+test("backup download avoids reserialization and restore reuses the bounded original file", async () => {
+  const calls: Array<{ readonly path: string; readonly init: RequestInit }> = [];
+  const client = new AdminApiClient("admin-secret", async (input, init = {}) => {
+    calls.push({ path: String(input), init });
+    return String(input) === "/api/admin/backup" && init.method === "PUT"
+      ? jsonResponse({ restored: true, products: 0, inventory_items: 0, images: 0 })
+      : new Response(JSON.stringify(emptyBackup), {
+          headers: {
+            "content-disposition":
+              'attachment; filename="beautio-backup-2026-08-30.beautio-backup"',
+            "content-type": "application/json",
+          },
+        });
+  });
+
+  const download = await client.downloadBackup();
+  assert.equal(download.filename, "beautio-backup-2026-08-30.beautio-backup");
+  assert.deepEqual(JSON.parse(await download.blob.text()), emptyBackup);
+  const backupFile = new File(
+    [JSON.stringify(emptyBackup)],
+    "backup.beautio-backup",
+    { type: "application/json" },
+  );
+  assert.deepEqual(await client.restoreBackupFile(backupFile), {
+    restored: true,
+    products: 0,
+    inventory_items: 0,
+    images: 0,
+  });
+  assert.equal(calls[0]?.path, "/api/admin/backup");
+  assert.equal(calls[0]?.init.method, undefined);
+  assert.equal(calls[1]?.path, "/api/admin/backup");
+  assert.equal(calls[1]?.init.method, "PUT");
+  assert.equal(calls[1]?.init.body, backupFile);
+  assert.deepEqual(
+    await prepareBeautioBackupFile(backupFile),
+    {
+      file: backupFile,
+      byteSize: backupFile.size,
+    },
+  );
+  await assert.rejects(
+    prepareBeautioBackupFile(new File([], "empty.beautio-backup")),
+    (error: unknown) =>
+      error instanceof AdminApiError && error.code === "INVALID_BACKUP",
+  );
   client.destroy();
 });
 

@@ -1,4 +1,7 @@
 import {
+  beautioBackupImageSchema,
+  beautioBackupInventoryItemSchema,
+  beautioBackupProductSchema,
   createInventoryBatchInputSchema,
   fetchInventoryInputSchema,
   getInventoryItemInputSchema,
@@ -11,10 +14,12 @@ import {
   updateInventoryItemCustomNotesInputSchema,
   updateProductInputSchema,
   type CreateInventoryBatchOutput,
+  type BeautioBackup,
   type FetchInventoryOutput,
   type InventoryListOutput,
   type GetInventoryItemOutput,
   type RecordProductOpenedOutput,
+  type RestoreBeautioBackupOutput,
   type SearchInventoryOutput,
   type SetProductDisplayImageOutput,
   type UpdateInventoryItemFactsOutput,
@@ -24,6 +29,7 @@ import {
 } from "@beautio/contracts";
 import {
   BeautioError,
+  createInventoryItem,
   createInventoryItemFromFacts,
   createProduct,
   deriveInventorySnapshot,
@@ -34,8 +40,9 @@ import {
   type InventoryItem,
   type Product,
 } from "@beautio/domain";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import type {
+  BackupInventoryRepository,
   GeneratedIdKind,
   ImageInspection,
   ImageAssetStorage,
@@ -53,6 +60,8 @@ import {
   validateEditedOpeningAccuracy,
 } from "./input-parsing.ts";
 import type {
+  BackupExportPlan,
+  BackupOperationOptions,
   CleanupImageAssetsOutput,
   ImageAssetReadVariant,
   ImageUploadInput,
@@ -83,6 +92,8 @@ const MAX_IMAGE_BYTES = 20 * 1024 * 1024;
 const MAX_UPLOAD_BYTES = 50 * 1024 * 1024;
 const MAX_IMAGE_PIXELS = 40_000_000;
 const TEMPORARY_ASSET_MILLISECONDS = 24 * 60 * 60 * 1000;
+const MAX_BACKUP_TOTAL_IMAGE_BYTES = 200 * 1024 * 1024;
+const MAX_BACKUP_SERIALIZED_BYTES = 280 * 1024 * 1024;
 
 export class InventoryApplicationService {
   readonly #repository: InventoryRepository;
@@ -778,6 +789,414 @@ export class InventoryApplicationService {
   }
 
   /**
+   * Prepares a bounded-memory export of the complete single-user inventory.
+   *
+   * The returned writer serializes one original image at a time and respects
+   * destination backpressure. The public JSON backup contract remains version 1.
+   *
+   * @param options - Optional cancellation covering snapshot validation and writing.
+   * @returns Metadata and a one-shot-compatible streaming writer for the backup.
+   */
+  async prepareBackupExport(
+    options: BackupOperationOptions = {},
+  ): Promise<BackupExportPlan> {
+    assertBackupNotAborted(options.signal);
+    const { storage } = this.requireImageCapabilities();
+    const repository = this.requireBackupRepository();
+    const snapshot = await repository.readBackupSnapshot();
+    assertBackupNotAborted(options.signal);
+    const createdAt = this.currentTimestamp();
+
+    if (
+      snapshot.products.length > 10_000 ||
+      snapshot.inventoryItems.length > 50_000 ||
+      snapshot.imageAssets.length > 1_000
+    ) {
+      throw backupSnapshotOutsideContract();
+    }
+
+    let declaredImageBytes = 0;
+    for (const asset of snapshot.imageAssets) {
+      assertBackupNotAborted(options.signal);
+      if (asset.status !== "linked" || asset.productId === null) {
+        throw new BeautioError(
+          "INTERNAL_ERROR",
+          "backup snapshot contains a non-linked image",
+        );
+      }
+      declaredImageBytes += asset.byteSize;
+      if (
+        asset.byteSize > MAX_IMAGE_BYTES ||
+        declaredImageBytes > MAX_BACKUP_TOTAL_IMAGE_BYTES
+      ) {
+        throw new BeautioError(
+          "UPLOAD_TOO_LARGE",
+          "backup images exceed the 200 MiB total limit",
+        );
+      }
+    }
+
+    const prefix = `{"format":"beautio-backup","version":1,"created_at":${JSON.stringify(createdAt)},"products":[`;
+    const inventoryPrefix = `],"inventory_items":[`;
+    const imagesPrefix = `],"images":[`;
+    const suffix = "]}";
+    let declaredSerializedBytes =
+      Buffer.byteLength(prefix) +
+      Buffer.byteLength(inventoryPrefix) +
+      Buffer.byteLength(imagesPrefix) +
+      Buffer.byteLength(suffix);
+
+    for (const [index, product] of snapshot.products.entries()) {
+      assertBackupNotAborted(options.signal);
+      const backupProduct = toBackupProduct(product);
+      if (!beautioBackupProductSchema.safeParse(backupProduct).success) {
+        throw backupSnapshotOutsideContract();
+      }
+      declaredSerializedBytes +=
+        Buffer.byteLength(JSON.stringify(backupProduct)) +
+        (index === 0 ? 0 : 1);
+    }
+    for (const [index, item] of snapshot.inventoryItems.entries()) {
+      assertBackupNotAborted(options.signal);
+      const backupItem = toBackupInventoryItem(item);
+      if (!beautioBackupInventoryItemSchema.safeParse(backupItem).success) {
+        throw backupSnapshotOutsideContract();
+      }
+      declaredSerializedBytes +=
+        Buffer.byteLength(JSON.stringify(backupItem)) +
+        (index === 0 ? 0 : 1);
+    }
+    for (const [index, asset] of snapshot.imageAssets.entries()) {
+      assertBackupNotAborted(options.signal);
+      if (
+        !beautioBackupImageSchema.safeParse({
+          image_asset_id: asset.id,
+          product_id: asset.productId,
+          media_type: asset.mediaType,
+          byte_size: asset.byteSize,
+          sha256: "0".repeat(64),
+          bytes_base64: "AAAA",
+          created_at: asset.createdAt,
+        }).success
+      ) {
+        throw backupSnapshotOutsideContract();
+      }
+      const imageWithoutBytes = JSON.stringify({
+        image_asset_id: asset.id,
+        product_id: asset.productId,
+        media_type: asset.mediaType,
+        byte_size: asset.byteSize,
+        sha256: "0".repeat(64),
+        bytes_base64: "",
+        created_at: asset.createdAt,
+      });
+      declaredSerializedBytes +=
+        Buffer.byteLength(imageWithoutBytes) +
+        4 * Math.ceil(asset.byteSize / 3) +
+        (index === 0 ? 0 : 1);
+    }
+    if (declaredSerializedBytes > MAX_BACKUP_SERIALIZED_BYTES) {
+      throw new BeautioError(
+        "UPLOAD_TOO_LARGE",
+        "serialized backup exceeds the 280 MiB response limit",
+      );
+    }
+
+    return {
+      createdAt,
+      products: snapshot.products.length,
+      inventoryItems: snapshot.inventoryItems.length,
+      images: snapshot.imageAssets.length,
+      writeTo: async (write, writeOptions = {}) => {
+        const signal = writeOptions.signal ?? options.signal;
+        assertBackupNotAborted(signal);
+        await write(prefix);
+        for (const [index, product] of snapshot.products.entries()) {
+          assertBackupNotAborted(signal);
+          await write(
+            `${index === 0 ? "" : ","}${JSON.stringify(toBackupProduct(product))}`,
+          );
+        }
+        assertBackupNotAborted(signal);
+        await write(inventoryPrefix);
+        for (const [index, item] of snapshot.inventoryItems.entries()) {
+          assertBackupNotAborted(signal);
+          await write(
+            `${index === 0 ? "" : ","}${JSON.stringify(toBackupInventoryItem(item))}`,
+          );
+        }
+        assertBackupNotAborted(signal);
+        await write(imagesPrefix);
+
+        let totalImageBytes = 0;
+        for (const [index, asset] of snapshot.imageAssets.entries()) {
+          assertBackupNotAborted(signal);
+          let bytes: Uint8Array;
+          try {
+            bytes = await storage.get(asset.storageKey, signal);
+          } catch {
+            assertBackupNotAborted(signal);
+            throw new BeautioError(
+              "INTERNAL_ERROR",
+              "an original product image is unavailable",
+            );
+          }
+          if (bytes.byteLength !== asset.byteSize) {
+            throw new BeautioError(
+              "INTERNAL_ERROR",
+              "an original product image size does not match its metadata",
+            );
+          }
+          totalImageBytes += bytes.byteLength;
+          if (totalImageBytes > MAX_BACKUP_TOTAL_IMAGE_BYTES) {
+            throw new BeautioError(
+              "UPLOAD_TOO_LARGE",
+              "backup images exceed the 200 MiB total limit",
+            );
+          }
+          const image = {
+            image_asset_id: asset.id,
+            product_id: asset.productId,
+            media_type: asset.mediaType,
+            byte_size: bytes.byteLength,
+            sha256: sha256(bytes),
+            bytes_base64: Buffer.from(
+              bytes.buffer,
+              bytes.byteOffset,
+              bytes.byteLength,
+            ).toString("base64"),
+            created_at: asset.createdAt,
+          };
+          assertBackupNotAborted(signal);
+          await write(`${index === 0 ? "" : ","}${JSON.stringify(image)}`);
+        }
+        assertBackupNotAborted(signal);
+        await write(suffix);
+      },
+    };
+  }
+
+  /**
+   * Validates and atomically restores one complete single-user backup.
+   *
+   * Image files are written under fresh internal keys before the database swap.
+   * Failed validation or persistence leaves the existing logical dataset unchanged.
+   *
+   * @param untrustedInput - Parsed JSON supplied through the authenticated Admin route.
+   * @param options - Optional cancellation for the bounded backup operation.
+   * @returns Counts from the committed replacement.
+   */
+  async restoreBackup(
+    untrustedInput: unknown,
+    options: BackupOperationOptions = {},
+  ): Promise<RestoreBeautioBackupOutput> {
+    assertBackupNotAborted(options.signal);
+    const backup = parseBackupWithoutCloningPayload(untrustedInput);
+    const { storage, inspector } = this.requireImageCapabilities();
+    const productIds = uniqueIds(
+      backup.products.map((product) => product.product_id),
+      "product",
+    );
+    uniqueIds(
+      backup.inventory_items.map((item) => item.inventory_item_id),
+      "inventory item",
+    );
+    const imageIds = uniqueIds(
+      backup.images.map((image) => image.image_asset_id),
+      "image asset",
+    );
+    const imagesById = new Map(
+      backup.images.map((image) => [image.image_asset_id, image]),
+    );
+    const products = backup.products.map((product) => {
+      if (
+        product.image_asset_id !== null &&
+        !imageIds.has(product.image_asset_id)
+      ) {
+        throw new BeautioError(
+          "INVALID_INPUT",
+          `Product ${product.product_id} references a missing backup image`,
+        );
+      }
+      const image =
+        product.image_asset_id === null
+          ? null
+          : (imagesById.get(product.image_asset_id) ?? null);
+      if (image !== null && image.product_id !== product.product_id) {
+        throw new BeautioError(
+          "INVALID_INPUT",
+          `Product ${product.product_id} has an inconsistent backup image`,
+        );
+      }
+      return createProduct({
+        id: product.product_id,
+        name: product.name,
+        alias: product.alias,
+        brand: product.brand,
+        category: product.category,
+        sizeLabel: product.size_label,
+        imageAssetId: product.image_asset_id,
+        imageRef: product.image_ref,
+        ingredientListText: product.ingredient_list_text,
+        sharedNotes: product.shared_notes,
+      });
+    });
+    const productImageIds = new Set(
+      products.flatMap((product) =>
+        product.imageAssetId === null ? [] : [product.imageAssetId],
+      ),
+    );
+    if (productImageIds.size !== imageIds.size) {
+      throw new BeautioError(
+        "INVALID_INPUT",
+        "backup contains an image that is not owned by exactly one Product",
+      );
+    }
+    const inventoryItems = backup.inventory_items.map((item) => {
+      if (item.product_id !== null && !productIds.has(item.product_id)) {
+        throw new BeautioError(
+          "INVALID_INPUT",
+          `inventory item ${item.inventory_item_id} references a missing Product`,
+        );
+      }
+      return createInventoryItem({
+        id: item.inventory_item_id,
+        productId: item.product_id,
+        createdAt: item.created_at,
+        lifecycleStatus: item.lifecycle_status,
+        openedOn: item.opened_on,
+        openedOnAccuracy: item.opened_on_accuracy,
+        expiresOn: item.expires_on,
+        paoDurationMonths: item.pao_duration_months,
+        paoDeadline: item.pao_deadline,
+        usableUntil: item.usable_until,
+        customNotes: item.custom_notes,
+      });
+    });
+
+    let declaredImageBytes = 0;
+    for (const image of backup.images) {
+      declaredImageBytes += image.byte_size;
+      if (declaredImageBytes > MAX_BACKUP_TOTAL_IMAGE_BYTES) {
+        throw new BeautioError(
+          "UPLOAD_TOO_LARGE",
+          "backup images exceed the 200 MiB total limit",
+        );
+      }
+    }
+
+    const reservedIds = new Set(imageIds);
+    const restoreStartedAt = this.#clock();
+    assertValidClock(restoreStartedAt);
+    const restoreStagingExpiresAt = new Date(
+      restoreStartedAt.getTime() + TEMPORARY_ASSET_MILLISECONDS,
+    ).toISOString();
+    const stagedImages = backup.images.map((image) => {
+      const stagingImageAssetId = this.generateUnusedId(
+        "image_asset",
+        reservedIds,
+      );
+      const imageAsset: ImageAsset = {
+        id: stagingImageAssetId,
+        storageKey: this.generateId("storage_key"),
+        mediaType: image.media_type,
+        byteSize: image.byte_size,
+        status: "staging",
+        productId: null,
+        expiresAt: restoreStagingExpiresAt,
+        createdAt: image.created_at,
+      };
+      return {
+        image,
+        stagingImageAssetId,
+        imageAsset,
+      };
+    });
+
+    const repository = this.requireBackupRepository();
+    await repository.stageImageAssets(
+      stagedImages.map((entry) => entry.imageAsset),
+    );
+    let replacementCommitted = false;
+    try {
+      for (const entry of stagedImages) {
+        assertBackupNotAborted(options.signal);
+        const bytes = Buffer.from(entry.image.bytes_base64, "base64");
+        if (
+          bytes.byteLength !== entry.image.byte_size ||
+          sha256(bytes) !== entry.image.sha256
+        ) {
+          throw new BeautioError(
+            "INVALID_INPUT",
+            `backup image ${entry.image.image_asset_id} failed integrity validation`,
+          );
+        }
+        let inspection: ImageInspection;
+        try {
+          inspection = await abortableInspection(
+            inspector.inspect(bytes),
+            options.signal,
+          );
+        } catch (error) {
+          if (options.signal?.aborted === true) {
+            assertBackupNotAborted(options.signal);
+          }
+          if (error instanceof BeautioError) {
+            throw error;
+          }
+          throw new BeautioError(
+            "UNSUPPORTED_MEDIA_TYPE",
+            `backup image ${entry.image.image_asset_id} could not be decoded`,
+          );
+        }
+        assertBackupNotAborted(options.signal);
+        if (
+          inspection.mediaType !== entry.image.media_type ||
+          inspection.animated ||
+          inspection.width * inspection.height > MAX_IMAGE_PIXELS
+        ) {
+          throw new BeautioError(
+            "UNSUPPORTED_MEDIA_TYPE",
+            `backup image ${entry.image.image_asset_id} is not a supported original`,
+          );
+        }
+        await storage.put(entry.imageAsset.storageKey, bytes, options.signal);
+      }
+      assertBackupNotAborted(options.signal);
+      const displacedAssets = await repository.replaceFromBackup({
+        products,
+        inventoryItems,
+        imageAssets: stagedImages.map((entry) => ({
+          stagingImageAssetId: entry.stagingImageAssetId,
+          imageAsset: {
+            ...entry.imageAsset,
+            id: entry.image.image_asset_id,
+            status: "linked",
+            productId: entry.image.product_id,
+          },
+        })),
+      });
+      replacementCommitted = true;
+      await this.cleanupClaimedAssets(displacedAssets, storage);
+    } catch (error) {
+      if (!replacementCommitted) {
+        await this.compensateFailedUpload(
+          stagedImages.map((entry) => entry.imageAsset),
+          storage,
+        );
+      }
+      throw error;
+    }
+
+    return {
+      restored: true,
+      products: products.length,
+      inventory_items: inventoryItems.length,
+      images: stagedImages.length,
+    };
+  }
+
+  /**
    * Claims expired temporary assets and retries all pending file deletions.
    *
    * @returns Counts for claimed work, successful deletions, and retained retries.
@@ -824,12 +1243,44 @@ export class InventoryApplicationService {
     }
   }
 
+  private async cleanupClaimedAssets(
+    assets: readonly ImageAsset[],
+    storage: ImageAssetStorage,
+  ): Promise<void> {
+    for (const asset of assets) {
+      try {
+        await this.#imageRenditions?.deleteForAsset(asset.storageKey);
+        await storage.delete(asset.storageKey);
+        await this.#repository.deleteClaimedImageAsset(asset.id);
+      } catch {
+        // Pending metadata remains visible to the ordinary cleanup retry scan.
+      }
+    }
+  }
+
   private generateId(kind: GeneratedIdKind): string {
     const id = this.#idGenerator(kind).trim();
     if (id.length === 0) {
       throw new BeautioError("INTERNAL_ERROR", "ID generation failed");
     }
     return id;
+  }
+
+  private generateUnusedId(
+    kind: GeneratedIdKind,
+    reservedIds: Set<string>,
+  ): string {
+    for (let attempt = 0; attempt < 1_000; attempt += 1) {
+      const id = this.generateId(kind);
+      if (!reservedIds.has(id)) {
+        reservedIds.add(id);
+        return id;
+      }
+    }
+    throw new BeautioError(
+      "INTERNAL_ERROR",
+      "ID generation repeatedly returned reserved backup identifiers",
+    );
   }
 
   private currentTimestamp(): string {
@@ -849,5 +1300,164 @@ export class InventoryApplicationService {
       );
     }
     return { storage: this.#imageStorage, inspector: this.#imageInspector };
+  }
+
+  private requireBackupRepository(): BackupInventoryRepository {
+    if (!isBackupRepository(this.#repository)) {
+      throw new BeautioError(
+        "INTERNAL_ERROR",
+        "backup persistence is not configured",
+      );
+    }
+    return this.#repository;
+  }
+}
+
+function toBackupProduct(product: Product) {
+  return {
+    product_id: product.id,
+    name: product.name,
+    alias: product.alias,
+    brand: product.brand,
+    category: product.category,
+    size_label: product.sizeLabel,
+    image_asset_id: product.imageAssetId,
+    image_ref: product.imageRef,
+    ingredient_list_text: product.ingredientListText,
+    shared_notes: product.sharedNotes,
+  };
+}
+
+function toBackupInventoryItem(item: InventoryItem) {
+  return {
+    inventory_item_id: item.id,
+    product_id: item.productId,
+    created_at: item.createdAt,
+    lifecycle_status: item.lifecycleStatus,
+    opened_on: item.openedOn,
+    opened_on_accuracy: item.openedOnAccuracy,
+    expires_on: item.expiresOn,
+    pao_duration_months: item.paoDurationMonths,
+    pao_deadline: item.paoDeadline,
+    usable_until: item.usableUntil,
+    custom_notes: item.customNotes,
+  };
+}
+
+function backupSnapshotOutsideContract(): BeautioError {
+  return new BeautioError(
+    "INTERNAL_ERROR",
+    "backup snapshot exceeds the version 1 contract",
+  );
+}
+
+function sha256(bytes: Uint8Array): string {
+  return createHash("sha256").update(bytes).digest("hex");
+}
+
+function uniqueIds(values: readonly string[], kind: string): ReadonlySet<string> {
+  const ids = new Set(values);
+  if (ids.size !== values.length) {
+    throw new BeautioError("INVALID_INPUT", `backup contains duplicate ${kind} IDs`);
+  }
+  return ids;
+}
+
+function isBackupRepository(
+  repository: InventoryRepository,
+): repository is BackupInventoryRepository {
+  const candidate = repository as Partial<BackupInventoryRepository>;
+  return (
+    typeof candidate.readBackupSnapshot === "function" &&
+    typeof candidate.replaceFromBackup === "function"
+  );
+}
+
+function parseBackupWithoutCloningPayload(value: unknown): BeautioBackup {
+  if (
+    !isRecord(value) ||
+    !hasExactKeys(value, [
+      "format",
+      "version",
+      "created_at",
+      "products",
+      "inventory_items",
+      "images",
+    ]) ||
+    value.format !== "beautio-backup" ||
+    value.version !== 1 ||
+    !isBackupInstant(value.created_at) ||
+    !Array.isArray(value.products) ||
+    value.products.length > 10_000 ||
+    !Array.isArray(value.inventory_items) ||
+    value.inventory_items.length > 50_000 ||
+    !Array.isArray(value.images) ||
+    value.images.length > 1_000
+  ) {
+    throw invalidBackup();
+  }
+
+  const products = value.products.map((product) => {
+    const parsed = beautioBackupProductSchema.safeParse(product);
+    if (!parsed.success) throw invalidBackup();
+    return parsed.data;
+  });
+  const inventoryItems = value.inventory_items.map((item) => {
+    const parsed = beautioBackupInventoryItemSchema.safeParse(item);
+    if (!parsed.success) throw invalidBackup();
+    return parsed.data;
+  });
+  const images = value.images.map((image) => {
+    const parsed = beautioBackupImageSchema.safeParse(image);
+    if (!parsed.success) throw invalidBackup();
+    return parsed.data;
+  });
+  return {
+    format: "beautio-backup",
+    version: 1,
+    created_at: value.created_at,
+    products,
+    inventory_items: inventoryItems,
+    images,
+  };
+}
+
+function isBackupInstant(value: unknown): value is string {
+  return beautioBackupImageSchema.safeParse({
+    image_asset_id: "validation-image",
+    product_id: "validation-product",
+    media_type: "image/png",
+    byte_size: 1,
+    sha256: "0".repeat(64),
+    bytes_base64: "AA==",
+    created_at: value,
+  }).success;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function hasExactKeys(
+  value: Record<string, unknown>,
+  expected: readonly string[],
+): boolean {
+  const keys = Object.keys(value);
+  return (
+    keys.length === expected.length &&
+    expected.every((key) => Object.hasOwn(value, key))
+  );
+}
+
+function invalidBackup(): BeautioError {
+  return new BeautioError(
+    "INVALID_INPUT",
+    "backup file is invalid or unsupported",
+  );
+}
+
+function assertBackupNotAborted(signal: AbortSignal | undefined): void {
+  if (signal?.aborted === true) {
+    throw new BeautioError("UPLOAD_FAILED", "backup operation was aborted");
   }
 }

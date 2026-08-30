@@ -1,5 +1,6 @@
 import { Icon } from "../../components/Icon.tsx";
 import { SelectMenu, type SelectMenuOption } from "../../components/SelectMenu.tsx";
+import { useI18n } from "../../i18n.tsx";
 import type {
   InventoryBrowseCounts,
   InventoryCollectionView,
@@ -22,6 +23,7 @@ export interface CollectionTabsProps {
  * @returns 符合 Figma 的页签或侧栏语义导航。 / Figma-aligned navigation with tab or sidebar semantics.
  */
 export function CollectionTabs({ view, counts, compact = false, onChange }: CollectionTabsProps) {
+  const { t } = useI18n();
   const definitions = [
     { key: "active" as const, label: "库存", count: counts.active, icon: "box" as const },
     { key: "archive" as const, label: "已归档", count: counts.archive, icon: "archive" as const },
@@ -29,7 +31,7 @@ export function CollectionTabs({ view, counts, compact = false, onChange }: Coll
   if (compact) {
     const activeIndex = view === "active" ? 0 : 1;
     return (
-      <div className="relative grid min-w-0 grid-cols-3 items-center" role="tablist" aria-label="库存范围">
+      <div className="relative grid min-w-0 grid-cols-3 items-center" role="tablist" aria-label={t("库存范围")}>
         <span
           aria-hidden="true"
           className="pointer-events-none absolute bottom-0 left-0 h-0.5 w-1/3 rounded-full bg-[#AEB7C1] transition-transform duration-300 ease-[cubic-bezier(0.4,0,0.2,1)]"
@@ -51,7 +53,7 @@ export function CollectionTabs({ view, counts, compact = false, onChange }: Coll
               }`}
             >
               <Icon name={definition.icon} className="size-3.5 shrink-0" />
-              <span className="truncate">{definition.label}</span>
+              <span className="truncate">{t(definition.label)}</span>
             </button>
           );
         })}
@@ -60,18 +62,18 @@ export function CollectionTabs({ view, counts, compact = false, onChange }: Coll
           role="tab"
           aria-selected="false"
           disabled
-          title="愿望清单即将开放"
+          title={t("愿望清单即将开放")}
           className="flex min-w-0 items-center justify-center gap-1 py-2.5 text-xs font-normal text-[#A8A3A0]"
         >
           <Icon name="heart" className="size-3.5 shrink-0" />
-          <span className="truncate">愿望清单</span>
+          <span className="truncate">{t("愿望清单")}</span>
         </button>
       </div>
     );
   }
 
   return (
-    <nav className="space-y-1" aria-label="库存范围">
+    <nav className="space-y-1" aria-label={t("库存范围")}>
       {definitions.map((definition) => {
         const selected = definition.key === view;
         return (
@@ -79,13 +81,13 @@ export function CollectionTabs({ view, counts, compact = false, onChange }: Coll
             key={definition.key}
             type="button"
             aria-pressed={selected}
-            aria-label={`${definition.label} ${definition.count}`}
+            aria-label={`${t(definition.label)} ${definition.count}`}
             onClick={() => onChange(definition.key)}
             className={`flex w-full items-center justify-between rounded-xl px-3 py-2.5 text-left text-sm transition-colors ${
               selected ? "bg-[#EEF1F4] font-medium text-[#5A4C4A]" : "text-[#7A7572] hover:bg-[#F8F6F4]"
             }`}
           >
-            <span className="flex items-center gap-2"><Icon name={definition.icon} className="size-4" />{definition.label}</span>
+            <span className="flex items-center gap-2"><Icon name={definition.icon} className="size-4" />{t(definition.label)}</span>
             <span className={`rounded-full px-2 py-0.5 text-[11px] ${selected ? "bg-[#DDE4EA] text-[#4A6272]" : "bg-[#F0EDE8] text-[#A8A3A0]"}`}>
               {definition.count}
             </span>
@@ -95,10 +97,10 @@ export function CollectionTabs({ view, counts, compact = false, onChange }: Coll
       <button
         type="button"
         disabled
-        title="愿望清单即将开放"
+        title={t("愿望清单即将开放")}
         className="flex w-full items-center gap-2 rounded-xl px-3 py-2.5 text-left text-sm text-[#CBC6C3]"
       >
-        <Icon name="heart" className="size-4" />愿望清单
+        <Icon name="heart" className="size-4" />{t("愿望清单")}
       </button>
     </nav>
   );
@@ -128,6 +130,7 @@ export function StatusTabs({
   discardedCount,
   onChange,
 }: StatusTabsProps) {
+  const { t } = useI18n();
   if (view === "archive") {
     const archive = [
       { label: "已归档", count: counts.archive, icon: "archive" as const },
@@ -135,7 +138,7 @@ export function StatusTabs({
       { label: "已弃置", count: discardedCount, icon: "bell" as const },
     ];
     return (
-      <div className="grid grid-cols-3 overflow-hidden rounded-2xl border border-[#E5D8CF] bg-white" aria-label="已归档库存摘要">
+      <div className="grid grid-cols-3 overflow-hidden rounded-2xl border border-[#E5D8CF] bg-white" aria-label={t("已归档库存摘要")}>
         {archive.map((entry, index) => (
           <span key={entry.label} className={`flex items-center justify-center gap-1 py-2 text-[#7A7572] ${index < archive.length - 1 ? "border-r border-[#E5D8CF]" : ""}`}>
             <span className="flex size-4 shrink-0 items-center justify-center" aria-hidden="true">
@@ -144,7 +147,7 @@ export function StatusTabs({
                 className={entry.icon === "opened" ? "size-4 -translate-y-px" : "size-3"}
               />
             </span>
-            <span className="text-[10px]">{entry.label}</span>
+            <span className="text-[10px]">{t(entry.label)}</span>
             <strong className="text-[10px]">{entry.count}</strong>
           </span>
         ))}
@@ -159,7 +162,7 @@ export function StatusTabs({
     { key: "all" as const, label: "总库存", count: counts.active, icon: "grid" as const, color: "#5A4C4A" },
   ];
   return (
-    <div className="grid grid-cols-4 overflow-hidden rounded-2xl border border-[#E5D8CF] bg-white" aria-label="库存状态筛选">
+    <div className="grid grid-cols-4 overflow-hidden rounded-2xl border border-[#E5D8CF] bg-white" aria-label={t("库存状态筛选")}>
       {definitions.map((definition, index) => {
         const selected = status === definition.key;
         return (
@@ -167,7 +170,7 @@ export function StatusTabs({
             key={definition.key}
             type="button"
             aria-pressed={selected}
-            aria-label={`${definition.label} ${definition.count}`}
+            aria-label={`${t(definition.label)} ${definition.count}`}
             onClick={() => onChange(definition.key)}
             className={`flex min-w-0 items-center justify-center gap-1 py-2 transition-colors ${index < definitions.length - 1 ? "border-r border-[#E5D8CF]" : ""} ${selected ? "bg-[#FAF9F8]" : "bg-white"}`}
             style={{ color: selected ? definition.color : "#A8A3A0" }}
@@ -182,7 +185,7 @@ export function StatusTabs({
                 }
               />
             </span>
-            <span className="hidden text-[10px] min-[360px]:inline">{definition.label}</span>
+            <span className="hidden text-[10px] min-[360px]:inline">{t(definition.label)}</span>
             <strong className="text-[10px]">{definition.count}</strong>
           </button>
         );
@@ -222,6 +225,7 @@ export function InventorySearchField({
   compact = false,
   onQueryChange,
 }: InventorySearchFieldProps) {
+  const { t } = useI18n();
   return (
     <label
       className={`flex min-w-0 items-center gap-2 rounded-full border border-[#DDD9D6] bg-white ${
@@ -229,13 +233,14 @@ export function InventorySearchField({
       }`}
     >
       <Icon name="search" className="size-4 shrink-0 text-[#B0AAA7]" />
-      <span className="sr-only">搜索库存</span>
+      <span className="sr-only">{t("搜索库存")}</span>
       <input
         type="search"
         value={query}
         onChange={(event) => onQueryChange(event.target.value)}
         autoComplete="off"
-        placeholder={compact ? "搜索产品、品牌" : "搜索产品、别名、品牌、品类或备注"}
+        placeholder={compact ? t("搜索库存") : t("搜索产品、别名、品牌、品类或备注")}
+        title={t("可搜产品、品牌、成分、备注等")}
         className={`min-w-0 flex-1 bg-transparent font-light text-[#5A4C4A] outline-none placeholder:text-stone-400 ${
           compact ? "text-xs" : "text-sm"
         }`}
@@ -272,8 +277,9 @@ export function InventoryFilterControls({
   onCategoryChange,
   onSortChange,
 }: InventoryFilterControlsProps) {
+  const { t } = useI18n();
   const brandOptions: readonly SelectMenuOption<string>[] = [
-    { value: "", label: "全部品牌" },
+    { value: "", label: t("全部品牌") },
     ...brands.map((choice) => ({ value: choice, label: choice })),
   ];
   const orderedCategories = [
@@ -281,14 +287,14 @@ export function InventoryFilterControls({
     ...categories.filter((choice) => choice === "其他"),
   ];
   const categoryOptions: readonly SelectMenuOption<string>[] = [
-    { value: "", label: "全部品类" },
+    { value: "", label: t("全部品类") },
     ...orderedCategories.map((choice) => ({ value: choice, label: choice })),
   ];
   const sortOptions: readonly SelectMenuOption<InventorySortOption>[] = [
-    { value: "deadline-asc", label: "按临期排序", icon: "calendar" },
-    { value: "created-desc", label: "按最近添加", icon: "sort" },
+    { value: "deadline-asc", label: t("按临期排序"), icon: "calendar" },
+    { value: "created-desc", label: t("按最近添加"), icon: "sort" },
   ];
-  const selectedSortLabel = sortOptions.find((option) => option.value === sort)?.label ?? "排序";
+  const selectedSortLabel = sortOptions.find((option) => option.value === sort)?.label ?? t("排序");
 
   return (
     <div className="flex min-w-0 items-center gap-1.5 overflow-visible md:gap-2">
@@ -296,9 +302,9 @@ export function InventoryFilterControls({
         value={brand ?? ""}
         options={brandOptions}
         onChange={(nextBrand) => onBrandChange(nextBrand || null)}
-        ariaLabel="按品牌筛选"
+        ariaLabel={t("按品牌筛选")}
         leadingIcon="tag"
-        triggerLabel={brand ?? "品牌"}
+        triggerLabel={brand ?? t("品牌")}
         variant="compact"
         disabled={brands.length === 0}
         className="min-w-0 shrink md:shrink-0"
@@ -310,9 +316,9 @@ export function InventoryFilterControls({
         value={category ?? ""}
         options={categoryOptions}
         onChange={(nextCategory) => onCategoryChange(nextCategory || null)}
-        ariaLabel="按品类筛选"
+        ariaLabel={t("按品类筛选")}
         leadingIcon="category"
-        triggerLabel={category ?? "全部品类"}
+        triggerLabel={category ?? t("全部品类")}
         variant="compact"
         menuSize="narrow"
         className="min-w-0 shrink md:shrink-0"
@@ -324,7 +330,7 @@ export function InventoryFilterControls({
         value={sort}
         options={sortOptions}
         onChange={onSortChange}
-        ariaLabel="库存排序"
+        ariaLabel={t("库存排序")}
         leadingIcon="sort"
         triggerLabel={selectedSortLabel}
         variant="compact"

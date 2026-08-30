@@ -123,6 +123,7 @@ async function runBuild(): Promise<void> {
   const buildEnvironment = {
     ...process.env,
     VITE_BEAUTIO_RUNTIME_MODE: "production-observe",
+    VITE_BEAUTIO_BACKUP_ENABLED: "false",
   };
   const packageManagerEntry = process.env.npm_execpath;
   const buildArguments = [

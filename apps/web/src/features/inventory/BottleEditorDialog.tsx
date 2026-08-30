@@ -14,6 +14,7 @@ import { localDateForApi } from "../../utils/local-date-for-api.ts";
 import { canPreserveLegacyAccuracy, openedOnAccuracy, paoDeadlineAccuracy, usabilityLabel } from "./models/index.ts";
 import { EditorFooter, editorInputClass, Field } from "./EditorPrimitives.tsx";
 import { dateWithAccuracy, displayValue, inventoryErrorMessage } from "./utils/inventory-format.ts";
+import { useI18n } from "../../i18n.tsx";
 
 export interface BottleEditorDialogProps {
   readonly item: InventoryListItemOutput;
@@ -52,6 +53,7 @@ export function BottleEditorDialog({
   onCommitted,
   onUnauthorized,
 }: BottleEditorDialogProps) {
+  const { t } = useI18n();
   const formId = useId();
   const openedDateRef = useRef<HTMLInputElement>(null);
   const accuracyRef = useRef<HTMLButtonElement>(null);
@@ -63,19 +65,19 @@ export function BottleEditorDialog({
   const [expiresOn, setExpiresOn] = useState(item.expires_on ?? "");
   const [pao, setPao] = useState(item.pao_duration_months === null ? "" : String(item.pao_duration_months));
   const [busy, setBusy] = useState(false);
-  const [progress, setProgress] = useState("派生字段不会随表单提交。");
+  const [progress, setProgress] = useState(t("派生字段不会随表单提交。"));
   const [error, setError] = useState("");
   const [writeCompleted, setWriteCompleted] = useState(false);
   const legacyAllowed = canPreserveLegacyAccuracy(item, lifecycle, openedOn || null);
   const lifecycleOptions: readonly SelectMenuOption<"unopened" | "opened">[] = [
-    { value: "unopened", label: "未开封" },
-    { value: "opened", label: "已开封" },
+    { value: "unopened", label: t("未开封") },
+    { value: "opened", label: t("已开封") },
   ];
   const accuracyOptions: readonly SelectMenuOption<OpenedOnAccuracy | "">[] = [
-    { value: "", label: "请选择日期准确性" },
-    { value: "exact", label: "准确日期" },
-    { value: "estimated", label: "估算日期" },
-    ...(legacyAllowed ? [{ value: "legacy_unknown" as const, label: "保留历史记录的未知准确性" }] : []),
+    { value: "", label: t("请选择日期准确性") },
+    { value: "exact", label: t("准确日期") },
+    { value: "estimated", label: t("估算日期") },
+    ...(legacyAllowed ? [{ value: "legacy_unknown" as const, label: t("保留历史记录的未知准确性") }] : []),
   ];
 
   useEffect(() => {
@@ -104,7 +106,7 @@ export function BottleEditorDialog({
     let normalizedAccuracy: OpenedOnAccuracy | null = null;
     if (lifecycle === "opened") {
       if (normalizedOpenedOn === null) {
-        setError("已开封库存必须填写开封日期。");
+        setError(t("已开封库存必须填写开封日期。"));
         openedDateRef.current?.focus();
         return;
       }
@@ -113,14 +115,14 @@ export function BottleEditorDialog({
       } else if (accuracy === "legacy_unknown" && legacyAllowed) {
         normalizedAccuracy = accuracy;
       } else {
-        setError("请选择准确日期或估算日期。");
+        setError(t("请选择准确日期或估算日期。"));
         accuracyRef.current?.focus();
         return;
       }
     }
     const paoMonths = nullablePositiveInteger(pao);
     if (paoMonths === undefined || (paoMonths !== null && paoMonths > 120)) {
-      setError("PAO 必须是 1–120 的整数，或留空。");
+      setError(t("PAO 必须是 1–120 的整数，或留空。"));
       paoRef.current?.focus();
       return;
     }
@@ -138,24 +140,24 @@ export function BottleEditorDialog({
   const save = async (input: InventoryItemFactsInput): Promise<void> => {
     setBusy(true);
     setError("");
-    setProgress("正在保存单瓶事实并重新计算…");
+    setProgress(t("正在保存单瓶事实并重新计算…"));
     try {
       await client.updateInventoryItemFacts(item.inventory_item_id, input);
       setWriteCompleted(true);
-      setProgress("单瓶事实已保存，正在重新读取服务端结果…");
-      const refreshed = await onCommitted(item.inventory_item_id, "单瓶事实已保存；PAO 截止日、最终可用日和状态已重新读取。");
+      setProgress(t("单瓶事实已保存，正在重新读取服务端结果…"));
+      const refreshed = await onCommitted(item.inventory_item_id, t("单瓶事实已保存；PAO 截止日、最终可用日和状态已重新读取。"));
       if (!refreshed && mountedRef.current) {
-        setError("保存请求已经完成，但重新读取失败。请先重试读取确认结果，不要重复保存。");
-        setProgress("等待重新读取确认。");
+        setError(t("保存请求已经完成，但重新读取失败。请先重试读取确认结果，不要重复保存。"));
+        setProgress(t("等待重新读取确认。"));
       }
     } catch (caught) {
       if (caught instanceof AdminApiError && caught.status === 401) {
-        onUnauthorized("管理密钥无效或已撤销，请重新输入。此次修改没有保存。");
+        onUnauthorized(t("管理密钥无效或已撤销，请重新输入。此次修改没有保存。"));
         return;
       }
       if (!isAbortError(caught) && mountedRef.current) {
-        setError(inventoryErrorMessage(caught));
-        setProgress("保存失败，页面中的输入仍保留。");
+        setError(t(inventoryErrorMessage(caught)));
+        setProgress(t("保存失败，页面中的输入仍保留。"));
       }
     } finally {
       if (mountedRef.current) setBusy(false);
@@ -165,10 +167,10 @@ export function BottleEditorDialog({
   const footer = (requestClose: () => void) => (
     <EditorFooter
       shared={false}
-      notice="仅对当前这一瓶生效，不影响其他瓶或产品资料"
+      notice={t("仅对当前这一瓶生效，不影响其他瓶或产品资料")}
       progress={progress}
       formId={formId}
-      saveLabel="保存这瓶"
+      saveLabel={t("保存这瓶")}
       busy={busy}
       saveDisabled={busy || writeCompleted}
       onCancel={requestClose}
@@ -177,8 +179,8 @@ export function BottleEditorDialog({
 
   return (
     <ModalShell
-      title={item.product?.name ?? "未记录产品名称"}
-      subtitle="编辑这瓶"
+      title={item.product?.name ?? t("未记录产品名称")}
+      subtitle={t("编辑这瓶")}
       footer={footer}
       busy={busy}
       animateMobileEnter={false}
@@ -191,26 +193,26 @@ export function BottleEditorDialog({
       <form id={formId} onSubmit={handleSubmit} className="space-y-5 px-5 py-5" noValidate>
         <fieldset disabled={busy || writeCompleted} className="space-y-5 disabled:opacity-70">
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-            <Field label="生命周期">
+            <Field label={t("生命周期")}>
               <SelectMenu
                 value={lifecycle}
                 options={lifecycleOptions}
                 onChange={setLifecycleAndOpening}
-                ariaLabel="生命周期"
+                ariaLabel={t("生命周期")}
                 className="w-full"
                 buttonClassName={`${editorInputClass} flex items-center justify-between gap-3 text-left`}
                 menuClassName="left-0 right-0 max-h-64 overflow-y-auto"
               />
             </Field>
-            <Field label="开封日期" hint="已开封时必填；未开封时会清空。">
+            <Field label={t("开封日期")} hint={t("已开封时必填；未开封时会清空。")}>
               <input ref={openedDateRef} type="date" value={openedOn} onChange={(event) => setOpenedOn(event.target.value)} disabled={lifecycle !== "opened"} className={editorInputClass} />
             </Field>
-            <Field label="开封日期准确性" hint="估算必须明确标记。">
+            <Field label={t("开封日期准确性")} hint={t("估算必须明确标记。")}>
               <SelectMenu
                 value={accuracy}
                 options={accuracyOptions}
                 onChange={setAccuracy}
-                ariaLabel="开封日期准确性"
+                ariaLabel={t("开封日期准确性")}
                 disabled={lifecycle !== "opened"}
                 triggerRef={accuracyRef}
                 className="w-full"
@@ -218,18 +220,18 @@ export function BottleEditorDialog({
                 menuClassName="left-0 right-0 max-h-64 overflow-y-auto"
               />
             </Field>
-            <Field label="包装过期日" hint="没有记录时留空。">
+            <Field label={t("包装过期日")} hint={t("没有记录时留空。")}>
               <input type="date" value={expiresOn} onChange={(event) => setExpiresOn(event.target.value)} className={editorInputClass} />
             </Field>
-            <Field label="PAO（月）" hint="整数 1–120；没有记录时留空。">
+            <Field label={t("PAO（月）")} hint={t("整数 1–120；没有记录时留空。")}>
               <input ref={paoRef} type="number" min="1" max="120" step="1" inputMode="numeric" value={pao} onChange={(event) => setPao(event.target.value)} className={editorInputClass} />
             </Field>
           </div>
           <section className="space-y-1 rounded-2xl bg-[#F5F3F1] px-4 py-3.5 text-xs leading-relaxed text-[#A8A3A0]">
-            <strong className="block text-[#5A4C4A]">当前只读派生值</strong>
-            <p>PAO 截止日：{dateWithAccuracy(item.pao_deadline, paoDeadlineAccuracy(item))}</p>
-            <p>最终可用至：{displayValue(item.usable_until)}</p>
-            <p>可用状态：{usabilityLabel(item.usability_status)}</p>
+            <strong className="block text-[#5A4C4A]">{t("当前只读派生值")}</strong>
+            <p>{t("PAO 截止日")}: {dateWithAccuracy(item.pao_deadline, paoDeadlineAccuracy(item), t)}</p>
+            <p>{t("最终可用至")}: {t(displayValue(item.usable_until))}</p>
+            <p>{t("可用状态")}: {t(usabilityLabel(item.usability_status))}</p>
           </section>
         </fieldset>
       </form>

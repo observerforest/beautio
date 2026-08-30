@@ -1,5 +1,6 @@
 import type { ReactNode } from "react";
 import { Icon } from "./Icon.tsx";
+import { useI18n } from "../i18n.tsx";
 
 export interface ToastViewportProps {
   readonly children: ReactNode;
@@ -40,6 +41,7 @@ export interface ToastProps {
  * @returns 不改变周围几何布局的 toast 卡片。 / A toast card that does not alter surrounding geometry.
  */
 export function Toast({ message, tone = "error", action, onDismiss }: ToastProps) {
+  const { t } = useI18n();
   const error = tone === "error";
   return (
     <div
@@ -70,7 +72,7 @@ export function Toast({ message, tone = "error", action, onDismiss }: ToastProps
           type="button"
           onClick={onDismiss}
           className="flex size-7 shrink-0 items-center justify-center rounded-full text-current opacity-65 transition-opacity hover:opacity-100"
-          aria-label="关闭提示"
+          aria-label={t("关闭提示")}
         >
           <Icon name="x" className="size-3.5" />
         </button>

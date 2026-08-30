@@ -1,5 +1,6 @@
 import type { ReactNode } from "react";
 import { Icon } from "../../components/Icon.tsx";
+import { useI18n } from "../../i18n.tsx";
 
 export interface ScopeNoticeProps {
   readonly shared: boolean;
@@ -54,6 +55,7 @@ export function EditorFooter({
   saveDisabled,
   onCancel,
 }: EditorFooterProps) {
+  const { t } = useI18n();
   return (
     <div className="flex items-center gap-3">
       <div className={`flex min-w-0 flex-1 items-center gap-1.5 text-[11px] leading-snug ${shared ? "text-[#4A6272]" : "text-[#7A6260]"}`}>
@@ -67,7 +69,7 @@ export function EditorFooter({
         disabled={busy}
         className="shrink-0 rounded-2xl px-4 py-2.5 text-sm text-[#A8A3A0] disabled:opacity-45"
       >
-        取消
+        {t("取消")}
       </button>
       <button
         type="submit"
@@ -75,7 +77,7 @@ export function EditorFooter({
         disabled={saveDisabled}
         className="shrink-0 rounded-2xl bg-[linear-gradient(120deg,#9B7F7C,#B3A0AD)] px-5 py-2.5 text-sm font-medium text-white disabled:opacity-45"
       >
-        {busy ? "保存中…" : saveLabel}
+        {busy ? t("保存中…") : saveLabel}
       </button>
     </div>
   );

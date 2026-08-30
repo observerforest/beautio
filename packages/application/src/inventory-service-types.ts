@@ -14,6 +14,31 @@ export interface ImageUploadOperationOptions {
   readonly signal?: AbortSignal;
 }
 
+export interface BackupOperationOptions {
+  readonly signal?: AbortSignal;
+}
+
+export type BackupChunkWriter = (chunk: string) => Promise<void>;
+
+export interface BackupExportPlan {
+  readonly createdAt: string;
+  readonly products: number;
+  readonly inventoryItems: number;
+  readonly images: number;
+
+  /**
+   * Writes one valid versioned JSON backup one metadata record or image at a time.
+   *
+   * @param write - Backpressure-aware destination for serialized JSON chunks.
+   * @param options - Optional cancellation checked between every serialized record.
+   * @returns Nothing after the closing JSON delimiter has been accepted.
+   */
+  readonly writeTo: (
+    write: BackupChunkWriter,
+    options?: BackupOperationOptions,
+  ) => Promise<void>;
+}
+
 export interface InventoryApplicationServiceOptions {
   readonly idGenerator?: (kind: GeneratedIdKind) => string;
   readonly clock?: () => Date;

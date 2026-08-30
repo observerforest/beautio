@@ -1,5 +1,6 @@
 import type { InventoryListItemOutput } from "@beautio/contracts";
 import { AdminApiClient } from "../../admin-api.ts";
+import { useI18n } from "../../i18n.tsx";
 import type { InventoryCardView } from "./models/index.ts";
 import { ProductImage } from "./ProductImage.tsx";
 
@@ -25,12 +26,27 @@ export function ProductCard({
   onOpen,
   onUnauthorized,
 }: ProductCardProps) {
+  const { locale, t } = useI18n();
+  const displayName = item.product?.name ?? t("未记录产品名称");
+  const sizeLabel = item.product?.size_label ?? t("规格未记录");
+  const bottleLabel = view.bottleLabel === null
+    ? null
+    : localizeCardCopy(view.bottleLabel, locale, t);
+  const usableUntilLabel = localizeCardCopy(view.usableUntilLabel, locale, t);
+  const accessibleName = [
+    displayName,
+    ...(bottleLabel === null ? [] : [bottleLabel]),
+    sizeLabel,
+    usableUntilLabel,
+    ...view.alerts.map((alert) => t(alert.label)),
+    t("查看详情"),
+  ].join(locale === "en" ? ", " : "，");
   return (
     <article className="h-full min-w-0">
       <button
         type="button"
         onClick={onOpen}
-        aria-label={view.accessibleName}
+        aria-label={accessibleName}
         aria-haspopup="dialog"
         className="group flex h-full w-full min-w-0 flex-col overflow-hidden rounded-2xl bg-white text-left shadow-[0_1px_6px_rgba(90,76,74,0.06)] transition-transform active:scale-[0.97]"
       >
@@ -38,7 +54,7 @@ export function ProductCard({
           <ProductImage
             client={client}
             choice={view.image}
-            alt={view.displayName}
+            alt={displayName}
             variant="original"
             loading="lazy"
             onUnauthorized={onUnauthorized}
@@ -57,7 +73,7 @@ export function ProductCard({
                         : "bg-[#FBF3EE] text-[#B46D4E]"
                   }`}
                 >
-                  {alert.label}
+                  {t(alert.label)}
                 </span>
               ))}
             </span>
@@ -66,21 +82,41 @@ export function ProductCard({
 
       <span className="flex min-w-0 flex-col gap-0.5 bg-white p-2.5 shadow-[inset_0_1px_3px_rgba(90,76,74,0.03)]">
           <strong className="min-w-0 break-words text-[10px] font-medium leading-tight text-[#5A4C4A] md:text-xs">
-            {view.displayName}
+            {displayName}
           </strong>
           <span className="mt-0.5 flex min-w-0 flex-wrap items-center gap-x-2 gap-y-0.5 text-[10px] text-[#A8A3A0]">
-            <span className="break-words">{view.sizeLabel}</span>
-            {view.bottleLabel === null ? null : <span>{view.bottleLabel}</span>}
+            <span className="break-words">{sizeLabel}</span>
+            {bottleLabel === null ? null : <span>{bottleLabel}</span>}
           </span>
           <span
             className={`break-words text-[10px] ${
               item.usable_until === null ? "text-[#9B7F7C]" : "text-[#A8A3A0]"
             }`}
           >
-            {view.usableUntilLabel}
+            {usableUntilLabel}
           </span>
         </span>
       </button>
     </article>
   );
+}
+
+function localizeCardCopy(
+  source: string,
+  locale: "zh-CN" | "en",
+  t: (source: string) => string,
+): string {
+  if (locale !== "en") return source;
+  const bottle = /^第(\d+)瓶$/u.exec(source);
+  if (bottle !== null) return `Bottle ${bottle[1]}`;
+  const usableUntil = /^可用至 (\d{4}-\d{2}-\d{2})(.*)$/u.exec(source);
+  if (usableUntil !== null) {
+    const suffix = usableUntil[2] === "（估算）"
+      ? " (estimated)"
+      : usableUntil[2] === "（准确性未记录）"
+        ? " (accuracy not recorded)"
+        : "";
+    return `Usable until ${usableUntil[1]}${suffix}`;
+  }
+  return t(source);
 }

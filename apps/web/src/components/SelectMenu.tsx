@@ -1,5 +1,6 @@
 import { useEffect, useId, useRef, useState, type KeyboardEvent, type Ref } from "react";
 import { Icon, type IconName } from "./Icon.tsx";
+import { useI18n } from "../i18n.tsx";
 
 export interface SelectMenuOption<Value extends string> {
   readonly value: Value;
@@ -45,6 +46,7 @@ export function SelectMenu<Value extends string>({
   menuClassName = "",
   triggerRef,
 }: SelectMenuProps<Value>) {
+  const { t } = useI18n();
   const listboxId = useId();
   const rootRef = useRef<HTMLDivElement>(null);
   const internalTriggerRef = useRef<HTMLButtonElement>(null);
@@ -135,7 +137,7 @@ export function SelectMenu<Value extends string>({
       >
         {leadingIcon === undefined ? null : <Icon name={leadingIcon} className="size-3 shrink-0" />}
         <span className={variant === "compact" ? "min-w-0 truncate" : "min-w-0 flex-1 truncate"}>
-          {triggerLabel ?? selectedOption?.label ?? "请选择"}
+          {triggerLabel ?? selectedOption?.label ?? t("请选择")}
         </span>
         <Icon name={open ? "chevron-up" : "chevron-down"} className="size-3 shrink-0" />
       </button>
