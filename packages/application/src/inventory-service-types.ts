@@ -1,3 +1,4 @@
+import type { BeautioBackup } from "@beautio/contracts";
 import type {
   GeneratedIdKind,
   ImageAssetStorage,
@@ -16,6 +17,14 @@ export interface ImageUploadOperationOptions {
 
 export interface BackupOperationOptions {
   readonly signal?: AbortSignal;
+}
+
+/**
+ * Carries one fully schema-validated backup from the HTTP upload phase into the
+ * serialized restore phase without parsing the untrusted payload again.
+ */
+export interface PreparedBackupRestore {
+  readonly backup: BeautioBackup;
 }
 
 export type BackupChunkWriter = (chunk: string) => Promise<void>;

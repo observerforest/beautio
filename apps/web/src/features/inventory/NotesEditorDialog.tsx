@@ -70,7 +70,7 @@ export function NotesEditorDialog({ item, client, onCancel, onCommitted, onUnaut
         return;
       }
       if (!isAbortError(caught) && mountedRef.current) {
-        setError(t(inventoryErrorMessage(caught)));
+        setError(inventoryErrorMessage(caught, t));
         setProgress(t("保存失败，页面中的输入仍保留。"));
       }
     } finally {

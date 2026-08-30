@@ -422,14 +422,18 @@ function jsonRequest(method: "PUT", body: object): RequestInit {
  * @param file - User-selected backup file from the browser.
  * @returns The original bounded file and its display size without materializing its contents.
  */
-export async function prepareBeautioBackupFile(
+export function prepareBeautioBackupFile(
   file: File,
-): Promise<PreparedBeautioBackupFile> {
+): PreparedBeautioBackupFile {
   if (file.size < 1) {
-    throw new AdminApiError(0, "INVALID_BACKUP", "备份文件为空。");
+    throw new AdminApiError(0, "EMPTY_BACKUP", "备份文件为空。");
   }
   if (file.size > MAX_BACKUP_SERIALIZED_BYTES) {
-    throw new AdminApiError(0, "INVALID_BACKUP", "备份文件超过 280 MiB 上限。");
+    throw new AdminApiError(
+      0,
+      "BACKUP_TOO_LARGE",
+      "备份文件超过 280 MiB 上限。",
+    );
   }
   return {
     file,
@@ -455,7 +459,7 @@ async function responseError(response: Response): Promise<AdminApiError> {
     return new AdminApiError(
       response.status,
       "HTTP_ERROR",
-      "Beautio 服务返回错误响应。",
+      `Beautio 服务返回错误响应（HTTP ${response.status}）。`,
     );
   }
 
@@ -470,7 +474,7 @@ async function responseError(response: Response): Promise<AdminApiError> {
   return new AdminApiError(
     response.status,
     "HTTP_ERROR",
-    "Beautio 服务返回错误响应。",
+    `Beautio 服务返回错误响应（HTTP ${response.status}）。`,
   );
 }
 

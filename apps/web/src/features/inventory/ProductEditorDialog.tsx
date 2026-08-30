@@ -153,7 +153,7 @@ export function ProductEditorDialog({
         return;
       }
       if (!isAbortError(caught) && mountedRef.current) {
-        setError(`${t(inventoryErrorMessage(caught))}${selectedImage === null ? "" : ` ${t("若图片已上传但尚未关联，服务器会按临时资产规则清理。")}`}`);
+        setError(`${inventoryErrorMessage(caught, t)}${selectedImage === null ? "" : ` ${t("若图片已上传但尚未关联，服务器会按临时资产规则清理。")}`}`);
         setProgress(t("保存失败，页面中的输入仍保留。"));
       }
     } finally {

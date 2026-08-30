@@ -181,7 +181,10 @@ export class SqliteInventoryRepository implements BackupInventoryRepository {
       const displacedAssets = existingAssets.filter(
         (asset) => !stagingIds.has(asset.id),
       );
-      const occupiedIds = new Set(existingAssets.map((asset) => asset.id));
+      const occupiedIds = new Set([
+        ...existingAssets.map((asset) => asset.id),
+        ...replacement.imageAssets.map((entry) => entry.imageAsset.id),
+      ]);
 
       this.#database.exec(`
         DELETE FROM inventory_items;

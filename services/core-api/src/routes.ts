@@ -131,8 +131,31 @@ export async function routeRequest(
       url,
       backupSignal,
     );
-  if (isBackupRoute(request.method, url.pathname)) {
-    await withRequestBackupCancellation(request, response, (externalSignal) =>
+  if (request.method === "PUT" && url.pathname === "/api/admin/backup") {
+    await withRequestCancellation(request, response, (externalSignal) =>
+      dependencies.withBackupDeadline(
+        options.backupOperationTimeoutMs,
+        externalSignal,
+        async (backupSignal) => {
+          const prepared = application.prepareBackupRestore(
+            await readStreamingJson(request, BACKUP_BODY_LIMIT, backupSignal),
+          );
+          await dependencies.withExclusiveOperation(async () => {
+            sendJson(
+              response,
+              200,
+              await application.restorePreparedBackup(prepared, {
+                signal: backupSignal,
+              }),
+            );
+          }, backupSignal);
+        },
+      ),
+    );
+    return;
+  }
+  if (request.method === "GET" && url.pathname === "/api/admin/backup") {
+    await withRequestCancellation(request, response, (externalSignal) =>
       dependencies.withBackupDeadline(
         options.backupOperationTimeoutMs,
         externalSignal,
@@ -146,7 +169,9 @@ export async function routeRequest(
     return;
   }
   if (isExclusiveWriteRoute(request.method, url.pathname)) {
-    await dependencies.withExclusiveOperation(() => execute());
+    await withRequestCancellation(request, response, (signal) =>
+      dependencies.withExclusiveOperation(() => execute(), signal),
+    );
     return;
   }
   await execute();
@@ -295,18 +320,6 @@ async function routeAuthorizedRequest(
     return;
   }
 
-  if (request.method === "PUT" && url.pathname === "/api/admin/backup") {
-    sendJson(
-      response,
-      200,
-      await application.restoreBackup(
-        await readStreamingJson(request, BACKUP_BODY_LIMIT, backupSignal),
-        backupSignal === undefined ? {} : { signal: backupSignal },
-      ),
-    );
-    return;
-  }
-
   if (
     request.method === "POST" &&
     url.pathname === "/api/admin/image-assets"
@@ -422,10 +435,6 @@ async function routeAuthorizedRequest(
   sendNotFound(response);
 }
 
-function isBackupRoute(method: string | undefined, pathname: string): boolean {
-  return pathname === "/api/admin/backup" && (method === "GET" || method === "PUT");
-}
-
 function isExclusiveWriteRoute(
   method: string | undefined,
   pathname: string,
@@ -447,7 +456,7 @@ function isExclusiveWriteRoute(
   );
 }
 
-async function withRequestBackupCancellation<T>(
+async function withRequestCancellation<T>(
   request: IncomingMessage,
   response: ServerResponse,
   operation: (signal: AbortSignal) => Promise<T>,

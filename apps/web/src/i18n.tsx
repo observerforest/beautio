@@ -73,6 +73,8 @@ const english: Readonly<Record<string, string>> = {
     "The backup contains products, inventory, ingredients, notes, and original images. It never contains credentials.",
   "恢复会用备份内容替换当前全部库存，操作前请核对预览。":
     "Restore replaces all current inventory with the backup. Review the preview before continuing.",
+  "恢复会用备份内容替换当前全部库存，且无法撤销。操作前请核对文件。":
+    "Restore replaces all current inventory and cannot be undone. Verify the file before continuing.",
   "确认恢复": "Confirm restore",
   "取消": "Cancel",
   "正在恢复…": "Restoring…",

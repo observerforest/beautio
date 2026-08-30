@@ -140,16 +140,16 @@ test("backup download avoids reserialization and restore reuses the bounded orig
   assert.equal(calls[1]?.init.method, "PUT");
   assert.equal(calls[1]?.init.body, backupFile);
   assert.deepEqual(
-    await prepareBeautioBackupFile(backupFile),
+    prepareBeautioBackupFile(backupFile),
     {
       file: backupFile,
       byteSize: backupFile.size,
     },
   );
-  await assert.rejects(
-    prepareBeautioBackupFile(new File([], "empty.beautio-backup")),
+  assert.throws(
+    () => prepareBeautioBackupFile(new File([], "empty.beautio-backup")),
     (error: unknown) =>
-      error instanceof AdminApiError && error.code === "INVALID_BACKUP",
+      error instanceof AdminApiError && error.code === "EMPTY_BACKUP",
   );
   client.destroy();
 });
@@ -467,6 +467,24 @@ test("HTTP failures preserve the stable error but never add the token", async ()
       assert.equal(error.status, 401);
       assert.equal(error.code, "UNAUTHORIZED");
       assert.doesNotMatch(error.message, /never-print-this/);
+      return true;
+    },
+  );
+  client.destroy();
+});
+
+test("non-JSON HTTP failures retain their status for user-visible diagnostics", async () => {
+  const client = new AdminApiClient("admin-secret", async () =>
+    new Response("Bad gateway", { status: 502 }),
+  );
+
+  await assert.rejects(
+    client.readInventory("2026-08-19"),
+    (error: unknown) => {
+      assert.ok(error instanceof AdminApiError);
+      assert.equal(error.status, 502);
+      assert.equal(error.code, "HTTP_ERROR");
+      assert.match(error.message, /HTTP 502/u);
       return true;
     },
   );

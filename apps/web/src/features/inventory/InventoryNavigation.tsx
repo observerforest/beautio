@@ -1,7 +1,9 @@
 import { useEffect, useRef, useState, type ChangeEvent } from "react";
 import {
   AdminApiClient,
+  AdminApiError,
   prepareBeautioBackupFile,
+  type BackupDownload,
   type PreparedBeautioBackupFile,
 } from "../../admin-api.ts";
 import { Icon, type IconName } from "../../components/Icon.tsx";
@@ -153,17 +155,12 @@ export function SettingsPanel({
     setBusy(true);
     setMessage("");
     void client.downloadBackup().then((download) => {
-      const url = URL.createObjectURL(download.blob);
-      const anchor = document.createElement("a");
-      anchor.href = url;
-      anchor.download = download.filename;
-      anchor.click();
-      URL.revokeObjectURL(url);
+      triggerBackupDownload(download);
       setMessageTone("info");
       setMessage(t("完整备份已导出。"));
     }).catch((error: unknown) => {
       setMessageTone("error");
-      setMessage(error instanceof Error ? t(error.message) : t("备份导出失败。"));
+      setMessage(backupErrorMessage(error, "备份导出失败。", t));
     }).finally(() => setBusy(false));
   };
 
@@ -172,11 +169,13 @@ export function SettingsPanel({
     event.target.value = "";
     if (file === undefined) return;
     setMessage("");
-    void prepareBeautioBackupFile(file).then(setPendingBackup).catch((error: unknown) => {
+    try {
+      setPendingBackup(prepareBeautioBackupFile(file));
+    } catch (error) {
       setPendingBackup(null);
       setMessageTone("error");
-      setMessage(error instanceof Error ? t(error.message) : t("备份文件无法读取。"));
-    });
+      setMessage(backupErrorMessage(error, "备份文件无法读取。", t));
+    }
   };
 
   const restoreBackup = (): void => {
@@ -194,7 +193,7 @@ export function SettingsPanel({
       await onBackupRestored(restoredMessage);
     }).catch((error: unknown) => {
       setMessageTone("error");
-      setMessage(error instanceof Error ? t(error.message) : t("备份恢复失败。"));
+      setMessage(backupErrorMessage(error, "备份恢复失败。", t));
     }).finally(() => setBusy(false));
   };
 
@@ -292,7 +291,7 @@ export function SettingsPanel({
               <div className="mt-4 rounded-xl bg-[#FAF8F6] p-4 text-xs leading-relaxed text-[#6E6461]">
                 <p className="break-all">{pendingBackup.file.name}</p>
                 <p className="mt-1 text-[#A8A3A0]">{formatBackupFileSize(pendingBackup.byteSize, locale)}</p>
-                <p className="mt-2 text-[#A06E62]">{t("恢复会用备份内容替换当前全部库存，操作前请核对预览。")}</p>
+                <p className="mt-2 text-[#A06E62]">{t("恢复会用备份内容替换当前全部库存，且无法撤销。操作前请核对文件。")}</p>
                 <div className="mt-4 flex gap-2">
                   <button type="button" disabled={busy} onClick={() => setPendingBackup(null)} className="flex-1 rounded-xl border border-[#E5D8CF] py-2.5">{t("取消")}</button>
                   <button type="button" disabled={busy} onClick={restoreBackup} className="flex-1 rounded-xl bg-[#9B7F7C] py-2.5 text-white">{busy ? t("正在恢复…") : t("确认恢复")}</button>
@@ -338,6 +337,61 @@ function formatBackupFileSize(byteSize: number, locale: "zh-CN" | "en"): string 
   return locale === "en"
     ? `${mebibytes.toFixed(1)} MiB selected`
     : `已选择 ${mebibytes.toFixed(1)} MiB`;
+}
+
+/**
+ * Starts a browser download from a Blob URL while keeping the URL alive long
+ * enough for engines that consume the click asynchronously.
+ *
+ * @param download - Backup Blob and safe server-provided filename.
+ * @returns Nothing after the download click has been dispatched.
+ */
+function triggerBackupDownload(download: BackupDownload): void {
+  const url = URL.createObjectURL(download.blob);
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = download.filename;
+  anchor.hidden = true;
+  try {
+    document.body.append(anchor);
+    anchor.click();
+  } finally {
+    anchor.remove();
+    window.setTimeout(() => URL.revokeObjectURL(url), 1_000);
+  }
+}
+
+function backupErrorMessage(
+  error: unknown,
+  fallback: string,
+  translate: (source: string) => string,
+): string {
+  if (error instanceof AdminApiError) {
+    const source = (() => {
+      switch (error.code) {
+        case "EMPTY_BACKUP":
+          return "备份文件为空。";
+        case "BACKUP_TOO_LARGE":
+          return "备份文件超过 280 MiB 上限。";
+        case "INVALID_INPUT":
+          return "备份文件不是有效的 Beautio 备份。";
+        case "UNSUPPORTED_MEDIA_TYPE":
+          return "备份文件版本或内容无法识别。";
+        case "UPLOAD_TOO_LARGE":
+          return "备份图片超过 200 MiB 总上限。";
+        case "UNAUTHORIZED":
+          return "管理密钥无效或已撤销，请重新输入。库存没有被读取。";
+        default:
+          return fallback;
+      }
+    })();
+    const message = translate(source);
+    return error.status > 0 ? `${message} (HTTP ${error.status})` : message;
+  }
+  if (error instanceof TypeError) {
+    return translate("无法连接 Beautio 服务，请确认服务正在运行。");
+  }
+  return translate(fallback);
 }
 
 function SettingsSubHeader({

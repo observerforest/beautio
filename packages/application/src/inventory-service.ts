@@ -67,6 +67,7 @@ import type {
   ImageUploadInput,
   ImageUploadOperationOptions,
   InventoryApplicationServiceOptions,
+  PreparedBackupRestore,
   ReadImageAssetOutput,
 } from "./inventory-service-types.ts";
 import {
@@ -977,6 +978,19 @@ export class InventoryApplicationService {
   }
 
   /**
+   * Schema-validates one parsed backup before it waits for the exclusive write gate.
+   *
+   * This phase performs no persistence or image I/O, so a slow upload or a large
+   * invalid document cannot block unrelated state-changing requests.
+   *
+   * @param untrustedInput - Parsed JSON supplied through an authenticated adapter.
+   * @returns A validated payload that can be passed to restorePreparedBackup.
+   */
+  prepareBackupRestore(untrustedInput: unknown): PreparedBackupRestore {
+    return { backup: parseBackupWithoutCloningPayload(untrustedInput) };
+  }
+
+  /**
    * Validates and atomically restores one complete single-user backup.
    *
    * Image files are written under fresh internal keys before the database swap.
@@ -991,7 +1005,25 @@ export class InventoryApplicationService {
     options: BackupOperationOptions = {},
   ): Promise<RestoreBeautioBackupOutput> {
     assertBackupNotAborted(options.signal);
-    const backup = parseBackupWithoutCloningPayload(untrustedInput);
+    return this.restorePreparedBackup(
+      this.prepareBackupRestore(untrustedInput),
+      options,
+    );
+  }
+
+  /**
+   * Restores a previously schema-validated backup under the caller's exclusive gate.
+   *
+   * @param prepared - Payload returned by prepareBackupRestore.
+   * @param options - Optional cancellation for staging, image validation, and replacement.
+   * @returns Counts from the committed replacement.
+   */
+  async restorePreparedBackup(
+    prepared: PreparedBackupRestore,
+    options: BackupOperationOptions = {},
+  ): Promise<RestoreBeautioBackupOutput> {
+    assertBackupNotAborted(options.signal);
+    const { backup } = prepared;
     const { storage, inspector } = this.requireImageCapabilities();
     const productIds = uniqueIds(
       backup.products.map((product) => product.product_id),

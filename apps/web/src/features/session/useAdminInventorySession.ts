@@ -208,7 +208,12 @@ export function useAdminInventorySession(): AdminInventorySession {
 }
 
 function errorMessage(error: unknown, translate: (source: string) => string): string {
-  if (error instanceof AdminApiError) return translate(error.message);
+  if (error instanceof AdminApiError) {
+    if (error.code === "HTTP_ERROR" && error.status > 0) {
+      return `${translate("Beautio 服务返回错误响应。")} (HTTP ${error.status})`;
+    }
+    return translate(error.message);
+  }
   if (error instanceof TypeError) {
     return translate("无法连接 Beautio 服务，请确认本地服务正在运行。");
   }

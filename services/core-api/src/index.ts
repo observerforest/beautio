@@ -129,16 +129,25 @@ async function withBackupDeadline<T>(
   try {
     return await operation(signal);
   } catch (error) {
-    if (deadline.signal.aborted) {
+    if (deadline.signal.aborted && isAbortFailure(error)) {
       throw new BeautioError("UPLOAD_FAILED", "backup operation timed out");
     }
-    if (externalSignal.aborted) {
+    if (externalSignal.aborted && isAbortFailure(error)) {
       throw new BeautioError("UPLOAD_FAILED", "backup operation was aborted");
     }
     throw error;
   } finally {
     clearTimeout(timeout);
   }
+}
+
+function isAbortFailure(error: unknown): boolean {
+  return (
+    (error instanceof Error && error.name === "AbortError") ||
+    (error instanceof BeautioError &&
+      error.code === "UPLOAD_FAILED" &&
+      error.message === "backup operation was aborted")
+  );
 }
 
 async function withActionUploadDeadline<T>(

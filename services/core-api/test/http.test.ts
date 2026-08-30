@@ -12,7 +12,11 @@ import {
 } from "@beautio/application";
 import type { BeautioBackup } from "@beautio/contracts";
 import { SqliteInventoryRepository } from "@beautio/database";
-import { createInventoryItem, type LifecycleStatus } from "@beautio/domain";
+import {
+  BeautioError,
+  createInventoryItem,
+  type LifecycleStatus,
+} from "@beautio/domain";
 import {
   FileImageAssetStorage,
   FileImageRenditionProvider,
@@ -1274,6 +1278,24 @@ test("Action timeout keeps the write gate until delayed storage settles and comp
     queuedWriteSettled = true;
   });
 
+  await postJsonAndAbort(
+    `${fixture.origin}/api/actions/create-inventory-batch`,
+    {
+      as_of: "2026-08-19",
+      products: [
+        { batch_ref: "aborted_after_upload", name: "Aborted queued write" },
+      ],
+      inventory_items: [
+        {
+          batch_ref: "aborted_after_upload_bottle",
+          product_ref: { kind: "new", batch_ref: "aborted_after_upload" },
+          lifecycle_status: "unopened",
+        },
+      ],
+    },
+    ACTION_TOKEN,
+  );
+
   await new Promise((resolve) => setTimeout(resolve, 35));
   assert.equal(uploadSettled, false);
   assert.equal(queuedWriteSettled, false);
@@ -1282,6 +1304,13 @@ test("Action timeout keeps the write gate until delayed storage settles and comp
   assert.equal((await upload).status, 502);
   assert.equal((await queuedWrite).status, 200);
   assert.equal(await fixture.repository.findImageAssetById("image_asset-1"), null);
+  const inventory = await fixture.application.listInventory({
+    as_of: "2026-08-19",
+  });
+  assert.deepEqual(
+    inventory.items.map((item) => item.product?.name),
+    ["After upload timeout"],
+  );
 });
 
 test("Codex multipart deadline drains a slow request without reaching persistence", async (context) => {
@@ -1331,6 +1360,46 @@ test("backup restore body timeout aborts the request and releases the exclusive 
     ACTION_TOKEN,
   );
   assert.equal(nextWrite.status, 200);
+});
+
+test("a slow backup upload does not hold the exclusive write gate", async (context) => {
+  const fixture = await startFixture(context, { backupOperationTimeoutMs: 200 });
+  const slowRestore = putSlowJson(
+    `${fixture.origin}/api/admin/backup`,
+    ADMIN_TOKEN,
+  );
+  await new Promise((resolve) => setTimeout(resolve, 20));
+
+  const nextWrite = await Promise.race([
+    postJson(
+      `${fixture.origin}/api/actions/create-inventory-batch`,
+      {
+        as_of: "2026-08-19",
+        products: [{ batch_ref: "during_upload", name: "During backup upload" }],
+        inventory_items: [
+          {
+            batch_ref: "during_upload_bottle",
+            product_ref: { kind: "new", batch_ref: "during_upload" },
+            lifecycle_status: "unopened",
+          },
+        ],
+      },
+      ACTION_TOKEN,
+    ),
+    new Promise<never>((_resolve, reject) =>
+      setTimeout(
+        () => reject(new Error("write was blocked by the backup request body")),
+        100,
+      ),
+    ),
+  ]);
+  assert.equal(nextWrite.status, 200);
+
+  const timedOut = await slowRestore;
+  assert.equal(timedOut.status, 502);
+  assert.deepEqual(timedOut.body, {
+    error: { code: "UPLOAD_FAILED", message: "backup operation timed out" },
+  });
 });
 
 test("backup restore deadline aborts blocked image inspection before replacement", async (context) => {
@@ -1408,6 +1477,69 @@ test("backup restore deadline aborts blocked image inspection before replacement
     uploaded.assets[0]?.image_asset_id ?? "missing",
   );
   assert.equal(originalAsset?.status, "linked");
+});
+
+test("backup deadline does not hide a non-abort failure that settles later", async (context) => {
+  let failWrites = false;
+  const fixture = await startFixture(context, {
+    backupOperationTimeoutMs: 20,
+    imageStorageFactory: (directory) => {
+      const underlying = new FileImageAssetStorage(directory);
+      return {
+        async put(storageKey, bytes, signal) {
+          if (failWrites) {
+            await new Promise((resolve) => setTimeout(resolve, 35));
+            throw new BeautioError(
+              "UNSUPPORTED_MEDIA_TYPE",
+              "late backup image validation failure",
+            );
+          }
+          await underlying.put(storageKey, bytes, signal);
+        },
+        get: (storageKey, signal) => underlying.get(storageKey, signal),
+        delete: (storageKey) => underlying.delete(storageKey),
+      };
+    },
+  });
+  const uploaded = await fixture.application.uploadProductImages([
+    { source_ref: "late_failure", bytes: fixture.imageBytes },
+  ]);
+  await fixture.application.createInventoryBatch({
+    as_of: "2026-08-19",
+    products: [
+      {
+        batch_ref: "late_failure_product",
+        name: "Late failure product",
+        image_asset_id: uploaded.assets[0]?.image_asset_id,
+      },
+    ],
+    inventory_items: [
+      {
+        batch_ref: "late_failure_bottle",
+        product_ref: { kind: "new", batch_ref: "late_failure_product" },
+        lifecycle_status: "unopened",
+      },
+    ],
+  });
+  const backup = (await (
+    await fetch(`${fixture.origin}/api/admin/backup`, {
+      headers: authorization(ADMIN_TOKEN),
+    })
+  ).json()) as BeautioBackup;
+
+  failWrites = true;
+  const response = await putJson(
+    `${fixture.origin}/api/admin/backup`,
+    backup,
+    ADMIN_TOKEN,
+  );
+  assert.equal(response.status, 415);
+  assert.deepEqual(await response.json(), {
+    error: {
+      code: "UNSUPPORTED_MEDIA_TYPE",
+      message: "late backup image validation failure",
+    },
+  });
 });
 
 test("HTTP maps strict batch errors and serves versioned Actions OpenAPI", async (context) => {
@@ -1729,6 +1861,37 @@ function postJson(url: string, body: object, token: string): Promise<Response> {
     method: "POST",
     headers: { ...authorization(token), "content-type": "application/json" },
     body: JSON.stringify(body),
+  });
+}
+
+function postJsonAndAbort(
+  url: string,
+  body: object,
+  token: string,
+): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const payload = JSON.stringify(body);
+    const request = makeHttpRequest(url, {
+      method: "POST",
+      headers: {
+        ...authorization(token),
+        "content-length": String(Buffer.byteLength(payload)),
+        "content-type": "application/json",
+      },
+    });
+    request.once("error", (error: NodeJS.ErrnoException) => {
+      if (error.code === "ECONNRESET") {
+        resolve();
+        return;
+      }
+      reject(error);
+    });
+    request.end(payload, () => {
+      setTimeout(() => {
+        request.destroy();
+        resolve();
+      }, 10);
+    });
   });
 }
 

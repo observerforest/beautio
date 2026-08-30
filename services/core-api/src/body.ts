@@ -3,25 +3,8 @@ import { BeautioError } from "@beautio/domain";
 import type { IncomingMessage } from "node:http";
 import { createRequire } from "node:module";
 import { invalidInput } from "./responses.ts";
+import type { StreamingJsonParserConstructor } from "./streamparser-json-runtime.js";
 
-interface StreamingJsonParser {
-  readonly isEnded: boolean;
-  onValue: (element: { readonly value?: unknown }) => void;
-  write(input: Iterable<number> | string): void;
-  end(): void;
-}
-
-interface StreamingJsonParserConstructor {
-  new (options: {
-    readonly paths: readonly string[];
-    readonly stringBufferSize: number;
-    readonly numberBufferSize: number;
-  }): StreamingJsonParser;
-}
-
-// @streamparser/json 0.0.26 has an exactOptionalPropertyTypes conflict in its
-// declarations. Loading the pinned runtime through Node's CJS export
-// keeps strict checking local instead of disabling dependency checks globally.
 const require = createRequire(import.meta.url);
 const { JSONParser } = require("@streamparser/json") as {
   readonly JSONParser: StreamingJsonParserConstructor;
@@ -150,7 +133,7 @@ export function readStreamingJson(
         new BeautioError("INVALID_INPUT", "request body could not be read"),
       );
     };
-    const onAbort = (): void => rejectAndDrain(actionTimedOut());
+    const onAbort = (): void => rejectAndDrain(backupOperationAborted());
 
     request.on("data", onData);
     request.once("end", onEnd);
@@ -160,6 +143,10 @@ export function readStreamingJson(
       onAbort();
     }
   });
+}
+
+function backupOperationAborted(): BeautioError {
+  return new BeautioError("UPLOAD_FAILED", "backup operation was aborted");
 }
 
 export async function readMcpJson(

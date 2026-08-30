@@ -36,12 +36,21 @@ export function dateWithAccuracy(
  * Converts expected browser and Admin API failures to safe interface copy.
  *
  * @param error - 未知的拒绝值。 / Unknown rejected value.
+ * @param translate - Interface-copy translator used before adding dynamic status details.
  * @returns 面向用户且绝不包含 Admin 凭证的文案。 / User-facing copy that never includes an Admin credential.
  */
-export function inventoryErrorMessage(error: unknown): string {
-  if (error instanceof AdminApiError) return error.message;
-  if (error instanceof TypeError) {
-    return "无法连接 Beautio 服务，请确认服务正在运行。";
+export function inventoryErrorMessage(
+  error: unknown,
+  translate: (source: string) => string = (source) => source,
+): string {
+  if (error instanceof AdminApiError) {
+    if (error.code === "HTTP_ERROR" && error.status > 0) {
+      return `${translate("Beautio 服务返回错误响应。")} (HTTP ${error.status})`;
+    }
+    return translate(error.message);
   }
-  return "发生了未知错误，请稍后再试。";
+  if (error instanceof TypeError) {
+    return translate("无法连接 Beautio 服务，请确认服务正在运行。");
+  }
+  return translate("发生了未知错误，请稍后再试。");
 }
