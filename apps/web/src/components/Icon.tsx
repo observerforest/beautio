@@ -12,18 +12,25 @@ export type IconName =
   | "chevron-right"
   | "chevron-up"
   | "edit"
+  | "database"
+  | "download"
+  | "folder"
   | "gear"
+  | "globe"
   | "grid"
   | "heart"
   | "info"
   | "inventory"
+  | "logout"
   | "opened"
   | "plus"
   | "search"
   | "sealed"
+  | "shield"
   | "sort"
   | "tag"
   | "tree"
+  | "user"
   | "x";
 
 export interface IconProps extends SVGProps<SVGSVGElement> {
@@ -66,6 +73,14 @@ export function Icon({ name, className = "size-4", ...props }: IconProps) {
       return <svg {...common} strokeWidth="2"><path d="M7 16V4m0 0L3 8m4-4 4 4m6 0v12m0 0 4-4m-4 4-4-4" strokeLinecap="round" strokeLinejoin="round" /></svg>;
     case "calendar":
       return <svg {...common} strokeWidth="1.5"><rect x="3" y="4" width="18" height="18" rx="2" /><path d="M16 2v4M8 2v4M3 10h18" strokeLinecap="round" /></svg>;
+    case "database":
+      return <svg {...common} strokeWidth="1.8"><ellipse cx="12" cy="5" rx="9" ry="3" /><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3" /><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5" /></svg>;
+    case "download":
+      return <svg {...common} strokeWidth="1.8"><path d="M12 5v10M7 15l5 5 5-5" strokeLinecap="round" strokeLinejoin="round" /><path d="M3 20h18" strokeLinecap="round" /></svg>;
+    case "folder":
+      return <svg {...common} strokeWidth="1.8"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7Z" /></svg>;
+    case "globe":
+      return <svg {...common} strokeWidth="1.8"><circle cx="12" cy="12" r="9" /><path d="M2 12h20M12 3c-2.5 3-4 5.7-4 9s1.5 6 4 9M12 3c2.5 3 4 5.7 4 9s-1.5 6-4 9" strokeLinecap="round" /></svg>;
     case "opened":
       return <svg {...common} strokeWidth="1.5"><rect x="8" y="11" width="8" height="11" rx="2" /><path d="M10.5 11V9M13.5 11V9M10.5 9h3M17 6h2.5M16 4.5 19 6" strokeLinecap="round" /></svg>;
     case "sealed":
@@ -76,6 +91,8 @@ export function Icon({ name, className = "size-4", ...props }: IconProps) {
       return <svg {...common} strokeWidth="1.6"><rect x="3" y="3" width="7" height="7" rx="1" /><rect x="14" y="3" width="7" height="7" rx="1" /><rect x="3" y="14" width="7" height="7" rx="1" /><rect x="14" y="14" width="7" height="7" rx="1" /></svg>;
     case "inventory":
       return <svg {...common} strokeWidth="1.5"><rect x="2" y="7" width="20" height="14" rx="2" /><path d="M16 7V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v2M12 12v4M10 14h4" strokeLinecap="round" /></svg>;
+    case "logout":
+      return <svg {...common} strokeWidth="1.8"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4M16 17l5-5-5-5M21 12H9" strokeLinecap="round" strokeLinejoin="round" /></svg>;
     case "tree":
       return <svg {...common} strokeWidth="1.5"><path d="M12 21v-6M9 21h6" strokeLinecap="round" /><path d="M12 15c-4 0-7-2.5-7-6a7 7 0 0 1 14 0c0 3.5-3 6-7 6Z" strokeLinejoin="round" /></svg>;
     case "gear":
@@ -96,5 +113,9 @@ export function Icon({ name, className = "size-4", ...props }: IconProps) {
       return <svg {...common} strokeWidth="1.7"><path d="M12 20h9" strokeLinecap="round" /><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L8 18l-4 1 1-4Z" strokeLinecap="round" strokeLinejoin="round" /></svg>;
     case "info":
       return <svg {...common} strokeWidth="1.8"><circle cx="12" cy="12" r="10" /><path d="M12 16v-4M12 8h.01" strokeLinecap="round" /></svg>;
+    case "shield":
+      return <svg {...common} strokeWidth="1.8"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10Z" strokeLinejoin="round" /></svg>;
+    case "user":
+      return <svg {...common} strokeWidth="1.8"><circle cx="12" cy="8" r="4" /><path d="M4 20c0-4 3.6-7 8-7s8 3 8 7" strokeLinecap="round" /></svg>;
   }
 }

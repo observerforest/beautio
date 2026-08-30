@@ -252,17 +252,22 @@ export function InventoryPage({
         view={browseOptions.view}
         counts={projection.counts}
         settingsOpen={desktopSettingsOpen}
-        onViewChange={changeCollection}
+        onViewChange={(view) => {
+          changeCollection(view);
+          setDesktopSettingsOpen(false);
+        }}
         onSettingsToggle={() => setDesktopSettingsOpen((open) => !open)}
       />
 
       <div className="flex h-full min-h-0 flex-col overflow-hidden md:ml-60 md:block md:h-auto md:min-h-screen md:overflow-visible">
         <header className="z-20 shrink-0 bg-white shadow-[0_1px_0_rgba(229,216,207,0.5)] md:hidden">
-          <div className="beautio-safe-top px-5">
-            <div className="mb-4 flex items-center gap-3">
+          <div className={`beautio-safe-top px-5 ${mobilePage === "settings" ? "pb-2" : ""}`}>
+            <div className={`relative flex items-center gap-3 ${mobilePage === "settings" ? "" : "mb-4"}`}>
               <Logo className="h-6 w-auto max-w-[110px] object-contain object-left" />
               {mobilePage === "settings" ? (
-                <span className="text-sm tracking-[0.08em]">{t("设置")}</span>
+                <span className="pointer-events-none absolute left-1/2 -translate-x-1/2 text-sm tracking-[0.08em] text-[#5A4C4A]">
+                  {t("设置")}
+                </span>
               ) : (
                 <InventorySearchField compact query={queryInput} onQueryChange={setQueryInput} />
               )}
@@ -274,15 +279,13 @@ export function InventoryPage({
         </header>
 
         {mobilePage === "settings" ? (
-          <main className="min-h-0 flex-1 overflow-y-auto pb-32 md:hidden">
+          <main className="flex min-h-0 flex-1 md:hidden">
             <SettingsPanel
-              desktop={false}
               readOnly={readOnly}
               client={client}
               onLock={() => lock()}
               onBackupRestored={handleBackupRestored}
             />
-            <p className="mt-6 text-center text-xs text-[#C8C2BE]">Beautio · Beauty in Flow</p>
           </main>
         ) : (
           <InventorySurface
@@ -307,7 +310,7 @@ export function InventoryPage({
       </div>
 
       {mobilePage === "inventory" && !readOnly ? (
-        <button type="button" disabled title={t("添加产品即将开放")} className="fixed bottom-24 right-5 z-30 flex size-12 items-center justify-center rounded-full bg-[linear-gradient(135deg,#9B7F7C,#B3A0AD)] text-white shadow-[0_4px_18px_rgba(155,127,124,0.38)] md:hidden" aria-label={t("添加产品即将开放")}>
+        <button type="button" disabled title={t("添加产品建设中")} className="fixed bottom-24 right-5 z-30 flex size-12 items-center justify-center rounded-full bg-[linear-gradient(135deg,#9B7F7C,#B3A0AD)] text-white shadow-[0_4px_18px_rgba(155,127,124,0.38)] md:hidden" aria-label={t("添加产品建设中")}>
           <Icon name="plus" />
         </button>
       ) : null}
@@ -333,17 +336,14 @@ export function InventoryPage({
       )}
 
       {desktopSettingsOpen ? (
-        <>
-          <button type="button" className="fixed inset-0 z-40 hidden bg-black/10 backdrop-blur-[2px] md:block" onClick={() => setDesktopSettingsOpen(false)} aria-label={t("关闭设置")} />
+        <div className="fixed inset-y-0 left-60 right-0 z-20 hidden bg-[#F5F3F1] md:flex">
           <SettingsPanel
-            desktop
             readOnly={readOnly}
             client={client}
-            onClose={() => setDesktopSettingsOpen(false)}
             onLock={() => lock()}
             onBackupRestored={handleBackupRestored}
           />
-        </>
+        </div>
       ) : null}
 
       {selectedItem === null || editorSnapshotChanged ? null : (
@@ -419,7 +419,7 @@ function InventorySurface({
           onSortChange={(sort) => onBrowseOptions((current) => ({ ...current, sort }))}
         />
         {readOnly ? null : (
-          <button type="button" disabled title={t("添加产品即将开放")} className="absolute right-8 top-4 hidden items-center gap-2 rounded-full bg-[linear-gradient(120deg,#9B7F7C,#B3A0AD)] px-5 py-2.5 text-sm text-white opacity-45 xl:flex">
+          <button type="button" disabled title={t("添加产品建设中")} className="absolute right-8 top-4 hidden items-center gap-2 rounded-full bg-[linear-gradient(120deg,#9B7F7C,#B3A0AD)] px-5 py-2.5 text-sm text-white opacity-45 xl:flex">
             <Icon name="plus" />{t("添加产品")}
           </button>
         )}

@@ -77,7 +77,7 @@ export function LoginPage({
               id="account-placeholder"
               type="text"
               disabled
-              placeholder={t("账户登录即将开放")}
+              placeholder={t("账户登录建设中")}
               className="w-full bg-transparent pb-3 text-sm font-light outline-none placeholder:text-stone-300"
             />
           </div>

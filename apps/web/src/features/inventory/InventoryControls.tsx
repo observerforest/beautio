@@ -62,7 +62,7 @@ export function CollectionTabs({ view, counts, compact = false, onChange }: Coll
           role="tab"
           aria-selected="false"
           disabled
-          title={t("愿望清单即将开放")}
+          title={t("愿望清单建设中")}
           className="flex min-w-0 items-center justify-center gap-1 py-2.5 text-xs font-normal text-[#A8A3A0]"
         >
           <Icon name="heart" className="size-3.5 shrink-0" />
@@ -97,7 +97,7 @@ export function CollectionTabs({ view, counts, compact = false, onChange }: Coll
       <button
         type="button"
         disabled
-        title={t("愿望清单即将开放")}
+        title={t("愿望清单建设中")}
         className="flex w-full items-center gap-2 rounded-xl px-3 py-2.5 text-left text-sm text-[#CBC6C3]"
       >
         <Icon name="heart" className="size-4" />{t("愿望清单")}
@@ -130,7 +130,7 @@ export function StatusTabs({
   discardedCount,
   onChange,
 }: StatusTabsProps) {
-  const { t } = useI18n();
+  const { locale, t } = useI18n();
   if (view === "archive") {
     const archive = [
       { label: "已归档", count: counts.archive, icon: "archive" as const },
@@ -156,10 +156,10 @@ export function StatusTabs({
   }
 
   const definitions = [
-    { key: "opened" as const, label: "已开封", count: counts.opened, icon: "opened" as const, color: "#9B7F7C" },
-    { key: "unopened" as const, label: "未开封", count: counts.unopened, icon: "sealed" as const, color: "#7A8793" },
-    { key: "attention" as const, label: "需留意", count: counts.attention, icon: "bell" as const, color: "#C07A5A" },
-    { key: "all" as const, label: "总库存", count: counts.active, icon: "grid" as const, color: "#5A4C4A" },
+    { key: "opened" as const, label: "已开封", compactEnglishLabel: "Open", count: counts.opened, icon: "opened" as const, color: "#9B7F7C" },
+    { key: "unopened" as const, label: "未开封", compactEnglishLabel: "Sealed", count: counts.unopened, icon: "sealed" as const, color: "#7A8793" },
+    { key: "attention" as const, label: "需留意", compactEnglishLabel: "Alerts", count: counts.attention, icon: "bell" as const, color: "#C07A5A" },
+    { key: "all" as const, label: "总库存", compactEnglishLabel: "Total", count: counts.active, icon: "grid" as const, color: "#5A4C4A" },
   ];
   return (
     <div className="grid grid-cols-4 overflow-hidden rounded-2xl border border-[#E5D8CF] bg-white" aria-label={t("库存状态筛选")}>
@@ -172,7 +172,7 @@ export function StatusTabs({
             aria-pressed={selected}
             aria-label={`${t(definition.label)} ${definition.count}`}
             onClick={() => onChange(definition.key)}
-            className={`flex min-w-0 items-center justify-center gap-1 py-2 transition-colors ${index < definitions.length - 1 ? "border-r border-[#E5D8CF]" : ""} ${selected ? "bg-[#FAF9F8]" : "bg-white"}`}
+            className={`flex min-w-0 items-center justify-center py-2 transition-colors ${locale === "en" ? "gap-0.5" : "gap-1"} ${index < definitions.length - 1 ? "border-r border-[#E5D8CF]" : ""} ${selected ? "bg-[#FAF9F8]" : "bg-white"}`}
             style={{ color: selected ? definition.color : "#A8A3A0" }}
           >
             <span className="flex size-4 shrink-0 items-center justify-center" aria-hidden="true">
@@ -185,8 +185,10 @@ export function StatusTabs({
                 }
               />
             </span>
-            <span className="hidden text-[10px] min-[360px]:inline">{t(definition.label)}</span>
-            <strong className="text-[10px]">{definition.count}</strong>
+            <span className="hidden whitespace-nowrap text-[10px] min-[320px]:inline">
+              {locale === "en" ? definition.compactEnglishLabel : t(definition.label)}
+            </span>
+            <strong className="shrink-0 text-[10px]">{definition.count}</strong>
           </button>
         );
       })}

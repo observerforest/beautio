@@ -14,7 +14,6 @@ import {
   type ProductImageChoice,
 } from "./models/index.ts";
 import { ImageViewer } from "./ImageViewer.tsx";
-import { displayValue } from "./utils/inventory-format.ts";
 import { useProductImage } from "./useProductImage.ts";
 
 export interface ProductDetailDialogProps {
@@ -138,14 +137,13 @@ export function ProductDetailDialog({
 
           <DetailSection
             title={t("产品资料")}
-            identifier={`Product ID · ${displayValue(item.product_id)}`}
             badge={t("共享 · 影响全部瓶")}
             tone="shared"
           >
             <div className="grid grid-cols-6 gap-2">
               <InfoCell label={t("产品名称")} value={item.product?.name ?? t("未记录")} className="col-span-6 sm:col-span-3" />
-              <InfoCell label={t("产品别名")} value={item.product?.alias ?? t("未记录")} className="col-span-6 sm:col-span-3" />
-              <InfoCell label={t("品牌")} value={item.product?.brand ?? t("未记录")} className="col-span-2" />
+              <InfoCell label={t("产品别名")} value={optionalProductValue(item.product?.alias)} className="col-span-6 sm:col-span-3" />
+              <InfoCell label={t("品牌")} value={optionalProductValue(item.product?.brand)} className="col-span-2" />
               <InfoCell label={t("品类")} value={item.product?.category ?? t("未记录")} className="col-span-2" />
               <InfoCell label={t("规格")} value={item.product?.size_label ?? t("未记录")} className="col-span-2" />
             </div>
@@ -155,7 +153,6 @@ export function ProductDetailDialog({
 
           <DetailSection
             title={t("这一瓶")}
-            identifier={`Inventory ID · ${item.inventory_item_id}`}
             badge={t("仅当前瓶")}
             tone="bottle"
           >
@@ -193,7 +190,7 @@ export function ProductDetailDialog({
           <DetailSection title={t("服务端派生结果")} identifier={`${t("截至")} ${asOf}`} badge={t("只读")} tone="derived">
             <div className="grid grid-cols-3 gap-2">
               <InfoCell
-                label={t("PAO 截止日")}
+                label={locale === "en" ? "PAO due" : t("PAO 截止日")}
                 value={item.pao_deadline ?? t("未记录")}
                 accessory={<AccuracyBadge accuracy={deadlineAccuracy} derived />}
                 derived
@@ -201,22 +198,24 @@ export function ProductDetailDialog({
               <InfoCell label={t("最终可用至")} value={item.usable_until ?? t("未记录")} derived />
               <InfoCell label={t("可用状态")} value={t(usabilityLabel(item.usability_status))} derived />
             </div>
-            <div className="rounded-2xl bg-[#FBF6F5] px-4 py-3">
-              <p className="mb-1 text-[10px] text-[#9B7F7C]">{t("系统警告")}</p>
-              {item.warnings.length === 0 ? (
-                <p className="text-xs text-[#7A7572]">{t("当前没有警告")}</p>
-              ) : (
+            {item.warnings.length === 0 ? null : (
+              <div className="rounded-2xl bg-[#FBF6F5] px-4 py-3">
+                <p className="mb-1 text-[10px] text-[#9B7F7C]">{t("系统警告")}</p>
                 <ul className="space-y-1 text-xs text-[#9D4C57]">
                   {item.warnings.map((warning) => <li key={warning}>• {t(warningLabel(warning))}</li>)}
                 </ul>
-              )}
-            </div>
+              </div>
+            )}
           </DetailSection>
         </div>
       </ModalShell>
       {viewerOpen && image.status === "ready" ? <ImageViewer title={productName} src={image.src} onClose={() => setViewerOpen(false)} /> : null}
     </>
   );
+}
+
+function optionalProductValue(value: string | null | undefined): string {
+  return value === null || value === undefined || value.trim().length === 0 ? "--" : value;
 }
 
 function DetailSection({
@@ -235,12 +234,16 @@ function DetailSection({
   const badgeClass = tone === "shared" ? "bg-[#EEF1F4] text-[#4A6272]" : tone === "bottle" ? "bg-[#FBF6F5] text-[#7A6260]" : "bg-[#F3F0ED] text-[#7A7572]";
   return (
     <section className="space-y-3">
-      <div className="flex items-start justify-between gap-3">
-        <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-1">
-          <h4 className="shrink-0 text-xs font-semibold uppercase tracking-[0.06em] text-[#A8A3A0]">{title}</h4>
-          {identifier === undefined ? null : <span className="break-all text-[9px] text-[#B0AAA7]">{identifier}</span>}
+      <div className="space-y-1">
+        <div className="flex items-start justify-between gap-3">
+          <h4 className="min-w-0 text-xs font-semibold uppercase tracking-[0.06em] text-[#A8A3A0]">{title}</h4>
+          <span className={`shrink-0 rounded-full px-2 py-0.5 text-[10px] ${badgeClass}`}>{badge}</span>
         </div>
-        <span className={`shrink-0 rounded-full px-2 py-0.5 text-[10px] ${badgeClass}`}>{badge}</span>
+        {identifier === undefined ? null : (
+          <span className="block whitespace-nowrap font-mono text-[9px] tracking-tight text-[#B0AAA7]">
+            {identifier}
+          </span>
+        )}
       </div>
       {children}
     </section>

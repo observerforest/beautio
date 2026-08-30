@@ -89,7 +89,11 @@ export function ProductCard({
             {bottleLabel === null ? null : <span>{bottleLabel}</span>}
           </span>
           <span
-            className={`break-words text-[10px] ${
+            className={`${
+              locale === "en"
+                ? "whitespace-nowrap text-[8px] min-[360px]:text-[9px] min-[430px]:text-[10px]"
+                : "break-words text-[10px]"
+            } ${
               item.usable_until === null ? "text-[#9B7F7C]" : "text-[#A8A3A0]"
             }`}
           >
@@ -116,7 +120,7 @@ function localizeCardCopy(
       : usableUntil[2] === "（准确性未记录）"
         ? " (accuracy not recorded)"
         : "";
-    return `Usable until ${usableUntil[1]}${suffix}`;
+    return `Use by ${usableUntil[1]}${suffix}`;
   }
   return t(source);
 }
