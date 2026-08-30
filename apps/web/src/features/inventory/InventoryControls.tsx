@@ -138,7 +138,12 @@ export function StatusTabs({
       <div className="grid grid-cols-3 overflow-hidden rounded-2xl border border-[#E5D8CF] bg-white" aria-label="已归档库存摘要">
         {archive.map((entry, index) => (
           <span key={entry.label} className={`flex items-center justify-center gap-1 py-2 text-[#7A7572] ${index < archive.length - 1 ? "border-r border-[#E5D8CF]" : ""}`}>
-            <Icon name={entry.icon} className="size-3.5" />
+            <span className="flex size-4 shrink-0 items-center justify-center" aria-hidden="true">
+              <Icon
+                name={entry.icon}
+                className={entry.icon === "opened" ? "size-4 -translate-y-px" : "size-3"}
+              />
+            </span>
             <span className="text-[10px]">{entry.label}</span>
             <strong className="text-[10px]">{entry.count}</strong>
           </span>
@@ -167,7 +172,16 @@ export function StatusTabs({
             className={`flex min-w-0 items-center justify-center gap-1 py-2 transition-colors ${index < definitions.length - 1 ? "border-r border-[#E5D8CF]" : ""} ${selected ? "bg-[#FAF9F8]" : "bg-white"}`}
             style={{ color: selected ? definition.color : "#A8A3A0" }}
           >
-            <Icon name={definition.icon} className="size-3.5 shrink-0" />
+            <span className="flex size-4 shrink-0 items-center justify-center" aria-hidden="true">
+              <Icon
+                name={definition.icon}
+                className={
+                  definition.icon === "opened" || definition.icon === "sealed"
+                    ? "size-4 -translate-y-px"
+                    : "size-3"
+                }
+              />
+            </span>
             <span className="hidden text-[10px] min-[360px]:inline">{definition.label}</span>
             <strong className="text-[10px]">{definition.count}</strong>
           </button>
@@ -277,7 +291,7 @@ export function InventoryFilterControls({
   const selectedSortLabel = sortOptions.find((option) => option.value === sort)?.label ?? "排序";
 
   return (
-    <div className="flex min-w-0 items-center gap-2 overflow-visible">
+    <div className="flex min-w-0 items-center gap-1.5 overflow-visible md:gap-2">
       <SelectMenu
         value={brand ?? ""}
         options={brandOptions}
@@ -287,8 +301,8 @@ export function InventoryFilterControls({
         triggerLabel={brand ?? "品牌"}
         variant="compact"
         disabled={brands.length === 0}
-        className="shrink-0"
-        buttonClassName="flex items-center gap-1.5 rounded-full border border-[#D8D4D1] px-3 py-1.5 text-xs text-[#7A7572] transition-all disabled:cursor-not-allowed disabled:opacity-45"
+        className="min-w-0 shrink md:shrink-0"
+        buttonClassName="flex w-auto max-w-full min-w-0 items-center justify-center gap-1 rounded-full border border-[#D8D4D1] px-2.5 py-1.5 text-xs text-[#7A7572] transition-all disabled:cursor-not-allowed disabled:opacity-45 md:gap-1.5 md:px-3"
         menuClassName="left-0"
       />
 
@@ -300,8 +314,9 @@ export function InventoryFilterControls({
         leadingIcon="category"
         triggerLabel={category ?? "全部品类"}
         variant="compact"
-        className="shrink-0"
-        buttonClassName="flex items-center gap-1.5 rounded-full border border-[#D8D4D1] px-3 py-1.5 text-xs text-[#7A7572] transition-all"
+        menuSize="narrow"
+        className="min-w-0 shrink md:shrink-0"
+        buttonClassName="flex w-auto max-w-full min-w-0 items-center justify-center gap-1 rounded-full border border-[#D8D4D1] px-2.5 py-1.5 text-xs text-[#7A7572] transition-all md:gap-1.5 md:px-3"
         menuClassName="left-0"
       />
 
@@ -313,9 +328,10 @@ export function InventoryFilterControls({
         leadingIcon="sort"
         triggerLabel={selectedSortLabel}
         variant="compact"
-        className="shrink-0"
-        buttonClassName="flex items-center gap-1.5 rounded-full border border-[#D8D4D1] px-3 py-1.5 text-xs text-[#7A7572] transition-all"
-        menuClassName="left-0"
+        menuSize="narrow"
+        className="min-w-0 shrink md:shrink-0"
+        buttonClassName="flex w-auto max-w-full min-w-0 items-center justify-center gap-1 rounded-full border border-[#D8D4D1] px-2.5 py-1.5 text-xs text-[#7A7572] transition-all md:gap-1.5 md:px-3"
+        menuClassName="right-0 md:left-0 md:right-auto"
       />
     </div>
   );

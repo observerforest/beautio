@@ -15,6 +15,7 @@ export interface SelectMenuProps<Value extends string> {
   readonly leadingIcon?: IconName;
   readonly triggerLabel?: string;
   readonly variant?: "compact" | "field";
+  readonly menuSize?: "default" | "narrow";
   readonly disabled?: boolean;
   readonly className?: string;
   readonly buttonClassName?: string;
@@ -37,6 +38,7 @@ export function SelectMenu<Value extends string>({
   leadingIcon,
   triggerLabel,
   variant = "field",
+  menuSize = "default",
   disabled = false,
   className = "",
   buttonClassName = "",
@@ -132,19 +134,24 @@ export function SelectMenu<Value extends string>({
         className={buttonClassName}
       >
         {leadingIcon === undefined ? null : <Icon name={leadingIcon} className="size-3 shrink-0" />}
-        <span className="min-w-0 flex-1 truncate">{triggerLabel ?? selectedOption?.label ?? "请选择"}</span>
+        <span className={variant === "compact" ? "min-w-0 truncate" : "min-w-0 flex-1 truncate"}>
+          {triggerLabel ?? selectedOption?.label ?? "请选择"}
+        </span>
         <Icon name={open ? "chevron-up" : "chevron-down"} className="size-3 shrink-0" />
       </button>
 
       {open ? (
         <div
-          className={`absolute top-full z-50 mt-2 min-w-full overflow-hidden rounded-2xl bg-white py-0 shadow-[0_8px_32px_rgba(90,76,74,0.14)] ${menuClassName}`}
+          className={`absolute top-full z-50 mt-2 overflow-hidden rounded-2xl bg-white py-0 shadow-[0_8px_32px_rgba(90,76,74,0.14)] ${
+            variant === "compact" ? "w-max min-w-full" : "min-w-full"
+          } ${menuClassName}`}
         >
           <div
             id={listboxId}
             role="listbox"
             aria-label={ariaLabel}
             data-beautio-select-menu={variant}
+            data-beautio-select-menu-size={menuSize}
           >
             {options.map((option, index) => (
               <div key={option.value}>
@@ -159,16 +166,32 @@ export function SelectMenu<Value extends string>({
                   data-beautio-select-option
                   onPointerEnter={() => setActiveIndex(index)}
                   onClick={() => choose(option)}
-                  className={`flex w-full items-center gap-3 px-4 py-3.5 text-left text-sm transition-colors ${
+                  className={`flex w-full max-w-full items-center text-left transition-colors ${
+                    variant === "compact"
+                      ? "gap-1.5 px-2.5 py-2 md:gap-3 md:px-4 md:py-3.5"
+                      : "gap-3 px-4 py-3.5"
+                  } ${
                     index === activeIndex
                       ? "bg-[#FBF6F5] text-[#9B7F7C]"
                       : "bg-white text-[#5A4C4A] hover:bg-stone-50"
                   }`}
                 >
-                  {option.icon === undefined ? null : <Icon name={option.icon} className="size-4 shrink-0" />}
-                  <span className="whitespace-nowrap">{option.label}</span>
+                  {option.icon === undefined ? null : (
+                    <Icon
+                      name={option.icon}
+                      className={variant === "compact" ? "size-2.5 shrink-0 md:size-4" : "size-4 shrink-0"}
+                    />
+                  )}
+                  <span className={variant === "compact" ? "min-w-0 truncate" : "whitespace-nowrap"}>
+                    {option.label}
+                  </span>
                 </button>
-                {index === options.length - 1 ? null : <div role="separator" className="mx-4 h-px bg-[#F2EFED]" />}
+                {index === options.length - 1 ? null : (
+                  <div
+                    role="separator"
+                    className={`${variant === "compact" ? "mx-2.5 md:mx-4" : "mx-4"} h-px bg-[#F2EFED]`}
+                  />
+                )}
               </div>
             ))}
           </div>

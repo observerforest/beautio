@@ -47,7 +47,7 @@ export function LoginPage({
   const feedback = localError || (busy ? "" : message);
 
   return (
-    <main className="relative flex min-h-screen w-full items-center justify-center overflow-hidden bg-[linear-gradient(145deg,#F5F3F1_0%,#EEE8E5_40%,#EDE8EE_100%)] px-5 py-20">
+    <main className="relative flex min-h-dvh w-full items-center justify-center overflow-hidden bg-[linear-gradient(145deg,#F5F3F1_0%,#EEE8E5_40%,#EDE8EE_100%)] px-5 py-20">
       <div className="pointer-events-none absolute -right-[8%] -top-[12%] size-[55vw] min-h-80 min-w-80 rounded-full bg-[radial-gradient(circle,rgba(179,160,173,0.28)_0%,transparent_68%)]" />
       <div className="pointer-events-none absolute -bottom-[8%] -left-[6%] size-[48vw] min-h-72 min-w-72 rounded-full bg-[radial-gradient(circle,rgba(174,183,193,0.22)_0%,transparent_70%)]" />
       <div className="pointer-events-none absolute left-[8%] top-[35%] size-[28vw] min-h-48 min-w-48 rounded-full bg-[radial-gradient(circle,rgba(155,127,124,0.15)_0%,transparent_70%)]" />

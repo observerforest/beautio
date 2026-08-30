@@ -237,7 +237,7 @@ export function InventoryPage({
   };
 
   return (
-    <div className="min-h-screen bg-[#F5F3F1] text-[#5A4C4A]">
+    <div className="h-dvh overflow-hidden bg-[#F5F3F1] text-[#5A4C4A] md:h-auto md:min-h-screen md:overflow-visible">
       <DesktopSidebar
         view={browseOptions.view}
         counts={projection.counts}
@@ -246,7 +246,7 @@ export function InventoryPage({
         onSettingsToggle={() => setDesktopSettingsOpen((open) => !open)}
       />
 
-      <div className="flex h-dvh min-h-0 flex-col overflow-hidden md:ml-60 md:block md:min-h-screen md:overflow-visible">
+      <div className="flex h-full min-h-0 flex-col overflow-hidden md:ml-60 md:block md:h-auto md:min-h-screen md:overflow-visible">
         <header className="z-20 shrink-0 bg-white shadow-[0_1px_0_rgba(229,216,207,0.5)] md:hidden">
           <div className="beautio-safe-top px-5">
             <div className="mb-4 flex items-center gap-3">
@@ -264,7 +264,7 @@ export function InventoryPage({
         </header>
 
         {mobilePage === "settings" ? (
-          <main className="pb-32 md:hidden">
+          <main className="min-h-0 flex-1 overflow-y-auto pb-32 md:hidden">
             <SettingsPanel desktop={false} onLock={() => lock()} />
             <p className="mt-6 text-center text-xs text-[#C8C2BE]">Beautio · Beauty in Flow</p>
           </main>

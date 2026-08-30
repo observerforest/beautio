@@ -28,6 +28,7 @@
 html {
   min-width: 320px;
   min-height: 100%;
+  overflow-x: clip;
   background: var(--beautio-system-surface);
 }
 
@@ -35,12 +36,14 @@ body {
   min-width: 320px;
   min-height: 100dvh;
   margin: 0;
+  overflow-x: clip;
   background: var(--beautio-system-surface);
   -webkit-font-smoothing: antialiased;
 }
 
 #app {
   min-height: 100dvh;
+  overflow-x: clip;
   background: var(--beautio-system-surface);
 }
 
@@ -94,8 +97,20 @@ img {
 }
 
 [data-beautio-select-trigger="compact"] {
-  font-size: 12px;
+  font-size: 11px;
   line-height: 16px;
+}
+
+@media (max-width: 767px) {
+  [data-beautio-select-trigger="compact"] {
+    font-size: 10px;
+    line-height: 14px;
+  }
+
+  [data-beautio-select-menu="compact"] [data-beautio-select-option] {
+    font-size: 10px;
+    line-height: 14px;
+  }
 }
 
 [data-beautio-select-trigger="field"],
@@ -111,11 +126,23 @@ img {
 }
 
 [data-beautio-select-menu="compact"] {
-  min-width: 172px;
+  width: max-content;
+  min-width: 100%;
+  max-width: 172px;
   max-height: min(16rem, 50dvh);
   overflow-x: hidden;
   overflow-y: auto;
   overscroll-behavior: contain;
+}
+
+[data-beautio-select-menu="compact"][data-beautio-select-menu-size="narrow"] {
+  max-width: 148px;
+}
+
+@media (max-width: 767px) {
+  [data-beautio-select-menu="compact"][data-beautio-select-menu-size="narrow"] {
+    max-width: 112px;
+  }
 }
 
 [data-beautio-select-menu="field"] {
@@ -162,13 +189,16 @@ img {
 }
 
 .beautio-dialog {
+  position: fixed;
+  inset: 0;
   width: 100%;
   max-width: none;
   height: 100%;
   max-height: none;
   margin: 0;
   padding: 0;
-  overflow: visible;
+  overflow: hidden;
+  overscroll-behavior: none;
   border: 0;
   background: transparent;
 }
