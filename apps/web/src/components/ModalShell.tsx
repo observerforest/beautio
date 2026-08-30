@@ -1,5 +1,6 @@
 import { useCallback, useId, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { Icon } from "./Icon.tsx";
+import { useI18n } from "../i18n.tsx";
 
 const MOBILE_DIALOG_EXIT_FALLBACK_MS = 400;
 
@@ -115,6 +116,7 @@ export function ModalShell({
   animateMobileExit = true,
   onClose,
 }: ModalShellProps) {
+  const { t } = useI18n();
   const dialogRef = useRef<HTMLDialogElement>(null);
   const closeFallbackTimerRef = useRef<number | null>(null);
   const closingRef = useRef(false);
@@ -208,7 +210,7 @@ export function ModalShell({
               disabled={busy || closing}
               onClick={requestClose}
               className="flex size-8 shrink-0 items-center justify-center rounded-full bg-white/20 text-[#7A7572] shadow-[0_2px_10px_rgba(90,76,74,0.16)] backdrop-blur transition-colors hover:bg-white/35 disabled:opacity-45"
-              aria-label="关闭"
+              aria-label={t("关闭")}
             >
               <Icon name="x" />
             </button>

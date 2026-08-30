@@ -1,4 +1,5 @@
 import type { InventoryApplicationService } from "@beautio/application";
+import { BeautioError } from "@beautio/domain";
 import type { RequestListener } from "node:http";
 import {
   downloadActionImages,
@@ -8,6 +9,7 @@ import {
 import { tokensEqual } from "./bearer.ts";
 import { actionTimedOut } from "./body.ts";
 import { sendError } from "./responses.ts";
+import { ExclusiveOperationGate } from "./exclusive-operation-gate.ts";
 import {
   routeRequest,
   type RouteRequestDependencies,
@@ -17,6 +19,7 @@ import { createStaticWebRoot } from "./static-web.ts";
 import type { ReadOnlyMcpRoute } from "./read-only-mcp.ts";
 
 const ACTION_UPLOAD_TIMEOUT_MS = 40_000;
+const BACKUP_OPERATION_TIMEOUT_MS = 120_000;
 
 export interface CoreApiHandlerOptions {
   readonly actionBearerToken: string;
@@ -28,15 +31,11 @@ export interface CoreApiHandlerOptions {
     signal: AbortSignal,
   ) => Promise<readonly DownloadedActionImage[]>;
   readonly actionUploadTimeoutMs?: number;
+  readonly backupOperationTimeoutMs?: number;
   readonly publicOrigin?: string;
   readonly webRoot?: string;
   readonly readOnlyMcp?: ReadOnlyMcpRoute;
 }
-
-const routeRequestDependencies: RouteRequestDependencies = {
-  withActionUploadDeadline,
-  abortableActionOperation,
-};
 
 /**
  * Creates the authenticated HTTP adapter around the shared application service.
@@ -50,6 +49,14 @@ export function createCoreApiHandler(
   options: CoreApiHandlerOptions,
 ): RequestListener {
   const configuration = validateOptions(options);
+  const exclusiveOperationGate = new ExclusiveOperationGate();
+  const routeRequestDependencies: RouteRequestDependencies = {
+    withActionUploadDeadline,
+    abortableActionOperation,
+    withExclusiveOperation: (operation, signal) =>
+      exclusiveOperationGate.run(operation, signal),
+    withBackupDeadline,
+  };
   return (request, response) => {
     void routeRequest(
       application,
@@ -97,6 +104,10 @@ function validateOptions(options: CoreApiHandlerOptions): ValidatedOptions {
       options.actionUploadTimeoutMs,
       ACTION_UPLOAD_TIMEOUT_MS,
     ),
+    backupOperationTimeoutMs: positiveTimeout(
+      options.backupOperationTimeoutMs,
+      BACKUP_OPERATION_TIMEOUT_MS,
+    ),
     publicOrigin: validatePublicOrigin(options.publicOrigin),
     staticWebRoot:
       options.webRoot === undefined
@@ -104,6 +115,39 @@ function validateOptions(options: CoreApiHandlerOptions): ValidatedOptions {
         : createStaticWebRoot(options.webRoot),
     readOnlyMcp: options.readOnlyMcp ?? null,
   };
+}
+
+async function withBackupDeadline<T>(
+  timeoutMs: number,
+  externalSignal: AbortSignal,
+  operation: (signal: AbortSignal) => Promise<T>,
+): Promise<T> {
+  const deadline = new AbortController();
+  const timeout = setTimeout(() => deadline.abort(), timeoutMs);
+  timeout.unref();
+  const signal = AbortSignal.any([externalSignal, deadline.signal]);
+  try {
+    return await operation(signal);
+  } catch (error) {
+    if (deadline.signal.aborted && isAbortFailure(error)) {
+      throw new BeautioError("UPLOAD_FAILED", "backup operation timed out");
+    }
+    if (externalSignal.aborted && isAbortFailure(error)) {
+      throw new BeautioError("UPLOAD_FAILED", "backup operation was aborted");
+    }
+    throw error;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+function isAbortFailure(error: unknown): boolean {
+  return (
+    (error instanceof Error && error.name === "AbortError") ||
+    (error instanceof BeautioError &&
+      error.code === "UPLOAD_FAILED" &&
+      error.message === "backup operation was aborted")
+  );
 }
 
 async function withActionUploadDeadline<T>(
@@ -114,10 +158,12 @@ async function withActionUploadDeadline<T>(
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
   timeout.unref();
   try {
-    return await abortableActionOperation(
-      operation(controller.signal),
-      controller.signal,
-    );
+    return await operation(controller.signal);
+  } catch (error) {
+    if (controller.signal.aborted) {
+      throw actionTimedOut();
+    }
+    throw error;
   } finally {
     clearTimeout(timeout);
   }

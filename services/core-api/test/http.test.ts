@@ -7,10 +7,16 @@ import { join } from "node:path";
 import test, { type TestContext } from "node:test";
 import {
   InventoryApplicationService,
+  type ImageAssetStorage,
   type ImageInspector,
 } from "@beautio/application";
+import type { BeautioBackup } from "@beautio/contracts";
 import { SqliteInventoryRepository } from "@beautio/database";
-import { createInventoryItem, type LifecycleStatus } from "@beautio/domain";
+import {
+  BeautioError,
+  createInventoryItem,
+  type LifecycleStatus,
+} from "@beautio/domain";
 import {
   FileImageAssetStorage,
   FileImageRenditionProvider,
@@ -143,6 +149,19 @@ test("health is public while inventory and both write scopes are isolated", asyn
         ...(token === undefined ? {} : { headers: authorization(token) }),
       }),
     (token?: string) =>
+      fetch(`${fixture.origin}/api/admin/backup`, {
+        ...(token === undefined ? {} : { headers: authorization(token) }),
+      }),
+    (token?: string) =>
+      fetch(`${fixture.origin}/api/admin/backup`, {
+        method: "PUT",
+        headers:
+          token === undefined
+            ? { "content-type": "application/json" }
+            : { ...authorization(token), "content-type": "application/json" },
+        body: JSON.stringify({}),
+      }),
+    (token?: string) =>
       fetch(`${fixture.origin}/api/admin/products/missing`, {
         method: "PUT",
         headers:
@@ -192,6 +211,261 @@ test("health is public while inventory and both write scopes are isolated", asyn
   assert.deepEqual(
     await fixture.application.listInventory({ as_of: "2026-08-19" }),
     { as_of: "2026-08-19", items: [] },
+  );
+});
+
+test("Admin backup round-trip restores products, bottles, notes, and original images", async (context) => {
+  const fixture = await startFixture(context);
+  const uploaded = await fixture.application.uploadProductImages([
+    { source_ref: "backup_image", bytes: fixture.imageBytes },
+  ]);
+  const imageAssetId = uploaded.assets[0]?.image_asset_id;
+  assert.ok(imageAssetId);
+  const created = await fixture.application.createInventoryBatch({
+    as_of: "2026-08-19",
+    products: [
+      {
+        batch_ref: "backup_product",
+        name: "Original backup serum",
+        alias: "紫瓶",
+        brand: "Beautio",
+        category: "精华",
+        size_label: "30 ml",
+        image_asset_id: imageAssetId,
+        ingredient_list_text: "Aqua, Glycerin",
+        shared_notes: "Shared original note",
+      },
+    ],
+    inventory_items: [
+      {
+        batch_ref: "backup_bottle",
+        product_ref: { kind: "new", batch_ref: "backup_product" },
+        lifecycle_status: "opened",
+        opened_on: "2026-08-01",
+        opened_on_accuracy: "exact",
+        expires_on: "2027-08-01",
+        pao_duration_months: 6,
+        custom_notes: "Private bottle note",
+      },
+    ],
+  });
+
+  const exportResponse = await fetch(`${fixture.origin}/api/admin/backup`, {
+    headers: authorization(ADMIN_TOKEN),
+  });
+  assert.equal(exportResponse.status, 200);
+  assert.equal(exportResponse.headers.get("cache-control"), "no-store");
+  assert.match(
+    exportResponse.headers.get("content-disposition") ?? "",
+    /^attachment; filename="beautio-backup-\d{4}-\d{2}-\d{2}\.beautio-backup"$/u,
+  );
+  const backup = (await exportResponse.json()) as BeautioBackup;
+  assert.equal(backup.products[0]?.name, "Original backup serum");
+  assert.equal(backup.inventory_items[0]?.custom_notes, "Private bottle note");
+  assert.equal(backup.images[0]?.image_asset_id, imageAssetId);
+  assert.deepEqual(
+    Array.from(Buffer.from(backup.images[0]?.bytes_base64 ?? "", "base64")),
+    Array.from(fixture.imageBytes),
+  );
+
+  const rejectedRestore = await putJson(
+    `${fixture.origin}/api/admin/backup`,
+    {
+      ...backup,
+      images: backup.images.map((image, index) =>
+        index === 0 ? { ...image, sha256: "0".repeat(64) } : image,
+      ),
+    },
+    ADMIN_TOKEN,
+  );
+  assert.equal(rejectedRestore.status, 400);
+  assert.equal(
+    (
+      (await rejectedRestore.json()) as {
+        readonly error: { readonly code: string };
+      }
+    ).error.code,
+    "INVALID_INPUT",
+  );
+  assert.equal(
+    (await fixture.application.listInventory({ as_of: "2026-08-19" })).items[0]
+      ?.product?.name,
+    "Original backup serum",
+  );
+
+  const productId = created.products[0]?.product_id;
+  assert.ok(productId);
+  const changed = await putJson(
+    `${fixture.origin}/api/admin/products/${encodeURIComponent(productId)}`,
+    {
+      name: "Changed after export",
+      alias: null,
+      brand: null,
+      category: null,
+      size_label: null,
+      image_asset_id: null,
+      ingredient_list_text: null,
+      shared_notes: null,
+    },
+    ADMIN_TOKEN,
+  );
+  assert.equal(changed.status, 200);
+
+  const restoreResponse = await putJson(
+    `${fixture.origin}/api/admin/backup`,
+    backup,
+    ADMIN_TOKEN,
+  );
+  assert.equal(restoreResponse.status, 200);
+  assert.deepEqual(await restoreResponse.json(), {
+    restored: true,
+    products: 1,
+    inventory_items: 1,
+    images: 1,
+  });
+
+  const inventoryResponse = await fetch(
+    `${fixture.origin}/api/inventory?as_of=2026-08-19`,
+    { headers: authorization(ADMIN_TOKEN) },
+  );
+  const inventory = (await inventoryResponse.json()) as {
+    readonly items: ReadonlyArray<{
+      readonly custom_notes: string | null;
+      readonly product: {
+        readonly name: string;
+        readonly image_asset_id: string | null;
+        readonly ingredient_list_text: string | null;
+        readonly shared_notes: string | null;
+      };
+    }>;
+  };
+  assert.equal(inventory.items[0]?.product.name, "Original backup serum");
+  assert.equal(inventory.items[0]?.product.image_asset_id, imageAssetId);
+  assert.equal(inventory.items[0]?.product.ingredient_list_text, "Aqua, Glycerin");
+  assert.equal(inventory.items[0]?.product.shared_notes, "Shared original note");
+  assert.equal(inventory.items[0]?.custom_notes, "Private bottle note");
+
+  const restoredImage = await fetch(
+    `${fixture.origin}/api/image-assets/${encodeURIComponent(imageAssetId)}/content`,
+    { headers: authorization(ADMIN_TOKEN) },
+  );
+  assert.equal(restoredImage.status, 200);
+  assert.deepEqual(
+    Array.from(new Uint8Array(await restoredImage.arrayBuffer())),
+    Array.from(fixture.imageBytes),
+  );
+});
+
+test("restore excludes concurrent Admin and Action writes until replacement completes", async (context) => {
+  let blockInspection = false;
+  let releaseInspection!: () => void;
+  let markInspectionStarted!: () => void;
+  const inspectionStarted = new Promise<void>((resolve) => {
+    markInspectionStarted = resolve;
+  });
+  const inspectionRelease = new Promise<void>((resolve) => {
+    releaseInspection = resolve;
+  });
+  const fixture = await startFixture(context, {
+    imageInspector: {
+      async inspect(bytes) {
+        if (blockInspection) {
+          markInspectionStarted();
+          await inspectionRelease;
+        }
+        return sharpImageInspector.inspect(bytes);
+      },
+    },
+  });
+  const uploaded = await fixture.application.uploadProductImages([
+    { source_ref: "restore_lock", bytes: fixture.imageBytes },
+  ]);
+  const created = await fixture.application.createInventoryBatch({
+    as_of: "2026-08-19",
+    products: [
+      {
+        batch_ref: "locked_product",
+        name: "Before restore",
+        image_asset_id: uploaded.assets[0]?.image_asset_id,
+      },
+    ],
+    inventory_items: [
+      {
+        batch_ref: "locked_bottle",
+        product_ref: { kind: "new", batch_ref: "locked_product" },
+        lifecycle_status: "unopened",
+      },
+    ],
+  });
+  const productId = created.products[0]?.product_id;
+  assert.ok(productId);
+  const backupResponse = await fetch(`${fixture.origin}/api/admin/backup`, {
+    headers: authorization(ADMIN_TOKEN),
+  });
+  const backup = (await backupResponse.json()) as BeautioBackup;
+
+  blockInspection = true;
+  const restore = putJson(
+    `${fixture.origin}/api/admin/backup`,
+    backup,
+    ADMIN_TOKEN,
+  );
+  await inspectionStarted;
+  let adminSettled = false;
+  let actionSettled = false;
+  const adminWrite = putJson(
+    `${fixture.origin}/api/admin/products/${encodeURIComponent(productId)}`,
+    {
+      name: "Admin write after restore",
+      alias: null,
+      brand: null,
+      category: null,
+      size_label: null,
+      image_asset_id: backup.products[0]?.image_asset_id ?? null,
+      ingredient_list_text: null,
+      shared_notes: null,
+    },
+    ADMIN_TOKEN,
+  ).finally(() => {
+    adminSettled = true;
+  });
+  const actionWrite = postJson(
+    `${fixture.origin}/api/actions/create-inventory-batch`,
+    {
+      as_of: "2026-08-19",
+      products: [{ batch_ref: "queued_product", name: "Queued Action product" }],
+      inventory_items: [
+        {
+          batch_ref: "queued_bottle",
+          product_ref: { kind: "new", batch_ref: "queued_product" },
+          lifecycle_status: "unopened",
+        },
+      ],
+    },
+    ACTION_TOKEN,
+  ).finally(() => {
+    actionSettled = true;
+  });
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal(adminSettled, false);
+  assert.equal(actionSettled, false);
+
+  releaseInspection();
+  assert.equal((await restore).status, 200);
+  assert.equal((await adminWrite).status, 200);
+  assert.equal((await actionWrite).status, 200);
+  const inventory = (await (
+    await fetch(`${fixture.origin}/api/inventory?as_of=2026-08-19`, {
+      headers: authorization(ADMIN_TOKEN),
+    })
+  ).json()) as {
+    readonly items: readonly {
+      readonly product: { readonly name: string } | null;
+    }[];
+  };
+  assert.deepEqual(
+    inventory.items.map((item) => item.product?.name).sort(),
+    ["Admin write after restore", "Queued Action product"],
   );
 });
 
@@ -941,6 +1215,104 @@ test("Action upload deadline covers shared image inspection before persistence",
   );
 });
 
+test("Action timeout keeps the write gate until delayed storage settles and compensates", async (context) => {
+  let releasePut!: () => void;
+  let markPutStarted!: () => void;
+  const putStarted = new Promise<void>((resolve) => {
+    markPutStarted = resolve;
+  });
+  const putRelease = new Promise<void>((resolve) => {
+    releasePut = resolve;
+  });
+  const fixture = await startFixture(context, {
+    actionUploadTimeoutMs: 20,
+    imageStorageFactory: (directory) => {
+      const underlying = new FileImageAssetStorage(directory);
+      return {
+        async put(storageKey, bytes, signal) {
+          markPutStarted();
+          await putRelease;
+          await underlying.put(storageKey, bytes, signal);
+        },
+        get: (storageKey, signal) => underlying.get(storageKey, signal),
+        delete: (storageKey) => underlying.delete(storageKey),
+      };
+    },
+  });
+
+  let uploadSettled = false;
+  const upload = postJson(
+    `${fixture.origin}/api/actions/upload-product-images`,
+    {
+      openaiFileIdRefs: [
+        {
+          name: "confirmed.png",
+          id: "file_delayed_storage",
+          mime_type: "image/png",
+          download_link: "https://files.example.test/short-lived",
+        },
+      ],
+    },
+    ACTION_TOKEN,
+  ).finally(() => {
+    uploadSettled = true;
+  });
+  await putStarted;
+
+  let queuedWriteSettled = false;
+  const queuedWrite = postJson(
+    `${fixture.origin}/api/actions/create-inventory-batch`,
+    {
+      as_of: "2026-08-19",
+      products: [{ batch_ref: "after_upload", name: "After upload timeout" }],
+      inventory_items: [
+        {
+          batch_ref: "after_upload_bottle",
+          product_ref: { kind: "new", batch_ref: "after_upload" },
+          lifecycle_status: "unopened",
+        },
+      ],
+    },
+    ACTION_TOKEN,
+  ).finally(() => {
+    queuedWriteSettled = true;
+  });
+
+  await postJsonAndAbort(
+    `${fixture.origin}/api/actions/create-inventory-batch`,
+    {
+      as_of: "2026-08-19",
+      products: [
+        { batch_ref: "aborted_after_upload", name: "Aborted queued write" },
+      ],
+      inventory_items: [
+        {
+          batch_ref: "aborted_after_upload_bottle",
+          product_ref: { kind: "new", batch_ref: "aborted_after_upload" },
+          lifecycle_status: "unopened",
+        },
+      ],
+    },
+    ACTION_TOKEN,
+  );
+
+  await new Promise((resolve) => setTimeout(resolve, 35));
+  assert.equal(uploadSettled, false);
+  assert.equal(queuedWriteSettled, false);
+
+  releasePut();
+  assert.equal((await upload).status, 502);
+  assert.equal((await queuedWrite).status, 200);
+  assert.equal(await fixture.repository.findImageAssetById("image_asset-1"), null);
+  const inventory = await fixture.application.listInventory({
+    as_of: "2026-08-19",
+  });
+  assert.deepEqual(
+    inventory.items.map((item) => item.product?.name),
+    ["After upload timeout"],
+  );
+});
+
 test("Codex multipart deadline drains a slow request without reaching persistence", async (context) => {
   const fixture = await startFixture(context, { actionUploadTimeoutMs: 5 });
   const response = await postSlowMultipart(
@@ -958,6 +1330,216 @@ test("Codex multipart deadline drains a slow request without reaching persistenc
     await fixture.application.listInventory({ as_of: "2026-08-19" }),
     { as_of: "2026-08-19", items: [] },
   );
+});
+
+test("backup restore body timeout aborts the request and releases the exclusive gate", async (context) => {
+  const fixture = await startFixture(context, { backupOperationTimeoutMs: 20 });
+
+  const timedOut = await putSlowJson(
+    `${fixture.origin}/api/admin/backup`,
+    ADMIN_TOKEN,
+  );
+  assert.equal(timedOut.status, 502);
+  assert.deepEqual(timedOut.body, {
+    error: { code: "UPLOAD_FAILED", message: "backup operation timed out" },
+  });
+
+  const nextWrite = await postJson(
+    `${fixture.origin}/api/actions/create-inventory-batch`,
+    {
+      as_of: "2026-08-19",
+      products: [{ batch_ref: "after_timeout", name: "After timeout" }],
+      inventory_items: [
+        {
+          batch_ref: "after_timeout_bottle",
+          product_ref: { kind: "new", batch_ref: "after_timeout" },
+          lifecycle_status: "unopened",
+        },
+      ],
+    },
+    ACTION_TOKEN,
+  );
+  assert.equal(nextWrite.status, 200);
+});
+
+test("a slow backup upload does not hold the exclusive write gate", async (context) => {
+  const fixture = await startFixture(context, { backupOperationTimeoutMs: 200 });
+  const slowRestore = putSlowJson(
+    `${fixture.origin}/api/admin/backup`,
+    ADMIN_TOKEN,
+  );
+  await new Promise((resolve) => setTimeout(resolve, 20));
+
+  const nextWrite = await Promise.race([
+    postJson(
+      `${fixture.origin}/api/actions/create-inventory-batch`,
+      {
+        as_of: "2026-08-19",
+        products: [{ batch_ref: "during_upload", name: "During backup upload" }],
+        inventory_items: [
+          {
+            batch_ref: "during_upload_bottle",
+            product_ref: { kind: "new", batch_ref: "during_upload" },
+            lifecycle_status: "unopened",
+          },
+        ],
+      },
+      ACTION_TOKEN,
+    ),
+    new Promise<never>((_resolve, reject) =>
+      setTimeout(
+        () => reject(new Error("write was blocked by the backup request body")),
+        100,
+      ),
+    ),
+  ]);
+  assert.equal(nextWrite.status, 200);
+
+  const timedOut = await slowRestore;
+  assert.equal(timedOut.status, 502);
+  assert.deepEqual(timedOut.body, {
+    error: { code: "UPLOAD_FAILED", message: "backup operation timed out" },
+  });
+});
+
+test("backup restore deadline aborts blocked image inspection before replacement", async (context) => {
+  let blockInspection = false;
+  const fixture = await startFixture(context, {
+    backupOperationTimeoutMs: 20,
+    imageInspector: {
+      async inspect(bytes) {
+        if (blockInspection) {
+          return await new Promise(() => undefined);
+        }
+        return sharpImageInspector.inspect(bytes);
+      },
+    },
+  });
+  const uploaded = await fixture.application.uploadProductImages([
+    { source_ref: "deadline_restore", bytes: fixture.imageBytes },
+  ]);
+  await fixture.application.createInventoryBatch({
+    as_of: "2026-08-19",
+    products: [
+      {
+        batch_ref: "before_deadline",
+        name: "Before deadline restore",
+        image_asset_id: uploaded.assets[0]?.image_asset_id,
+      },
+    ],
+    inventory_items: [
+      {
+        batch_ref: "before_deadline_bottle",
+        product_ref: { kind: "new", batch_ref: "before_deadline" },
+        lifecycle_status: "unopened",
+      },
+    ],
+  });
+  const backup = (await (
+    await fetch(`${fixture.origin}/api/admin/backup`, {
+      headers: authorization(ADMIN_TOKEN),
+    })
+  ).json()) as BeautioBackup;
+
+  blockInspection = true;
+  const timedOut = await putJson(
+    `${fixture.origin}/api/admin/backup`,
+    backup,
+    ADMIN_TOKEN,
+  );
+  assert.equal(timedOut.status, 502);
+  assert.deepEqual(await timedOut.json(), {
+    error: { code: "UPLOAD_FAILED", message: "backup operation timed out" },
+  });
+
+  const nextWrite = await postJson(
+    `${fixture.origin}/api/actions/create-inventory-batch`,
+    {
+      as_of: "2026-08-19",
+      products: [{ batch_ref: "after_restore_timeout", name: "After restore timeout" }],
+      inventory_items: [
+        {
+          batch_ref: "after_restore_timeout_bottle",
+          product_ref: { kind: "new", batch_ref: "after_restore_timeout" },
+          lifecycle_status: "unopened",
+        },
+      ],
+    },
+    ACTION_TOKEN,
+  );
+  assert.equal(nextWrite.status, 200);
+  const inventory = await fixture.application.listInventory({ as_of: "2026-08-19" });
+  assert.deepEqual(
+    inventory.items.map((item) => item.product?.name).sort(),
+    ["After restore timeout", "Before deadline restore"],
+  );
+  const originalAsset = await fixture.repository.findImageAssetById(
+    uploaded.assets[0]?.image_asset_id ?? "missing",
+  );
+  assert.equal(originalAsset?.status, "linked");
+});
+
+test("backup deadline does not hide a non-abort failure that settles later", async (context) => {
+  let failWrites = false;
+  const fixture = await startFixture(context, {
+    backupOperationTimeoutMs: 20,
+    imageStorageFactory: (directory) => {
+      const underlying = new FileImageAssetStorage(directory);
+      return {
+        async put(storageKey, bytes, signal) {
+          if (failWrites) {
+            await new Promise((resolve) => setTimeout(resolve, 35));
+            throw new BeautioError(
+              "UNSUPPORTED_MEDIA_TYPE",
+              "late backup image validation failure",
+            );
+          }
+          await underlying.put(storageKey, bytes, signal);
+        },
+        get: (storageKey, signal) => underlying.get(storageKey, signal),
+        delete: (storageKey) => underlying.delete(storageKey),
+      };
+    },
+  });
+  const uploaded = await fixture.application.uploadProductImages([
+    { source_ref: "late_failure", bytes: fixture.imageBytes },
+  ]);
+  await fixture.application.createInventoryBatch({
+    as_of: "2026-08-19",
+    products: [
+      {
+        batch_ref: "late_failure_product",
+        name: "Late failure product",
+        image_asset_id: uploaded.assets[0]?.image_asset_id,
+      },
+    ],
+    inventory_items: [
+      {
+        batch_ref: "late_failure_bottle",
+        product_ref: { kind: "new", batch_ref: "late_failure_product" },
+        lifecycle_status: "unopened",
+      },
+    ],
+  });
+  const backup = (await (
+    await fetch(`${fixture.origin}/api/admin/backup`, {
+      headers: authorization(ADMIN_TOKEN),
+    })
+  ).json()) as BeautioBackup;
+
+  failWrites = true;
+  const response = await putJson(
+    `${fixture.origin}/api/admin/backup`,
+    backup,
+    ADMIN_TOKEN,
+  );
+  assert.equal(response.status, 415);
+  assert.deepEqual(await response.json(), {
+    error: {
+      code: "UNSUPPORTED_MEDIA_TYPE",
+      message: "late backup image validation failure",
+    },
+  });
 });
 
 test("HTTP maps strict batch errors and serves versioned Actions OpenAPI", async (context) => {
@@ -1171,7 +1753,9 @@ interface Fixture {
 
 interface FixtureOptions {
   readonly actionUploadTimeoutMs?: number;
+  readonly backupOperationTimeoutMs?: number;
   readonly imageInspector?: ImageInspector;
+  readonly imageStorageFactory?: (directory: string) => ImageAssetStorage;
   readonly publicOrigin?: string;
   readonly serveWeb?: boolean;
 }
@@ -1211,7 +1795,9 @@ async function startFixture(
   const application = new InventoryApplicationService(repository, {
     idGenerator: (kind) => `${kind}-${++nextId}`,
     clock: () => new Date("2026-08-19T00:00:00.000Z"),
-    imageStorage: new FileImageAssetStorage(join(directory, "images")),
+    imageStorage:
+      options.imageStorageFactory?.(join(directory, "images")) ??
+      new FileImageAssetStorage(join(directory, "images")),
     imageInspector: options.imageInspector ?? sharpImageInspector,
     imageRenditions: new FileImageRenditionProvider(join(directory, "images")),
   });
@@ -1228,6 +1814,9 @@ async function startFixture(
       ...(options.actionUploadTimeoutMs === undefined
         ? {}
         : { actionUploadTimeoutMs: options.actionUploadTimeoutMs }),
+      ...(options.backupOperationTimeoutMs === undefined
+        ? {}
+        : { backupOperationTimeoutMs: options.backupOperationTimeoutMs }),
       ...(options.publicOrigin === undefined
         ? {}
         : { publicOrigin: options.publicOrigin }),
@@ -1272,6 +1861,37 @@ function postJson(url: string, body: object, token: string): Promise<Response> {
     method: "POST",
     headers: { ...authorization(token), "content-type": "application/json" },
     body: JSON.stringify(body),
+  });
+}
+
+function postJsonAndAbort(
+  url: string,
+  body: object,
+  token: string,
+): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const payload = JSON.stringify(body);
+    const request = makeHttpRequest(url, {
+      method: "POST",
+      headers: {
+        ...authorization(token),
+        "content-length": String(Buffer.byteLength(payload)),
+        "content-type": "application/json",
+      },
+    });
+    request.once("error", (error: NodeJS.ErrnoException) => {
+      if (error.code === "ECONNRESET") {
+        resolve();
+        return;
+      }
+      reject(error);
+    });
+    request.end(payload, () => {
+      setTimeout(() => {
+        request.destroy();
+        resolve();
+      }, 10);
+    });
   });
 }
 
@@ -1327,6 +1947,42 @@ function postSlowMultipart(
     request.write(
       "--slow-boundary\r\nContent-Disposition: form-data; name=\"slow_image\"; filename=\"image\"\r\nContent-Type: application/octet-stream\r\n\r\npartial",
     );
+  });
+}
+
+function putSlowJson(
+  url: string,
+  token: string,
+): Promise<{ readonly status: number; readonly body: unknown }> {
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const request = makeHttpRequest(
+      url,
+      {
+        method: "PUT",
+        headers: {
+          ...authorization(token),
+          "content-length": String(1024 * 1024),
+          "content-type": "application/json",
+        },
+      },
+      (response) => {
+        const chunks: Buffer[] = [];
+        response.on("data", (chunk: Buffer) => chunks.push(chunk));
+        response.once("end", () => {
+          settled = true;
+          request.destroy();
+          resolve({
+            status: response.statusCode ?? 0,
+            body: JSON.parse(Buffer.concat(chunks).toString("utf8")) as unknown,
+          });
+        });
+      },
+    );
+    request.once("error", (error) => {
+      if (!settled) reject(error);
+    });
+    request.write('{"format":"beautio-backup"');
   });
 }
 

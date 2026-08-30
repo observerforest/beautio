@@ -17,6 +17,23 @@ export interface InventoryBatchPersistenceInput {
   readonly now: string;
 }
 
+export interface InventoryBackupSnapshot {
+  readonly products: readonly Product[];
+  readonly inventoryItems: readonly InventoryItem[];
+  readonly imageAssets: readonly ImageAsset[];
+}
+
+export interface InventoryBackupReplacement {
+  readonly products: readonly Product[];
+  readonly inventoryItems: readonly InventoryItem[];
+  readonly imageAssets: readonly InventoryBackupReplacementImage[];
+}
+
+export interface InventoryBackupReplacementImage {
+  readonly stagingImageAssetId: string;
+  readonly imageAsset: ImageAsset;
+}
+
 export interface ProductFactsPersistenceInput {
   readonly productId: string;
   readonly name: string;
@@ -71,7 +88,7 @@ export interface ImageAssetStorage {
    * @param storageKey - Internal key loaded from trusted metadata.
    * @returns A copy or immutable view of the stored bytes.
    */
-  get(storageKey: string): Promise<Uint8Array>;
+  get(storageKey: string, signal?: AbortSignal): Promise<Uint8Array>;
 
   /**
    * Deletes one key idempotently, including when its file is already absent.
@@ -240,4 +257,26 @@ export interface InventoryRepository {
    * @returns Nothing after the pending metadata row is absent.
    */
   deleteClaimedImageAsset(imageAssetId: string): Promise<void>;
+}
+
+export interface BackupInventoryRepository extends InventoryRepository {
+  /**
+   * Lists every Product and linked image metadata needed for a complete backup.
+   *
+   * @returns A consistent logical snapshot without image bytes.
+   */
+  readBackupSnapshot(): Promise<InventoryBackupSnapshot>;
+
+  /**
+   * Atomically replaces the complete single-user logical dataset.
+   *
+   * Existing image rows become pending cleanup work in the same transaction;
+   * staged replacement rows are promoted to their backup identifiers.
+   *
+   * @param replacement - Fully validated entities whose managed image files already exist under staged metadata.
+   * @returns Displaced assets under their new pending-cleanup identifiers.
+   */
+  replaceFromBackup(
+    replacement: InventoryBackupReplacement,
+  ): Promise<readonly ImageAsset[]>;
 }

@@ -3,6 +3,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { AdminApiClient, AdminApiError } from "../../admin-api.ts";
 import { isAbortError } from "../../utils/is-abort-error.ts";
 import { localDateForApi } from "../../utils/local-date-for-api.ts";
+import { useI18n } from "../../i18n.tsx";
 
 export type SessionPhase = "locked" | "unlocking" | "unlocked";
 
@@ -37,6 +38,7 @@ interface ActiveRefresh {
  * storage, a URL, a cookie, or React state after unlock begins.
  */
 export function useAdminInventorySession(): AdminInventorySession {
+  const { t } = useI18n();
   const [phase, setPhase] = useState<SessionPhase>("locked");
   const [client, setClient] = useState<AdminApiClient | null>(null);
   const [inventory, setInventory] = useState<InventoryListOutput | null>(null);
@@ -74,7 +76,7 @@ export function useAdminInventorySession(): AdminInventorySession {
   const unlock = useCallback(async (rawToken: string): Promise<boolean> => {
     const token = rawToken.trim();
     if (token.length === 0) {
-      setUnlockMessage("请输入管理密钥。");
+      setUnlockMessage(t("请输入管理密钥。"));
       return false;
     }
 
@@ -86,7 +88,7 @@ export function useAdminInventorySession(): AdminInventorySession {
     setInventory(null);
     setReadError(null);
     setStatusMessage(null);
-    setUnlockMessage("正在验证密钥并读取库存…");
+    setUnlockMessage(t("正在验证密钥并读取库存…"));
     setPhase("unlocking");
 
     try {
@@ -120,12 +122,12 @@ export function useAdminInventorySession(): AdminInventorySession {
       setPhase("locked");
       setUnlockMessage(
         error instanceof AdminApiError && error.status === 401
-          ? "管理密钥无效或已撤销，请重新输入。库存没有被读取。"
-          : errorMessage(error),
+          ? t("管理密钥无效或已撤销，请重新输入。库存没有被读取。")
+          : errorMessage(error, t),
       );
       return false;
     }
-  }, [destroyClient]);
+  }, [destroyClient, t]);
 
   const refresh = useCallback((showLoading = false): Promise<boolean> => {
     const current = clientRef.current;
@@ -147,10 +149,10 @@ export function useAdminInventorySession(): AdminInventorySession {
           return false;
         }
         if (error instanceof AdminApiError && error.status === 401) {
-          lock("管理密钥无效或已撤销，请重新输入。当前页面数据已清除。");
+          lock(t("管理密钥无效或已撤销，请重新输入。当前页面数据已清除。"));
           return false;
         }
-        setReadError(errorMessage(error));
+        setReadError(errorMessage(error, t));
         return false;
       }
     })();
@@ -161,7 +163,7 @@ export function useAdminInventorySession(): AdminInventorySession {
       if (activeRefreshRef.current === active) activeRefreshRef.current = null;
     });
     return operation;
-  }, [lock]);
+  }, [lock, t]);
 
   useEffect(() => {
     mountedRef.current = true;
@@ -172,7 +174,7 @@ export function useAdminInventorySession(): AdminInventorySession {
       setReadError(null);
       setStatusMessage(null);
       setPhase("locked");
-      setUnlockMessage("页面离开后管理密钥已从内存清除，请重新输入。");
+      setUnlockMessage(t("页面离开后管理密钥已从内存清除，请重新输入。"));
     };
     const clearAfterHistoryRestore = (event: PageTransitionEvent): void => {
       if (event.persisted) clearForPageExit();
@@ -187,7 +189,7 @@ export function useAdminInventorySession(): AdminInventorySession {
       window.removeEventListener("pageshow", clearAfterHistoryRestore);
       destroyClient();
     };
-  }, [destroyClient]);
+  }, [destroyClient, t]);
 
   return {
     phase,
@@ -205,10 +207,15 @@ export function useAdminInventorySession(): AdminInventorySession {
   };
 }
 
-function errorMessage(error: unknown): string {
-  if (error instanceof AdminApiError) return error.message;
-  if (error instanceof TypeError) {
-    return "无法连接 Beautio 服务，请确认本地服务正在运行。";
+function errorMessage(error: unknown, translate: (source: string) => string): string {
+  if (error instanceof AdminApiError) {
+    if (error.code === "HTTP_ERROR" && error.status > 0) {
+      return `${translate("Beautio 服务返回错误响应。")} (HTTP ${error.status})`;
+    }
+    return translate(error.message);
   }
-  return "发生了未知错误，请稍后再试。";
+  if (error instanceof TypeError) {
+    return translate("无法连接 Beautio 服务，请确认本地服务正在运行。");
+  }
+  return translate("发生了未知错误，请稍后再试。");
 }

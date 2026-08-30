@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -1571,6 +1572,296 @@ test("BD-DATA-002 cleanup deletes unlinked assets exactly at 24h and never delet
   repository.close();
 });
 
+test("restore retires staging, temporary, and pending-cleanup image files without orphaning them", async () => {
+  const repository = new SqliteInventoryRepository(":memory:");
+  const storage = new MemoryStorage();
+  const service = new InventoryApplicationService(repository, {
+    idGenerator: sequentialIdGenerator(),
+    clock: () => new Date("2026-08-30T00:00:00.000Z"),
+    imageStorage: storage,
+    imageInspector: fixedImageInspector,
+  });
+  const assets = [
+    temporaryAsset({
+      id: "old-staging",
+      expiresAt: "2026-08-31T00:00:00.000Z",
+    }),
+    temporaryAsset({
+      id: "old-temporary",
+      expiresAt: "2026-08-31T00:00:00.000Z",
+    }),
+    temporaryAsset({
+      id: "old-pending",
+      expiresAt: "2026-08-31T00:00:00.000Z",
+    }),
+    temporaryAsset({
+      id: "old-linked",
+      expiresAt: "2026-08-31T00:00:00.000Z",
+    }),
+  ];
+  await repository.stageImageAssets(assets);
+  await repository.activateStagedImageAssets([
+    "old-temporary",
+    "old-pending",
+    "old-linked",
+  ]);
+  await repository.markImageAssetsForCleanup(["old-pending"]);
+  await service.createInventoryBatch({
+    as_of: "2026-08-30",
+    products: [
+      {
+        batch_ref: "old-linked-product",
+        name: "Old linked Product",
+        image_asset_id: "old-linked",
+      },
+    ],
+    inventory_items: [
+      {
+        batch_ref: "old-linked-bottle",
+        product_ref: { kind: "new", batch_ref: "old-linked-product" },
+        lifecycle_status: "unopened",
+      },
+    ],
+  });
+  for (const asset of assets) {
+    await storage.put(asset.storageKey, new Uint8Array([1, 2, 3]));
+  }
+
+  assert.deepEqual(
+    await service.restoreBackup({
+      format: "beautio-backup",
+      version: 1,
+      created_at: "2026-08-30T00:00:00.000Z",
+      products: [],
+      inventory_items: [],
+      images: [],
+    }),
+    { restored: true, products: 0, inventory_items: 0, images: 0 },
+  );
+
+  assert.equal(storage.files.size, 0);
+  for (const asset of assets) {
+    assert.equal(await repository.findImageAssetById(asset.id), null);
+  }
+  assert.deepEqual(
+    await repository.claimExpiredImageAssets("2026-08-30T00:00:00.000Z"),
+    [],
+  );
+  repository.close();
+});
+
+test("restore keeps failed displaced-image deletion as retryable pending cleanup", async () => {
+  const repository = new SqliteInventoryRepository(":memory:");
+  const storage = new DeleteFailingMemoryStorage();
+  const service = new InventoryApplicationService(repository, {
+    idGenerator: sequentialIdGenerator(),
+    clock: () => new Date("2026-08-30T00:00:00.000Z"),
+    imageStorage: storage,
+    imageInspector: fixedImageInspector,
+  });
+  const asset = temporaryAsset({
+    id: "old-retryable",
+    expiresAt: "2026-08-31T00:00:00.000Z",
+  });
+  await repository.stageImageAssets([asset]);
+  await repository.activateStagedImageAssets([asset.id]);
+  await service.createInventoryBatch({
+    as_of: "2026-08-30",
+    products: [
+      {
+        batch_ref: "old-retryable-product",
+        name: "Old retryable linked Product",
+        image_asset_id: asset.id,
+      },
+    ],
+    inventory_items: [
+      {
+        batch_ref: "old-retryable-bottle",
+        product_ref: { kind: "new", batch_ref: "old-retryable-product" },
+        lifecycle_status: "unopened",
+      },
+    ],
+  });
+  await storage.put(asset.storageKey, new Uint8Array([1, 2, 3]));
+
+  await service.restoreBackup({
+    format: "beautio-backup",
+    version: 1,
+    created_at: "2026-08-30T00:00:00.000Z",
+    products: [],
+    inventory_items: [],
+    images: [],
+  });
+
+  const pending = await repository.claimExpiredImageAssets(
+    "2026-08-30T00:00:00.000Z",
+  );
+  assert.equal(pending.length, 1);
+  assert.equal(pending[0]?.storageKey, asset.storageKey);
+  assert.equal(pending[0]?.status, "pending_cleanup");
+  assert.equal(storage.files.has(asset.storageKey), true);
+
+  storage.allowDeletes = true;
+  assert.deepEqual(await service.cleanupExpiredImageAssets(), {
+    claimed: 1,
+    deleted: 1,
+    failed: 0,
+  });
+  assert.equal(storage.files.size, 0);
+  repository.close();
+});
+
+test("restore compensates new image files and metadata when a staged write fails", async () => {
+  const repository = new SqliteInventoryRepository(":memory:");
+  const storage = new FailingMemoryStorage();
+  storage.allowDeletes = true;
+  const service = new InventoryApplicationService(repository, {
+    idGenerator: sequentialIdGenerator(),
+    clock: () => new Date("2026-08-30T00:00:00.000Z"),
+    imageStorage: storage,
+    imageInspector: fixedImageInspector,
+  });
+  const oldProduct = createProduct({
+    id: "old-product",
+    name: "Old Product remains",
+  });
+  await repository.importInventoryData({
+    products: [oldProduct],
+    inventoryItems: [],
+  });
+  const imageBytes = new Uint8Array([1, 2, 3]);
+  const encoded = Buffer.from(imageBytes).toString("base64");
+  const digest = createHash("sha256").update(imageBytes).digest("hex");
+  const products = ["one", "two"].map((suffix) => ({
+    product_id: `new-product-${suffix}`,
+    name: `New Product ${suffix}`,
+    alias: null,
+    brand: null,
+    category: null,
+    size_label: null,
+    image_asset_id: `new-image-${suffix}`,
+    image_ref: null,
+    ingredient_list_text: null,
+    shared_notes: null,
+  }));
+
+  await assert.rejects(
+    service.restoreBackup({
+      format: "beautio-backup",
+      version: 1,
+      created_at: "2026-08-30T00:00:00.000Z",
+      products,
+      inventory_items: [],
+      images: ["one", "two"].map((suffix) => ({
+        image_asset_id: `new-image-${suffix}`,
+        product_id: `new-product-${suffix}`,
+        media_type: "image/png",
+        byte_size: imageBytes.byteLength,
+        sha256: digest,
+        bytes_base64: encoded,
+        created_at: "2026-08-30T00:00:00.000Z",
+      })),
+    }),
+    /simulated second-file failure/u,
+  );
+
+  assert.deepEqual(await repository.findProductById(oldProduct.id), oldProduct);
+  assert.equal(await repository.findProductById("new-product-one"), null);
+  assert.equal(await repository.findImageAssetById("new-image-one"), null);
+  assert.equal(storage.files.size, 0);
+  assert.deepEqual(
+    await repository.claimExpiredImageAssets("2026-08-30T00:00:00.000Z"),
+    [],
+  );
+  repository.close();
+});
+
+test("backup export writes each metadata record and image with backpressure and stops on abort", async () => {
+  const repository = new SqliteInventoryRepository(":memory:");
+  const storage = new MemoryStorage();
+  const service = new InventoryApplicationService(repository, {
+    idGenerator: sequentialIdGenerator(),
+    clock: () => new Date("2026-08-30T00:00:00.000Z"),
+    imageStorage: storage,
+    imageInspector: fixedImageInspector,
+  });
+  const uploaded = await service.uploadProductImages([
+    { source_ref: "first", bytes: new Uint8Array([1, 2, 3]) },
+    { source_ref: "second", bytes: new Uint8Array([4, 5, 6]) },
+  ]);
+  await service.createInventoryBatch({
+    as_of: "2026-08-30",
+    products: uploaded.assets.map((asset, index) => ({
+      batch_ref: `product_${index}`,
+      name: `Product ${index}`,
+      image_asset_id: asset.image_asset_id,
+    })),
+    inventory_items: uploaded.assets.map((_asset, index) => ({
+      batch_ref: `bottle_${index}`,
+      product_ref: { kind: "new" as const, batch_ref: `product_${index}` },
+      lifecycle_status: "unopened" as const,
+    })),
+  });
+
+  const plan = await service.prepareBackupExport();
+  const chunks: string[] = [];
+  await plan.writeTo(async (chunk) => {
+    chunks.push(chunk);
+  });
+  assert.equal(chunks.length, 10);
+  assert.equal(storage.getCalls.length, 2);
+  const parsed = JSON.parse(chunks.join("")) as {
+    readonly products: readonly unknown[];
+    readonly inventory_items: readonly unknown[];
+    readonly images: readonly unknown[];
+  };
+  assert.equal(parsed.products.length, 2);
+  assert.equal(parsed.inventory_items.length, 2);
+  assert.equal(parsed.images.length, 2);
+  assert.equal(chunks.filter((chunk) => chunk.includes('"bytes_base64"')).length, 2);
+
+  let releaseMetadataWrite!: () => void;
+  const metadataWriteRelease = new Promise<void>((resolve) => {
+    releaseMetadataWrite = resolve;
+  });
+  const blockedChunks: string[] = [];
+  const blockedWrite = plan.writeTo(async (chunk) => {
+    blockedChunks.push(chunk);
+    if (blockedChunks.length === 2) {
+      await metadataWriteRelease;
+    }
+  });
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.equal(blockedChunks.length, 2);
+  releaseMetadataWrite();
+  await blockedWrite;
+
+  const preAborted = new AbortController();
+  preAborted.abort();
+  await assert.rejects(
+    service.prepareBackupExport({ signal: preAborted.signal }),
+    hasBeautioCode("UPLOAD_FAILED"),
+  );
+
+  storage.getCalls.length = 0;
+  const controller = new AbortController();
+  let imageWrites = 0;
+  await assert.rejects(
+    plan.writeTo(
+      async (chunk) => {
+        if (chunk.includes('"bytes_base64"')) {
+          imageWrites += 1;
+          if (imageWrites === 1) controller.abort();
+        }
+      },
+      { signal: controller.signal },
+    ),
+    hasBeautioCode("UPLOAD_FAILED"),
+  );
+  assert.equal(storage.getCalls.length, 1);
+  repository.close();
+});
+
 function sequentialIdGenerator(): (kind: GeneratedIdKind) => string {
   const sequences = new Map<GeneratedIdKind, number>();
   return (kind) => {
@@ -1638,12 +1929,14 @@ class FailingMemoryStorage implements ImageAssetStorage {
 
 class MemoryStorage implements ImageAssetStorage {
   readonly files = new Map<string, Uint8Array>();
+  readonly getCalls: string[] = [];
 
   async put(storageKey: string, bytes: Uint8Array): Promise<void> {
     this.files.set(storageKey, bytes);
   }
 
   async get(storageKey: string): Promise<Uint8Array> {
+    this.getCalls.push(storageKey);
     const bytes = this.files.get(storageKey);
     if (bytes === undefined) {
       throw new Error("missing file");
@@ -1653,6 +1946,17 @@ class MemoryStorage implements ImageAssetStorage {
 
   async delete(storageKey: string): Promise<void> {
     this.files.delete(storageKey);
+  }
+}
+
+class DeleteFailingMemoryStorage extends MemoryStorage {
+  allowDeletes = false;
+
+  override async delete(storageKey: string): Promise<void> {
+    if (!this.allowDeletes) {
+      throw new Error("simulated displaced-image delete failure");
+    }
+    await super.delete(storageKey);
   }
 }
 

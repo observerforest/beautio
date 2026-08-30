@@ -17,6 +17,7 @@ import {
   readJson,
   readMcpJson,
   readSingleImageMultipart,
+  readStreamingJson,
 } from "./body.ts";
 import { createBeautioActionsOpenApiV1 } from "./openapi.ts";
 import { invalidInput, sendJson, sendNotFound } from "./responses.ts";
@@ -40,6 +41,7 @@ const actionFileRequestSchema = z
       .max(10),
   })
   .strict();
+const BACKUP_BODY_LIMIT = 280 * 1024 * 1024;
 
 export interface ValidatedOptions {
   readonly actionBearerToken: string;
@@ -51,6 +53,7 @@ export interface ValidatedOptions {
     signal: AbortSignal,
   ) => Promise<readonly DownloadedActionImage[]>;
   readonly actionUploadTimeoutMs: number;
+  readonly backupOperationTimeoutMs: number;
   readonly publicOrigin: string | undefined;
   readonly staticWebRoot: StaticWebRoot | null;
   readonly readOnlyMcp: ReadOnlyMcpRoute | null;
@@ -64,6 +67,15 @@ export interface RouteRequestDependencies {
   readonly abortableActionOperation: <T>(
     operation: Promise<T>,
     signal: AbortSignal,
+  ) => Promise<T>;
+  readonly withExclusiveOperation: <T>(
+    operation: () => Promise<T>,
+    signal?: AbortSignal,
+  ) => Promise<T>;
+  readonly withBackupDeadline: <T>(
+    timeoutMs: number,
+    externalSignal: AbortSignal,
+    operation: (signal: AbortSignal) => Promise<T>,
   ) => Promise<T>;
 }
 
@@ -108,6 +120,72 @@ export async function routeRequest(
   } else if (isReservedPath(url.pathname, "/api")) {
     requireBearer(request, options.adminBearerToken);
   }
+
+  const execute = (backupSignal?: AbortSignal): Promise<void> =>
+    routeAuthorizedRequest(
+      application,
+      options,
+      request,
+      response,
+      dependencies,
+      url,
+      backupSignal,
+    );
+  if (request.method === "PUT" && url.pathname === "/api/admin/backup") {
+    await withRequestCancellation(request, response, (externalSignal) =>
+      dependencies.withBackupDeadline(
+        options.backupOperationTimeoutMs,
+        externalSignal,
+        async (backupSignal) => {
+          const prepared = application.prepareBackupRestore(
+            await readStreamingJson(request, BACKUP_BODY_LIMIT, backupSignal),
+          );
+          await dependencies.withExclusiveOperation(async () => {
+            sendJson(
+              response,
+              200,
+              await application.restorePreparedBackup(prepared, {
+                signal: backupSignal,
+              }),
+            );
+          }, backupSignal);
+        },
+      ),
+    );
+    return;
+  }
+  if (request.method === "GET" && url.pathname === "/api/admin/backup") {
+    await withRequestCancellation(request, response, (externalSignal) =>
+      dependencies.withBackupDeadline(
+        options.backupOperationTimeoutMs,
+        externalSignal,
+        (backupSignal) =>
+          dependencies.withExclusiveOperation(
+            () => execute(backupSignal),
+            backupSignal,
+          ),
+      ),
+    );
+    return;
+  }
+  if (isExclusiveWriteRoute(request.method, url.pathname)) {
+    await withRequestCancellation(request, response, (signal) =>
+      dependencies.withExclusiveOperation(() => execute(), signal),
+    );
+    return;
+  }
+  await execute();
+}
+
+async function routeAuthorizedRequest(
+  application: InventoryApplicationService,
+  options: ValidatedOptions,
+  request: IncomingMessage,
+  response: ServerResponse,
+  dependencies: RouteRequestDependencies,
+  url: URL,
+  backupSignal?: AbortSignal,
+): Promise<void> {
 
   if (
     request.method === "POST" &&
@@ -220,6 +298,25 @@ export async function routeRequest(
       200,
       await application.listInventory({ as_of: url.searchParams.get("as_of") }),
     );
+    return;
+  }
+
+  if (request.method === "GET" && url.pathname === "/api/admin/backup") {
+    const plan = await application.prepareBackupExport(
+      backupSignal === undefined ? {} : { signal: backupSignal },
+    );
+    const date = plan.createdAt.slice(0, 10);
+    response.writeHead(200, {
+      "cache-control": "no-store",
+      "content-disposition": `attachment; filename="beautio-backup-${date}.beautio-backup"`,
+      "content-type": "application/json; charset=utf-8",
+      "x-content-type-options": "nosniff",
+    });
+    await plan.writeTo(
+      (chunk) => writeResponseChunk(response, chunk, backupSignal),
+      backupSignal === undefined ? {} : { signal: backupSignal },
+    );
+    response.end();
     return;
   }
 
@@ -336,6 +433,79 @@ export async function routeRequest(
     return;
   }
   sendNotFound(response);
+}
+
+function isExclusiveWriteRoute(
+  method: string | undefined,
+  pathname: string,
+): boolean {
+  if (method === "POST") {
+    return (
+      pathname === "/api/actions/upload-product-images" ||
+      pathname === "/api/actions/create-inventory-batch" ||
+      pathname === "/api/actions/codex/upload-product-images" ||
+      pathname === "/api/actions/codex/record-product-opened" ||
+      pathname === "/api/actions/codex/set-product-display-image" ||
+      pathname === "/api/admin/image-assets"
+    );
+  }
+  return (
+    method === "PUT" &&
+    (pathname.startsWith("/api/admin/products/") ||
+      pathname.startsWith("/api/admin/inventory-items/"))
+  );
+}
+
+async function withRequestCancellation<T>(
+  request: IncomingMessage,
+  response: ServerResponse,
+  operation: (signal: AbortSignal) => Promise<T>,
+): Promise<T> {
+  const controller = new AbortController();
+  const abort = (): void => controller.abort();
+  request.once("aborted", abort);
+  response.once("close", abort);
+  try {
+    return await operation(controller.signal);
+  } finally {
+    request.removeListener("aborted", abort);
+    response.removeListener("close", abort);
+  }
+}
+
+function writeResponseChunk(
+  response: ServerResponse,
+  chunk: string,
+  signal: AbortSignal | undefined,
+): Promise<void> {
+  if (signal?.aborted === true) {
+    return Promise.reject(new Error("backup response was aborted"));
+  }
+  if (response.write(chunk)) {
+    return Promise.resolve();
+  }
+  return new Promise<void>((resolve, reject) => {
+    const cleanup = (): void => {
+      response.removeListener("drain", drained);
+      response.removeListener("close", closed);
+      signal?.removeEventListener("abort", aborted);
+    };
+    const drained = (): void => {
+      cleanup();
+      resolve();
+    };
+    const closed = (): void => {
+      cleanup();
+      reject(new Error("backup response closed before draining"));
+    };
+    const aborted = (): void => {
+      cleanup();
+      reject(new Error("backup response was aborted"));
+    };
+    response.once("drain", drained);
+    response.once("close", closed);
+    signal?.addEventListener("abort", aborted, { once: true });
+  });
 }
 
 function parseImageAssetVariant(

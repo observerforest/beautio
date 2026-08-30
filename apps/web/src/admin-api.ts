@@ -1,6 +1,7 @@
 import {
   inventoryItemIdSchema,
   inventoryListOutputSchema,
+  restoreBeautioBackupOutputSchema,
   updateInventoryItemCustomNotesInputSchema,
   updateInventoryItemCustomNotesOutputSchema,
   updateInventoryItemFactsOutputSchema,
@@ -9,6 +10,7 @@ import {
   updateProductOutputSchema,
   type InventoryListOutput,
   type InventoryStateOutput,
+  type RestoreBeautioBackupOutput,
   type UpdateInventoryItemCustomNotesInput,
   type UpdateInventoryItemCustomNotesOutput,
   type UpdateProductInput,
@@ -38,6 +40,18 @@ export interface UploadedImageAsset {
   readonly byte_size: number;
   readonly expires_at: string;
 }
+
+export interface BackupDownload {
+  readonly blob: Blob;
+  readonly filename: string;
+}
+
+export interface PreparedBeautioBackupFile {
+  readonly file: File;
+  readonly byteSize: number;
+}
+
+const MAX_BACKUP_SERIALIZED_BYTES = 280 * 1024 * 1024;
 
 export type UpdatedProduct = UpdateProductOutput["product"];
 
@@ -140,6 +154,50 @@ export class AdminApiClient {
     );
     try {
       return inventoryListOutputSchema.parse(body);
+    } catch {
+      throw invalidResponse();
+    }
+  }
+
+  /**
+   * Downloads one complete versioned Beautio backup without parsing or reserializing it.
+   *
+   * @returns The response Blob and a server-supplied safe backup filename.
+   */
+  async downloadBackup(): Promise<BackupDownload> {
+    return this.#request(
+      "/api/admin/backup",
+      { headers: { accept: "application/json" } },
+      async (response) => ({
+        blob: await response.blob(),
+        filename: backupFilename(response.headers.get("content-disposition")),
+      }),
+    );
+  }
+
+  /**
+   * Replaces the current single-user dataset with one validated complete backup.
+   *
+   * @param file - Original bounded backup file selected and previewed locally; the server performs authoritative validation.
+   * @returns Server-confirmed restored entity counts.
+   */
+  async restoreBackupFile(
+    file: File,
+  ): Promise<RestoreBeautioBackupOutput> {
+    const body = await this.#request(
+      "/api/admin/backup",
+      {
+        method: "PUT",
+        headers: {
+          accept: "application/json",
+          "content-type": "application/json",
+        },
+        body: file,
+      },
+      readJson,
+    );
+    try {
+      return restoreBeautioBackupOutputSchema.parse(body);
     } catch {
       throw invalidResponse();
     }
@@ -358,6 +416,38 @@ function jsonRequest(method: "PUT", body: object): RequestInit {
   };
 }
 
+/**
+ * Prepares an untrusted local file for server-side validation and restore.
+ *
+ * @param file - User-selected backup file from the browser.
+ * @returns The original bounded file and its display size without materializing its contents.
+ */
+export function prepareBeautioBackupFile(
+  file: File,
+): PreparedBeautioBackupFile {
+  if (file.size < 1) {
+    throw new AdminApiError(0, "EMPTY_BACKUP", "备份文件为空。");
+  }
+  if (file.size > MAX_BACKUP_SERIALIZED_BYTES) {
+    throw new AdminApiError(
+      0,
+      "BACKUP_TOO_LARGE",
+      "备份文件超过 280 MiB 上限。",
+    );
+  }
+  return {
+    file,
+    byteSize: file.size,
+  };
+}
+
+function backupFilename(contentDisposition: string | null): string {
+  const match = contentDisposition?.match(
+    /filename="(beautio-backup-\d{4}-\d{2}-\d{2}\.beautio-backup)"/u,
+  );
+  return match?.[1] ?? "beautio-backup.beautio-backup";
+}
+
 async function responseError(response: Response): Promise<AdminApiError> {
   let body: unknown;
   try {
@@ -369,7 +459,7 @@ async function responseError(response: Response): Promise<AdminApiError> {
     return new AdminApiError(
       response.status,
       "HTTP_ERROR",
-      `服务器返回了 HTTP ${response.status}。`,
+      `Beautio 服务返回错误响应（HTTP ${response.status}）。`,
     );
   }
 
@@ -384,7 +474,7 @@ async function responseError(response: Response): Promise<AdminApiError> {
   return new AdminApiError(
     response.status,
     "HTTP_ERROR",
-    `服务器返回了 HTTP ${response.status}。`,
+    `Beautio 服务返回错误响应（HTTP ${response.status}）。`,
   );
 }
 

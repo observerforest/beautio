@@ -1,3 +1,4 @@
+import type { BeautioBackup } from "@beautio/contracts";
 import type {
   GeneratedIdKind,
   ImageAssetStorage,
@@ -12,6 +13,39 @@ export interface ImageUploadInput {
 
 export interface ImageUploadOperationOptions {
   readonly signal?: AbortSignal;
+}
+
+export interface BackupOperationOptions {
+  readonly signal?: AbortSignal;
+}
+
+/**
+ * Carries one fully schema-validated backup from the HTTP upload phase into the
+ * serialized restore phase without parsing the untrusted payload again.
+ */
+export interface PreparedBackupRestore {
+  readonly backup: BeautioBackup;
+}
+
+export type BackupChunkWriter = (chunk: string) => Promise<void>;
+
+export interface BackupExportPlan {
+  readonly createdAt: string;
+  readonly products: number;
+  readonly inventoryItems: number;
+  readonly images: number;
+
+  /**
+   * Writes one valid versioned JSON backup one metadata record or image at a time.
+   *
+   * @param write - Backpressure-aware destination for serialized JSON chunks.
+   * @param options - Optional cancellation checked between every serialized record.
+   * @returns Nothing after the closing JSON delimiter has been accepted.
+   */
+  readonly writeTo: (
+    write: BackupChunkWriter,
+    options?: BackupOperationOptions,
+  ) => Promise<void>;
 }
 
 export interface InventoryApplicationServiceOptions {

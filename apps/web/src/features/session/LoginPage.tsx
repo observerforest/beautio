@@ -1,6 +1,7 @@
 import { useRef, useState, type FormEvent } from "react";
 import { Logo } from "../../components/Logo.tsx";
 import { Toast, ToastViewport } from "../../components/Toast.tsx";
+import { useI18n } from "../../i18n.tsx";
 
 export interface LoginPageProps {
   readonly busy: boolean;
@@ -24,6 +25,7 @@ export function LoginPage({
   onUnlock,
   onDismissMessage,
 }: LoginPageProps) {
+  const { t } = useI18n();
   const [token, setToken] = useState("");
   const [showToken, setShowToken] = useState(false);
   const [localError, setLocalError] = useState("");
@@ -33,7 +35,7 @@ export function LoginPage({
     event.preventDefault();
     const normalized = token.trim();
     if (normalized.length === 0) {
-      setLocalError("请输入管理密钥。");
+      setLocalError(t("请输入管理密钥。"));
       tokenRef.current?.focus();
       return;
     }
@@ -57,32 +59,32 @@ export function LoginPage({
           <Logo className="h-16 w-auto object-contain" />
         </div>
         <p className="mb-8 text-center text-xs font-light tracking-[0.18em] text-[#B3A0AD]">
-          关于你，也关于时间
+          {t("关于你，也关于时间")}
         </p>
 
         {readOnly ? (
           <div className="mb-6 rounded-2xl bg-[#EEF1F4] px-4 py-3 text-xs leading-relaxed text-[#4A6272]">
-            生产数据只读观察 · 请输入本机只读密钥。生产管理密钥不会进入浏览器。
+            {t("生产数据只读观察 · 请输入本机只读密钥。生产管理密钥不会进入浏览器。")}
           </div>
         ) : null}
 
         <form onSubmit={handleSubmit} noValidate>
           <div className="mb-6 border-b border-[#E5D8CF] opacity-45">
             <label htmlFor="account-placeholder" className="mb-2 block text-[10px] tracking-[0.14em] text-[#9B7F7C]">
-              邮箱 / 手机号
+              {t("邮箱 / 手机号")}
             </label>
             <input
               id="account-placeholder"
               type="text"
               disabled
-              placeholder="账户登录即将开放"
+              placeholder={t("账户登录建设中")}
               className="w-full bg-transparent pb-3 text-sm font-light outline-none placeholder:text-stone-300"
             />
           </div>
 
           <div className="mb-3 border-b border-[#E5D8CF]">
             <label htmlFor="admin-token" className="mb-2 block text-[10px] tracking-[0.14em] text-[#9B7F7C]">
-              {readOnly ? "本机只读密钥" : "管理密钥"}
+              {readOnly ? t("本机只读密钥") : t("管理密钥")}
             </label>
             <div className="flex items-center">
               <input
@@ -96,7 +98,7 @@ export function LoginPage({
                 spellCheck={false}
                 disabled={busy}
                 placeholder={
-                  readOnly ? "输入本机只读密钥" : "输入当前实例的管理密钥"
+                  readOnly ? t("输入本机只读密钥") : t("输入当前实例的管理密钥")
                 }
                 className="min-w-0 flex-1 bg-transparent pb-3 text-sm font-light text-[#5A4C4A] outline-none placeholder:text-stone-300 disabled:opacity-50"
               />
@@ -106,16 +108,16 @@ export function LoginPage({
                 disabled={busy}
                 className="pb-3 text-[11px] tracking-[0.06em] text-[#B3A0AD] transition-opacity hover:opacity-70 disabled:opacity-45"
                 aria-pressed={showToken}
-                aria-label={showToken ? "隐藏管理密钥" : "显示管理密钥"}
+                aria-label={showToken ? t("隐藏管理密钥") : t("显示管理密钥")}
               >
-                {showToken ? "隐藏" : "显示"}
+                {showToken ? t("隐藏") : t("显示")}
               </button>
             </div>
           </div>
 
           <div className="mb-6 flex justify-end">
             <button type="button" disabled className="text-xs text-[#9B7F7C] opacity-40">
-              忘记密钥?
+              {t("忘记密钥?")}
             </button>
           </div>
 
@@ -126,19 +128,19 @@ export function LoginPage({
             disabled={busy}
             className="w-full rounded-full bg-[linear-gradient(120deg,#9B7F7C_0%,#B3A0AD_100%)] py-4 text-sm font-medium tracking-[0.22em] text-white transition-opacity hover:opacity-90 active:opacity-80 disabled:opacity-45"
           >
-            {busy ? "正在验证…" : "进入 Beautio"}
+            {busy ? t("正在验证…") : t("进入 Beautio")}
           </button>
 
           <div className="my-6 flex items-center gap-4" aria-hidden="true">
             <div className="h-px flex-1 bg-[#EDE8E5]" />
-            <span className="text-xs text-[#D5D2CF]">或</span>
+            <span className="text-xs text-[#D5D2CF]">{t("或")}</span>
             <div className="h-px flex-1 bg-[#EDE8E5]" />
           </div>
 
           <p className="text-center text-sm font-light text-[#A8A3A0]">
-            还没有账户？
+            {t("还没有账户？")}
             <button type="button" disabled className="ml-1 font-medium text-[#9B7F7C] opacity-40">
-              立即注册
+              {t("立即注册")}
             </button>
           </p>
         </form>

@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { AdminApiClient, AdminApiError, type PrivateImageVariant } from "../../admin-api.ts";
 import { isAbortError } from "../../utils/is-abort-error.ts";
 import type { ProductImageChoice } from "./models/index.ts";
+import { useI18n } from "../../i18n.tsx";
 
 export type ProductImageState =
   | { readonly status: "empty"; readonly src: null }
@@ -25,6 +26,7 @@ export function useProductImage(
   variant: PrivateImageVariant,
   onUnauthorized: (message: string) => void,
 ): ProductImageState & { readonly reportError: () => void } {
+  const { t } = useI18n();
   const [state, setState] = useState<ProductImageState>(() => initialState(choice));
   const unauthorizedRef = useRef(onUnauthorized);
   const activeObjectUrlRef = useRef<string | null>(null);
@@ -60,7 +62,7 @@ export function useProductImage(
         if (cancelled || isAbortError(error)) return;
         if (error instanceof AdminApiError && error.status === 401) {
           unauthorizedRef.current(
-            "管理密钥无效或已撤销，请重新输入。私有图片没有继续加载。",
+            t("管理密钥无效或已撤销，请重新输入。私有图片没有继续加载。"),
           );
           return;
         }
@@ -74,7 +76,7 @@ export function useProductImage(
         if (activeObjectUrlRef.current === objectUrl) activeObjectUrlRef.current = null;
       }
     };
-  }, [client, legacyImageRef, managedImageAssetId, variant]);
+  }, [client, legacyImageRef, managedImageAssetId, t, variant]);
 
   return {
     ...state,

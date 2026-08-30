@@ -244,10 +244,11 @@ export class FileImageAssetStorage {
    * Reads bytes for a previously persisted opaque storage key.
    *
    * @param storageKey - Internal key read from trusted ImageAsset metadata.
+   * @param signal - Optional cancellation forwarded to the filesystem read.
    * @returns A fresh buffer containing the stored bytes.
    */
-  async get(storageKey: string): Promise<Uint8Array> {
-    return readFile(this.pathFor(storageKey));
+  async get(storageKey: string, signal?: AbortSignal): Promise<Uint8Array> {
+    return readFile(this.pathFor(storageKey), { signal });
   }
 
   /**
