@@ -65,7 +65,7 @@ export function ProductCard({
         </span>
 
       <span className="flex min-w-0 flex-col gap-0.5 bg-white p-2.5 shadow-[inset_0_1px_3px_rgba(90,76,74,0.03)]">
-          <strong className="min-w-0 break-words text-[11px] font-medium leading-tight text-[#5A4C4A] sm:text-xs">
+          <strong className="min-w-0 break-words text-[10px] font-medium leading-tight text-[#5A4C4A] md:text-xs">
             {view.displayName}
           </strong>
           <span className="mt-0.5 flex min-w-0 flex-wrap items-center gap-x-2 gap-y-0.5 text-[10px] text-[#A8A3A0]">
