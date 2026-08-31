@@ -197,8 +197,8 @@ export function ProductEditorDialog({
         <ToastViewport><Toast message={error} onDismiss={() => setError("")} /></ToastViewport>
       )}
     >
-      <form id={formId} onSubmit={handleSubmit} className="space-y-5 px-5 py-5" noValidate>
-        <fieldset disabled={busy || writeCompleted} className="space-y-5 disabled:opacity-70">
+      <form id={formId} onSubmit={handleSubmit} className="min-w-0 w-full space-y-5 px-5 py-5" noValidate>
+        <fieldset disabled={busy || writeCompleted} className="min-w-0 w-full space-y-5 disabled:opacity-70">
           <div className="flex flex-col items-center gap-3">
             <div className="size-32 overflow-hidden rounded-2xl bg-[#F8F5F3]">{preview}</div>
             <button type="button" onClick={() => fileRef.current?.click()} className="flex items-center gap-1.5 rounded-full border border-[#D8D4D1] px-4 py-2 text-xs text-[#7A7572] hover:bg-stone-50">

@@ -216,7 +216,7 @@ export function ModalShell({
             </button>
           </header>
         )}
-        <div className="beautio-scrollbar min-h-0 flex-1 overflow-y-auto overscroll-contain">{children}</div>
+        <div className="beautio-scrollbar min-h-0 min-w-0 w-full flex-1 overflow-y-auto overscroll-contain">{children}</div>
         {resolvedFooter === undefined ? null : (
           <footer className="shrink-0 border-t border-[#F2EFED] bg-white px-5 pb-[max(1.5rem,env(safe-area-inset-bottom))] pt-3">
             {resolvedFooter}

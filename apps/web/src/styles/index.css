@@ -70,13 +70,31 @@ button {
   -webkit-tap-highlight-color: transparent;
 }
 
-input[type="date"] {
-  display: block;
-  width: 100%;
+.beautio-editor-date-input {
+  flex: 1 1 0%;
+  width: auto;
   min-width: 0;
   max-width: 100%;
-  inline-size: 100%;
+  padding: 0;
+  border: 0;
+  outline: 0;
+  color: inherit;
+  background: transparent;
+  font: inherit;
+  line-height: inherit;
+  inline-size: auto;
   max-inline-size: 100%;
+}
+
+.beautio-editor-date-input::-webkit-date-and-time-value {
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  text-align: left;
+}
+
+.beautio-editor-date-frame:has(.beautio-editor-date-input:disabled) {
+  opacity: 0.45;
 }
 
 img {

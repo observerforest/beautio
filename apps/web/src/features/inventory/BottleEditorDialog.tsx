@@ -12,7 +12,7 @@ import { Toast, ToastViewport } from "../../components/Toast.tsx";
 import { isAbortError } from "../../utils/is-abort-error.ts";
 import { localDateForApi } from "../../utils/local-date-for-api.ts";
 import { canPreserveLegacyAccuracy, openedOnAccuracy, paoDeadlineAccuracy, usabilityLabel } from "./models/index.ts";
-import { EditorFooter, editorInputClass, Field } from "./EditorPrimitives.tsx";
+import { EditorDateInput, EditorFooter, editorInputClass, Field } from "./EditorPrimitives.tsx";
 import { dateWithAccuracy, displayValue, inventoryErrorMessage } from "./utils/inventory-format.ts";
 import { useI18n } from "../../i18n.tsx";
 
@@ -190,8 +190,8 @@ export function BottleEditorDialog({
         <ToastViewport><Toast message={error} onDismiss={() => setError("")} /></ToastViewport>
       )}
     >
-      <form id={formId} onSubmit={handleSubmit} className="space-y-5 px-5 py-5" noValidate>
-        <fieldset disabled={busy || writeCompleted} className="space-y-5 disabled:opacity-70">
+      <form id={formId} onSubmit={handleSubmit} className="min-w-0 w-full space-y-5 px-5 py-5" noValidate>
+        <fieldset disabled={busy || writeCompleted} className="min-w-0 w-full space-y-5 disabled:opacity-70">
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
             <Field label={t("生命周期")}>
               <SelectMenu
@@ -205,7 +205,7 @@ export function BottleEditorDialog({
               />
             </Field>
             <Field label={t("开封日期")} hint={t("已开封时必填；未开封时会清空。")}>
-              <input ref={openedDateRef} type="date" value={openedOn} onChange={(event) => setOpenedOn(event.target.value)} disabled={lifecycle !== "opened"} className={editorInputClass} />
+              <EditorDateInput inputRef={openedDateRef} value={openedOn} onChange={(event) => setOpenedOn(event.target.value)} disabled={lifecycle !== "opened"} />
             </Field>
             <Field label={t("开封日期准确性")} hint={t("估算必须明确标记。")}>
               <SelectMenu
@@ -221,7 +221,7 @@ export function BottleEditorDialog({
               />
             </Field>
             <Field label={t("包装过期日")} hint={t("没有记录时留空。")}>
-              <input type="date" value={expiresOn} onChange={(event) => setExpiresOn(event.target.value)} className={editorInputClass} />
+              <EditorDateInput value={expiresOn} onChange={(event) => setExpiresOn(event.target.value)} />
             </Field>
             <Field label={t("PAO（月）")} hint={t("整数 1–120；没有记录时留空。")}>
               <input ref={paoRef} type="number" min="1" max="120" step="1" inputMode="numeric" value={pao} onChange={(event) => setPao(event.target.value)} className={editorInputClass} />

@@ -1,4 +1,4 @@
-import type { ReactNode } from "react";
+import type { InputHTMLAttributes, ReactNode, Ref } from "react";
 import { Icon } from "../../components/Icon.tsx";
 import { useI18n } from "../../i18n.tsx";
 
@@ -115,4 +115,29 @@ export function Field({ label, hint, counter, children }: FieldProps) {
 }
 
 export const editorInputClass =
-  "w-full rounded-2xl border border-[#E0DBD8] bg-white px-4 py-3 text-sm text-[#5A4C4A] outline-none transition-colors placeholder:text-stone-300 disabled:opacity-45";
+  "w-full min-w-0 max-w-full rounded-2xl border border-[#E0DBD8] bg-white px-4 py-3 text-sm text-[#5A4C4A] outline-none transition-colors placeholder:text-stone-300 disabled:opacity-45";
+
+export interface EditorDateInputProps extends Omit<InputHTMLAttributes<HTMLInputElement>, "className" | "type"> {
+  readonly inputRef?: Ref<HTMLInputElement>;
+}
+
+/**
+ * 将原生日期输入放入统一宽度的编辑器外框，规避 iOS WebKit 对带内边距日期框的错误宽度计算。
+ * Places a native date input inside the shared editor frame to avoid iOS WebKit's incorrect width calculation for padded date controls.
+ *
+ * @param props - 原生日期输入属性与可选输入引用。 / Native date-input attributes and an optional input ref.
+ * @returns 保留系统日期选择器、但由外层控制尺寸与内边距的日期字段。 / A date field that retains the system picker while delegating sizing and padding to its frame.
+ */
+export function EditorDateInput({ inputRef, disabled, ...props }: EditorDateInputProps) {
+  return (
+    <span className={`${editorInputClass} beautio-editor-date-frame flex items-center overflow-hidden`}>
+      <input
+        {...props}
+        ref={inputRef}
+        type="date"
+        disabled={disabled}
+        className="beautio-editor-date-input"
+      />
+    </span>
+  );
+}
