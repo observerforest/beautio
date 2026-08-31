@@ -97,6 +97,33 @@ button {
   opacity: 0.45;
 }
 
+/* Prevent iOS WebKit from auto-zooming editable controls whose design size is below 16px. */
+@media (max-width: 767px), (hover: none) and (pointer: coarse) {
+  .beautio-editor-date-frame {
+    font-size: 16px;
+  }
+
+  :is(
+    input:not([type]),
+    input[type="text"],
+    input[type="search"],
+    input[type="email"],
+    input[type="password"],
+    input[type="tel"],
+    input[type="url"],
+    input[type="number"],
+    input[type="date"],
+    input[type="datetime-local"],
+    input[type="month"],
+    input[type="time"],
+    input[type="week"],
+    select,
+    textarea
+  ) {
+    font-size: 16px;
+  }
+}
+
 img {
   display: block;
   max-width: 100%;

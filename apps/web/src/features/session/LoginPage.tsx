@@ -42,6 +42,7 @@ export function LoginPage({
     setLocalError("");
     setToken("");
     setShowToken(false);
+    tokenRef.current?.blur();
     void onUnlock(normalized).then((succeeded) => {
       if (!succeeded) tokenRef.current?.focus();
     });
