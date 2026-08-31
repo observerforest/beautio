@@ -70,13 +70,58 @@ button {
   -webkit-tap-highlight-color: transparent;
 }
 
-input[type="date"] {
-  display: block;
-  width: 100%;
+.beautio-editor-date-input {
+  flex: 1 1 0%;
+  width: auto;
   min-width: 0;
   max-width: 100%;
-  inline-size: 100%;
+  padding: 0;
+  border: 0;
+  outline: 0;
+  color: inherit;
+  background: transparent;
+  font: inherit;
+  line-height: inherit;
+  inline-size: auto;
   max-inline-size: 100%;
+}
+
+.beautio-editor-date-input::-webkit-date-and-time-value {
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  text-align: left;
+}
+
+.beautio-editor-date-frame:has(.beautio-editor-date-input:disabled) {
+  opacity: 0.45;
+}
+
+/* Prevent iOS WebKit from auto-zooming editable controls whose design size is below 16px. */
+@media (max-width: 767px), (hover: none) and (pointer: coarse) {
+  .beautio-editor-date-frame {
+    font-size: 16px;
+  }
+
+  :is(
+    input:not([type]),
+    input[type="text"],
+    input[type="search"],
+    input[type="email"],
+    input[type="password"],
+    input[type="tel"],
+    input[type="url"],
+    input[type="number"],
+    input[type="date"],
+    input[type="datetime-local"],
+    input[type="month"],
+    input[type="time"],
+    input[type="week"],
+    select,
+    textarea
+  ) {
+    font-size: 16px;
+  }
 }
 
 img {

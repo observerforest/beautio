@@ -104,8 +104,8 @@ export function NotesEditorDialog({ item, client, onCancel, onCommitted, onUnaut
         <ToastViewport><Toast message={error} onDismiss={() => setError("")} /></ToastViewport>
       )}
     >
-      <form id={formId} onSubmit={handleSubmit} className="space-y-5 px-5 py-5" noValidate>
-        <fieldset disabled={busy || writeCompleted} className="disabled:opacity-70">
+      <form id={formId} onSubmit={handleSubmit} className="min-w-0 w-full space-y-5 px-5 py-5" noValidate>
+        <fieldset disabled={busy || writeCompleted} className="min-w-0 w-full disabled:opacity-70">
           <Field label={t("自定义备注")} hint={t("留空并保存会清空当前瓶的备注。")} counter={textCharacterCountLabel(notes, NOTES_MAXIMUM)}>
             <textarea autoFocus value={notes} onChange={(event) => setNotes(event.target.value)} maxLength={NOTES_MAXIMUM} rows={8} className={`${editorInputClass} min-h-44 resize-y`} />
           </Field>
