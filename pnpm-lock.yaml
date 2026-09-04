@@ -69,6 +69,9 @@ importers:
       '@beautio/application':
         specifier: workspace:*
         version: link:../application
+      '@beautio/contracts':
+        specifier: workspace:*
+        version: link:../contracts
       '@beautio/domain':
         specifier: workspace:*
         version: link:../domain

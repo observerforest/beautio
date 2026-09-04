@@ -1,5 +1,13 @@
 import type {
   BackupInventoryRepository,
+  ClaimCommandExecutionPersistenceInput,
+  ClaimCommandExecutionPersistenceResult,
+  CommandExecutionKey,
+  CommandExecutionRecord,
+  CommandExecutionRepository,
+  CompleteCommandExecutionFailurePersistenceInput,
+  CompleteCommandExecutionPersistenceResult,
+  CompleteCommandExecutionSuccessPersistenceInput,
   InventoryBatchPersistenceInput,
   InventoryBackupReplacement,
   InventoryBackupSnapshot,
@@ -22,6 +30,12 @@ import {
 } from "@beautio/domain";
 import { randomUUID } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
+import {
+  claimCommandExecutionRecord,
+  completeCommandExecutionKnownFailureRecord,
+  completeCommandExecutionSuccessRecord,
+  findCommandExecutionRecord,
+} from "./command-execution-records.ts";
 import { mapSqliteConflict } from "./errors.ts";
 import {
   importInventoryData as importInventoryDataWithOperations,
@@ -52,7 +66,9 @@ export type {
   InventoryImportResult,
 } from "./import.ts";
 
-export class SqliteInventoryRepository implements BackupInventoryRepository {
+export class SqliteInventoryRepository
+  implements BackupInventoryRepository, CommandExecutionRepository
+{
   readonly #database: DatabaseSync;
 
   /**
@@ -67,6 +83,34 @@ export class SqliteInventoryRepository implements BackupInventoryRepository {
 
     this.#database = new DatabaseSync(databasePath);
     applySchema(this.#database);
+  }
+
+  /** @inheritdoc */
+  async claimCommandExecution(
+    input: ClaimCommandExecutionPersistenceInput,
+  ): Promise<ClaimCommandExecutionPersistenceResult> {
+    return claimCommandExecutionRecord(this.#database, input);
+  }
+
+  /** @inheritdoc */
+  async completeCommandExecutionSuccess(
+    input: CompleteCommandExecutionSuccessPersistenceInput,
+  ): Promise<CompleteCommandExecutionPersistenceResult> {
+    return completeCommandExecutionSuccessRecord(this.#database, input);
+  }
+
+  /** @inheritdoc */
+  async completeCommandExecutionKnownFailure(
+    input: CompleteCommandExecutionFailurePersistenceInput,
+  ): Promise<CompleteCommandExecutionPersistenceResult> {
+    return completeCommandExecutionKnownFailureRecord(this.#database, input);
+  }
+
+  /** @inheritdoc */
+  async findCommandExecution(
+    key: CommandExecutionKey,
+  ): Promise<CommandExecutionRecord | null> {
+    return findCommandExecutionRecord(this.#database, key);
   }
 
   /** @inheritdoc */

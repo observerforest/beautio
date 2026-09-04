@@ -1,5 +1,6 @@
 import { productAliasMaximumLength } from "@beautio/domain";
 import { DatabaseSync } from "node:sqlite";
+import { createCommandExecutionTable } from "./command-execution-schema.ts";
 
 interface TableInfoRow {
   readonly name: string;
@@ -15,6 +16,7 @@ interface TableInfoRow {
 export function applySchema(database: DatabaseSync): void {
   database.exec("PRAGMA foreign_keys = OFF");
   createCurrentTables(database);
+  createCommandExecutionTable(database);
   addProductReferenceToLegacyInventory(database);
   addImageReferenceToLegacyProducts(database);
   addImageAssetReferenceToLegacyProducts(database);
