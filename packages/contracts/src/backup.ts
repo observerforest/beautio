@@ -34,6 +34,7 @@ export const beautioBackupProductSchema = z
     brand: nullableShortText,
     category: nullableShortText,
     size_label: nullableShortText,
+    pao_duration_months: z.number().int().min(1).max(120).nullable().default(null),
     image_asset_id: opaqueIdSchema.nullable(),
     image_ref: z.string().trim().min(1).max(2_048).nullable(),
     ingredient_list_text: nullableText(ingredientListTextMaximumLength),
@@ -53,6 +54,13 @@ export const beautioBackupInventoryItemSchema = z
     pao_duration_months: z.number().int().min(1).max(120).nullable(),
     pao_deadline: nullableDate,
     usable_until: nullableDate,
+    remaining_percent_estimate: z
+      .number()
+      .int()
+      .min(0)
+      .max(100)
+      .nullable()
+      .default(null),
     custom_notes: nullableText(customNotesMaximumLength),
   })
   .strict();

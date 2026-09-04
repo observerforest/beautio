@@ -14,6 +14,8 @@ import {
   BeautioError,
   createInventoryItem,
   createProduct,
+  endInventoryItem,
+  parseIsoDate,
   type ImageAsset,
 } from "@beautio/domain";
 import { DatabaseSync } from "node:sqlite";
@@ -39,6 +41,7 @@ test("SQLite persists opened facts across repository instances", async (context)
   await firstService.recordProductOpened({
     inventory_item_id: "persistent-inventory",
     opened_on: "2026-08-18",
+    opened_on_accuracy: "exact",
   });
   firstRepository.close();
 
@@ -51,11 +54,423 @@ test("SQLite persists opened facts across repository instances", async (context)
 
   assert.equal(readback.lifecycle_status, "opened");
   assert.equal(readback.opened_on, "2026-08-18");
-  assert.equal(readback.opened_on_accuracy, "legacy_unknown");
+  assert.equal(readback.opened_on_accuracy, "exact");
   assert.equal(readback.pao_deadline, "2027-08-18");
-  assert.equal(readback.pao_deadline_accuracy, "legacy_unknown");
+  assert.equal(readback.pao_deadline_accuracy, "exact");
   assert.equal(readback.usable_until, "2027-08-18");
   reopenedRepository.close();
+});
+
+test("record-open rejects a competing SQLite writer without overwriting it and recovers", async (context) => {
+  const directory = await mkdtemp(join(tmpdir(), "beautio-open-busy-"));
+  const databasePath = join(directory, "inventory.sqlite");
+  context.after(async () => {
+    await rm(directory, { recursive: true, force: true });
+  });
+
+  const repository = new SqliteInventoryRepository(databasePath);
+  context.after(() => repository.close());
+  await repository.seedInventoryItem(
+    createInventoryItem({
+      id: "busy-bottle",
+      lifecycleStatus: "unopened",
+      paoDurationMonths: 12,
+    }),
+  );
+  const competingWriter = new DatabaseSync(databasePath);
+  context.after(() => {
+    try {
+      competingWriter.exec("ROLLBACK");
+    } catch {
+      // The transaction was already committed by the test.
+    }
+    competingWriter.close();
+  });
+
+  competingWriter.exec("BEGIN IMMEDIATE");
+  competingWriter
+    .prepare(
+      `UPDATE inventory_items
+       SET lifecycle_status = 'opened',
+           opened_on = '2026-09-01',
+           opened_on_accuracy = 'exact',
+           pao_deadline = '2027-09-01',
+           usable_until = '2027-09-01'
+       WHERE id = 'busy-bottle'`,
+    )
+    .run();
+
+  await assert.rejects(
+    repository.recordProductOpened({
+      inventoryItemId: "busy-bottle",
+      openedOn: parseIsoDate("2026-09-02", "opened_on"),
+      openedOnAccuracy: "estimated",
+    }),
+    (error: unknown) => {
+      assert.ok(error instanceof BeautioError);
+      assert.equal(error.code, "BATCH_CONFLICT");
+      assert.equal(error.message, "inventory is busy; no write was performed");
+      return true;
+    },
+  );
+
+  competingWriter.exec("COMMIT");
+  const committed = await repository.findById("busy-bottle");
+  assert.ok(committed);
+  assert.equal(committed.openedOn, "2026-09-01");
+  assert.equal(committed.openedOnAccuracy, "exact");
+  assert.equal(committed.paoDeadline, "2027-09-01");
+  assert.equal(committed.usableUntil, "2027-09-01");
+
+  const retry = await repository.recordProductOpened({
+    inventoryItemId: "busy-bottle",
+    openedOn: parseIsoDate("2026-09-01", "opened_on"),
+    openedOnAccuracy: "exact",
+  });
+  assert.equal(retry.outcome, "already_opened");
+  assert.deepEqual(retry.item, committed);
+});
+
+test("record-open idempotence performs no second UPDATE", async (context) => {
+  const directory = await mkdtemp(join(tmpdir(), "beautio-open-idempotent-"));
+  const databasePath = join(directory, "inventory.sqlite");
+  context.after(async () => {
+    await rm(directory, { recursive: true, force: true });
+  });
+  const repository = new SqliteInventoryRepository(databasePath);
+  context.after(() => repository.close());
+  await repository.seedInventoryItem(
+    createInventoryItem({
+      id: "idempotent-bottle",
+      lifecycleStatus: "unopened",
+      paoDurationMonths: 6,
+    }),
+  );
+  const observer = new DatabaseSync(databasePath);
+  context.after(() => observer.close());
+  observer.exec(`
+    CREATE TABLE record_open_update_audit (id INTEGER PRIMARY KEY);
+    CREATE TRIGGER count_record_open_updates
+    AFTER UPDATE ON inventory_items
+    BEGIN
+      INSERT INTO record_open_update_audit (id) VALUES (NULL);
+    END;
+  `);
+
+  const command = {
+    inventoryItemId: "idempotent-bottle",
+    openedOn: parseIsoDate("2026-09-04", "opened_on"),
+    openedOnAccuracy: "estimated",
+  } as const;
+  assert.equal((await repository.recordProductOpened(command)).outcome, "opened");
+  assert.equal(
+    (observer.prepare("SELECT COUNT(*) AS count FROM record_open_update_audit").get() as { count: number }).count,
+    1,
+  );
+  assert.equal(
+    (await repository.recordProductOpened(command)).outcome,
+    "already_opened",
+  );
+  assert.equal(
+    (observer.prepare("SELECT COUNT(*) AS count FROM record_open_update_audit").get() as { count: number }).count,
+    1,
+  );
+});
+
+test("record-open conflicts preserve every persisted opening field", async (context) => {
+  const repository = new SqliteInventoryRepository(":memory:");
+  context.after(() => repository.close());
+  const accuracies = ["exact", "estimated", "legacy_unknown"] as const;
+
+  for (const existingAccuracy of accuracies) {
+    const id = `conflict-${existingAccuracy}`;
+    await repository.seedInventoryItem(
+      createInventoryItem({
+        id,
+        lifecycleStatus: "opened",
+        openedOn: "2026-09-01",
+        openedOnAccuracy: existingAccuracy,
+        expiresOn: "2028-01-01",
+        paoDurationMonths: 6,
+      }),
+    );
+    const before = await repository.findById(id);
+    assert.ok(before);
+
+    for (const requestedAccuracy of accuracies) {
+      if (requestedAccuracy === existingAccuracy) {
+        continue;
+      }
+      await assert.rejects(
+        repository.recordProductOpened({
+          inventoryItemId: id,
+          openedOn: parseIsoDate("2026-09-01", "opened_on"),
+          openedOnAccuracy: requestedAccuracy,
+        }),
+        hasBeautioCode("OPENED_ON_CONFLICT"),
+      );
+      assert.deepEqual(await repository.findById(id), before);
+    }
+
+    await assert.rejects(
+      repository.recordProductOpened({
+        inventoryItemId: id,
+        openedOn: parseIsoDate("2026-09-02", "opened_on"),
+        openedOnAccuracy: existingAccuracy,
+      }),
+      hasBeautioCode("OPENED_ON_CONFLICT"),
+    );
+    assert.deepEqual(await repository.findById(id), before);
+  }
+});
+
+test("SQLite atomically ends finished and discarded bottles and survives reopen", async (context) => {
+  const directory = await mkdtemp(join(tmpdir(), "beautio-end-use-"));
+  const databasePath = join(directory, "inventory.sqlite");
+  context.after(async () => {
+    await rm(directory, { recursive: true, force: true });
+  });
+  const repository = new SqliteInventoryRepository(databasePath);
+  const finishedSource = createInventoryItem({
+    id: "finished-persisted",
+    lifecycleStatus: "opened",
+    openedOn: "2026-08-01",
+    customNotes: "Finished note",
+  });
+  const discardedSource = createInventoryItem({
+    id: "discarded-persisted",
+    lifecycleStatus: "opened",
+    openedOn: "2026-08-02",
+    customNotes: "Discarded note",
+  });
+  await repository.seedInventoryItem(finishedSource);
+  await repository.seedInventoryItem(discardedSource);
+
+  const finished = await repository.endInventoryItem(
+    endInventoryItem(finishedSource, { lifecycleStatus: "finished" }),
+  );
+  const discarded = await repository.endInventoryItem(
+    endInventoryItem(discardedSource, {
+      lifecycleStatus: "discarded",
+      remainingPercentEstimate: 35,
+    }),
+  );
+
+  assert.equal(finished.lifecycleStatus, "finished");
+  assert.equal(finished.remainingPercentEstimate, 0);
+  assert.equal(finished.customNotes, "Finished note");
+  assert.equal(discarded.lifecycleStatus, "discarded");
+  assert.equal(discarded.remainingPercentEstimate, 35);
+  assert.equal(discarded.customNotes, "Discarded note");
+  repository.close();
+
+  const reopened = new SqliteInventoryRepository(databasePath);
+  assert.deepEqual(await reopened.findById(finished.id), finished);
+  assert.deepEqual(await reopened.findById(discarded.id), discarded);
+  reopened.close();
+});
+
+test("SQLite rejects both repeated terminal states without changing committed snapshots", async () => {
+  const repository = new SqliteInventoryRepository(":memory:");
+  const discardedSource = createInventoryItem({
+    id: "repeat-discarded",
+    lifecycleStatus: "opened",
+    openedOn: "2026-08-01",
+  });
+  const finishedSource = createInventoryItem({
+    id: "repeat-finished",
+    lifecycleStatus: "opened",
+    openedOn: "2026-08-02",
+  });
+  await repository.seedInventoryItem(discardedSource);
+  await repository.seedInventoryItem(finishedSource);
+  const discarded = await repository.endInventoryItem(
+    endInventoryItem(discardedSource, {
+      lifecycleStatus: "discarded",
+      remainingPercentEstimate: null,
+    }),
+  );
+  const finished = await repository.endInventoryItem(
+    endInventoryItem(finishedSource, { lifecycleStatus: "finished" }),
+  );
+
+  await assert.rejects(
+    repository.endInventoryItem(
+      endInventoryItem(discardedSource, { lifecycleStatus: "finished" }),
+    ),
+    (error: unknown) => {
+      assert.ok(error instanceof BeautioError);
+      assert.equal(error.code, "INVENTORY_ITEM_TERMINAL");
+      return true;
+    },
+  );
+  await assert.rejects(
+    repository.endInventoryItem(
+      endInventoryItem(finishedSource, {
+        lifecycleStatus: "discarded",
+        remainingPercentEstimate: 20,
+      }),
+    ),
+    (error: unknown) => {
+      assert.ok(error instanceof BeautioError);
+      assert.equal(error.code, "INVENTORY_ITEM_TERMINAL");
+      return true;
+    },
+  );
+  assert.deepEqual(await repository.findById(discardedSource.id), discarded);
+  assert.deepEqual(await repository.findById(finishedSource.id), finished);
+  repository.close();
+});
+
+test("SQLite rejects active and missing end-use candidates without writes", async () => {
+  const repository = new SqliteInventoryRepository(":memory:");
+  const original = createInventoryItem({
+    id: "active-end-use-candidate",
+    lifecycleStatus: "opened",
+    openedOn: "2026-08-01",
+  });
+  await repository.seedInventoryItem(original);
+
+  await assert.rejects(repository.endInventoryItem(original), (error: unknown) => {
+    assert.ok(error instanceof BeautioError);
+    assert.equal(error.code, "INVALID_INPUT");
+    return true;
+  });
+  await assert.rejects(
+    repository.endInventoryItem(
+      endInventoryItem(
+        createInventoryItem({
+          id: "missing-end-use-candidate",
+          lifecycleStatus: "opened",
+          openedOn: "2026-08-01",
+        }),
+        { lifecycleStatus: "finished" },
+      ),
+    ),
+    (error: unknown) => {
+      assert.ok(error instanceof BeautioError);
+      assert.equal(error.code, "INVENTORY_ITEM_NOT_FOUND");
+      return true;
+    },
+  );
+  assert.deepEqual(await repository.findById(original.id), original);
+  repository.close();
+});
+
+test("SQLite constrains remaining snapshots to integer percentages", async (context) => {
+  const directory = await mkdtemp(join(tmpdir(), "beautio-end-use-range-"));
+  const databasePath = join(directory, "inventory.sqlite");
+  context.after(async () => {
+    await rm(directory, { recursive: true, force: true });
+  });
+  const original = createInventoryItem({
+    id: "strict-remaining",
+    lifecycleStatus: "opened",
+    openedOn: "2026-08-01",
+  });
+  const seeding = new SqliteInventoryRepository(databasePath);
+  await seeding.seedInventoryItem(original);
+  seeding.close();
+
+  const database = new DatabaseSync(databasePath);
+  for (const invalid of [-1, 101, 12.5]) {
+    assert.throws(
+      () =>
+        database
+          .prepare(
+            `UPDATE inventory_items
+            SET lifecycle_status = 'discarded', remaining_percent_estimate = ?
+            WHERE id = ?`,
+          )
+          .run(invalid, original.id),
+    );
+  }
+  assert.throws(() =>
+    database
+      .prepare(
+        "UPDATE inventory_items SET remaining_percent_estimate = 35 WHERE id = ?",
+      )
+      .run(original.id),
+  );
+  assert.throws(() =>
+    database
+      .prepare(
+        `UPDATE inventory_items
+        SET lifecycle_status = 'finished', remaining_percent_estimate = 35
+        WHERE id = ?`,
+      )
+      .run(original.id),
+  );
+  const unchanged = database
+    .prepare(
+      "SELECT lifecycle_status, remaining_percent_estimate FROM inventory_items WHERE id = ?",
+    )
+    .get(original.id);
+  assert.ok(unchanged);
+  assert.deepEqual({ ...unchanged }, {
+    lifecycle_status: "opened",
+    remaining_percent_estimate: null,
+  });
+  database
+    .prepare(
+      `UPDATE inventory_items
+      SET lifecycle_status = 'discarded', remaining_percent_estimate = 35
+      WHERE id = ?`,
+    )
+    .run(original.id);
+  database.close();
+
+  const reopened = new SqliteInventoryRepository(databasePath);
+  const committed = await reopened.findById(original.id);
+  assert.equal(committed?.lifecycleStatus, "discarded");
+  assert.equal(committed?.remainingPercentEstimate, 35);
+  assert.equal(committed?.openedOn, original.openedOn);
+  reopened.close();
+});
+
+test("SQLite rolls back a failed end-use update without partial lifecycle facts", async (context) => {
+  const directory = await mkdtemp(join(tmpdir(), "beautio-end-use-rollback-"));
+  const databasePath = join(directory, "inventory.sqlite");
+  context.after(async () => {
+    await rm(directory, { recursive: true, force: true });
+  });
+  const original = createInventoryItem({
+    id: "failed-end-use",
+    lifecycleStatus: "opened",
+    openedOn: "2026-08-01",
+    customNotes: "Must survive",
+  });
+  const seeding = new SqliteInventoryRepository(databasePath);
+  await seeding.seedInventoryItem(original);
+  seeding.close();
+
+  const triggerDatabase = new DatabaseSync(databasePath);
+  triggerDatabase.exec(`
+    CREATE TRIGGER reject_end_use
+    BEFORE UPDATE OF lifecycle_status ON inventory_items
+    WHEN NEW.id = 'failed-end-use'
+    BEGIN
+      SELECT RAISE(ABORT, 'forced end-use failure');
+    END;
+  `);
+  triggerDatabase.close();
+
+  const repository = new SqliteInventoryRepository(databasePath);
+  await assert.rejects(
+    repository.endInventoryItem(
+      endInventoryItem(original, {
+        lifecycleStatus: "discarded",
+        remainingPercentEstimate: 70,
+      }),
+    ),
+    /forced end-use failure/u,
+  );
+  assert.deepEqual(await repository.findById(original.id), original);
+  repository.close();
+
+  const reopened = new SqliteInventoryRepository(databasePath);
+  assert.deepEqual(await reopened.findById(original.id), original);
+  reopened.close();
 });
 
 test("SQLite lists inventory in stable identifier order", async (context) => {
@@ -124,6 +539,7 @@ test("SQLite migrates a legacy inventory database without changing its row", asy
     paoDurationMonths: 6,
     paoDeadline: "2027-02-18",
     usableUntil: "2027-01-31",
+    remainingPercentEstimate: null,
     customNotes: null,
   });
   repository.close();
@@ -182,6 +598,7 @@ test("SQLite adds a nullable image reference to an existing Product table", asyn
     brand: null,
     category: "serum",
     sizeLabel: "30 ml",
+    paoDurationMonths: null,
     imageAssetId: null,
     imageRef: null,
     ingredientListText: null,
@@ -250,6 +667,7 @@ test("BD-DATA-002 migrates the 4ef93b5 schema without changing legacy image_ref"
     brand: null,
     category: "serum",
     sizeLabel: "30 ml",
+    paoDurationMonths: 6,
     imageAssetId: null,
     imageRef: "/local-assets/baseline.webp",
     ingredientListText: null,
@@ -344,6 +762,7 @@ test("BD-DATA-004 migrates managed-image production shape without changing assoc
     brand: null,
     category: null,
     sizeLabel: "30 ml",
+    paoDurationMonths: null,
     imageAssetId: "managed-asset",
     imageRef: null,
     ingredientListText: null,
@@ -1155,6 +1574,7 @@ test("BD-DATA-002 replacing a Product image atomically restarts the old asset cl
     brand: "Beautio Lab",
     category: null,
     sizeLabel: null,
+    paoDurationMonths: null,
     imageAssetId: newAsset.id,
     imageRef: null,
     ingredientListText: "Water, Glycerin",

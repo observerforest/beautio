@@ -6,10 +6,15 @@ import type {
   InventoryItemCustomNotesPersistenceInput,
   ProductFactsPersistenceInput,
   ProductImagePersistenceInput,
+  RecordProductOpenedPersistenceInput,
+  RecordProductOpenedPersistenceResult,
 } from "@beautio/application";
 import {
   BeautioError,
   createInventoryItem,
+  endInventoryItem as endInventoryItemTransition,
+  openInventoryItem,
+  updateInventoryItemPao,
   type ImageAsset,
   type InventoryItem,
   type Product,
@@ -40,7 +45,11 @@ import {
 } from "./records.ts";
 import { applySchema } from "./schema.ts";
 
-export type { InventoryImportData, InventoryImportResult } from "./import.ts";
+export type {
+  InventoryImportData,
+  InventoryImportProduct,
+  InventoryImportResult,
+} from "./import.ts";
 
 export class SqliteInventoryRepository implements BackupInventoryRepository {
   readonly #database: DatabaseSync;
@@ -79,6 +88,7 @@ export class SqliteInventoryRepository implements BackupInventoryRepository {
           pao_duration_months,
           pao_deadline,
           usable_until,
+          remaining_percent_estimate,
           custom_notes
         FROM inventory_items
         ORDER BY id ASC`,
@@ -100,6 +110,7 @@ export class SqliteInventoryRepository implements BackupInventoryRepository {
             brand,
             category,
             size_label,
+            pao_duration_months,
             image_asset_id,
             image_ref,
             ingredient_list_text,
@@ -121,6 +132,7 @@ export class SqliteInventoryRepository implements BackupInventoryRepository {
             pao_duration_months,
             pao_deadline,
             usable_until,
+            remaining_percent_estimate,
             custom_notes
           FROM inventory_items
           ORDER BY id ASC`,
@@ -276,7 +288,84 @@ export class SqliteInventoryRepository implements BackupInventoryRepository {
 
   /** @inheritdoc */
   async save(item: InventoryItem): Promise<void> {
-    this.updateInventoryRow(item);
+    this.inImmediateTransaction(() => {
+      const current = this.readInventoryItem(item.id);
+      if (current === null) {
+        throw new BeautioError(
+          "INVENTORY_ITEM_NOT_FOUND",
+          `inventory item ${item.id} does not exist`,
+        );
+      }
+      const product =
+        current.productId === null ? null : this.readProduct(current.productId);
+      const duration = current.paoDurationMonths ??
+        (current.lifecycleStatus === "unopened" && item.lifecycleStatus === "opened"
+          ? product?.paoDurationMonths ?? null
+          : null);
+      this.updateInventoryRow(updateInventoryItemPao(item, duration));
+    });
+  }
+
+  /** @inheritdoc */
+  async recordProductOpened(
+    input: RecordProductOpenedPersistenceInput,
+  ): Promise<RecordProductOpenedPersistenceResult> {
+    this.beginImmediateForRecordProductOpened();
+    try {
+      let current = this.readInventoryItem(input.inventoryItemId);
+      if (current === null) {
+        throw new BeautioError(
+          "INVENTORY_ITEM_NOT_FOUND",
+          `inventory item ${input.inventoryItemId} does not exist`,
+        );
+      }
+
+      if (
+        current.lifecycleStatus === "unopened" &&
+        current.paoDurationMonths === null &&
+        current.productId !== null
+      ) {
+        const product = this.readProduct(current.productId);
+        current = updateInventoryItemPao(
+          current,
+          product?.paoDurationMonths ?? null,
+        );
+      }
+
+      const transition = openInventoryItem(
+        current,
+        input.openedOn,
+        input.openedOnAccuracy,
+      );
+      if (transition.outcome === "opened") {
+        this.updateInventoryRow(transition.item);
+      }
+
+      const persisted = this.readInventoryItem(input.inventoryItemId);
+      if (
+        persisted === null ||
+        persisted.lifecycleStatus !== "opened" ||
+        persisted.openedOn !== input.openedOn ||
+        persisted.openedOnAccuracy !== input.openedOnAccuracy
+      ) {
+        throw new BeautioError(
+          "INTERNAL_ERROR",
+          "database write could not be verified",
+        );
+      }
+      this.#database.exec("COMMIT");
+      return { outcome: transition.outcome, item: persisted };
+    } catch (error) {
+      try {
+        this.#database.exec("ROLLBACK");
+      } catch {
+        throw new BeautioError(
+          "INTERNAL_ERROR",
+          "database transaction recovery failed",
+        );
+      }
+      throw error;
+    }
   }
 
   /** @inheritdoc */
@@ -293,10 +382,9 @@ export class SqliteInventoryRepository implements BackupInventoryRepository {
       }
 
       for (const item of input.inventoryItems) {
-        if (
-          item.productId === null ||
-          this.readProduct(item.productId) === null
-        ) {
+        const product =
+          item.productId === null ? null : this.readProduct(item.productId);
+        if (product === null) {
           throw new BeautioError(
             "PRODUCT_NOT_FOUND",
             `Product ${item.productId ?? ""} does not exist`,
@@ -304,7 +392,7 @@ export class SqliteInventoryRepository implements BackupInventoryRepository {
         }
         this.insertInventoryItem(
           createInventoryItem({
-            ...item,
+            ...this.inheritProductPao(item, product),
             createdAt: input.now,
           }),
         );
@@ -340,6 +428,7 @@ export class SqliteInventoryRepository implements BackupInventoryRepository {
             brand = ?,
             category = ?,
             size_label = ?,
+            pao_duration_months = ?,
             image_asset_id = ?,
             ingredient_list_text = ?,
             shared_notes = ?
@@ -351,6 +440,9 @@ export class SqliteInventoryRepository implements BackupInventoryRepository {
           input.brand === undefined ? existing.brand : input.brand,
           input.category,
           input.sizeLabel,
+          input.paoDurationMonths === undefined
+            ? existing.paoDurationMonths
+            : input.paoDurationMonths,
           input.imageAssetId,
           input.ingredientListText,
           input.sharedNotes,
@@ -361,6 +453,23 @@ export class SqliteInventoryRepository implements BackupInventoryRepository {
           "PRODUCT_NOT_FOUND",
           `Product ${input.productId} does not exist`,
         );
+      }
+      if (input.paoDurationMonths !== undefined) {
+        const bottles = this.#database
+          .prepare("SELECT id FROM inventory_items WHERE product_id = ?")
+          .all(input.productId) as unknown as readonly { readonly id: string }[];
+        for (const bottle of bottles) {
+          const item = this.readInventoryItem(bottle.id);
+          if (item === null) {
+            throw new BeautioError(
+              "INTERNAL_ERROR",
+              "associated inventory item could not be read",
+            );
+          }
+          this.updateInventoryRow(
+            updateInventoryItemPao(item, input.paoDurationMonths),
+          );
+        }
       }
     });
 
@@ -413,14 +522,84 @@ export class SqliteInventoryRepository implements BackupInventoryRepository {
   }
 
   /** @inheritdoc */
-  async updateInventoryItemFacts(item: InventoryItem): Promise<InventoryItem> {
+  async updateInventoryItemFacts(
+    item: InventoryItem,
+    expectedPaoDurationMonths?: number | null,
+  ): Promise<InventoryItem> {
     return this.inImmediateTransaction(() => {
-      this.updateInventoryRow(item);
+      const existing = this.readInventoryItem(item.id);
+      if (existing === null) {
+        throw new BeautioError(
+          "INVENTORY_ITEM_NOT_FOUND",
+          `inventory item ${item.id} does not exist`,
+        );
+      }
+      if (
+        expectedPaoDurationMonths !== undefined &&
+        existing.paoDurationMonths !== expectedPaoDurationMonths
+      ) {
+        throw new BeautioError(
+          "BATCH_CONFLICT",
+          "bottle PAO changed while its facts were being edited",
+        );
+      }
+      const product =
+        existing.productId === null ? null : this.readProduct(existing.productId);
+      const openingWithoutPao =
+        existing.lifecycleStatus === "unopened" &&
+        item.lifecycleStatus === "opened" &&
+        existing.paoDurationMonths === null &&
+        item.paoDurationMonths === null;
+      const durationChanged = item.paoDurationMonths !== existing.paoDurationMonths;
+      this.updateInventoryRow(
+        product !== null && (openingWithoutPao || durationChanged)
+          ? this.inheritProductPao(item, product)
+          : item,
+      );
       const committed = this.readInventoryItem(item.id);
       if (committed === null) {
         throw new BeautioError(
           "INTERNAL_ERROR",
           "updated inventory item could not be re-read",
+        );
+      }
+      return committed;
+    });
+  }
+
+  /** @inheritdoc */
+  async endInventoryItem(item: InventoryItem): Promise<InventoryItem> {
+    return this.inImmediateTransaction(() => {
+      const current = this.readInventoryItem(item.id);
+      if (current === null) {
+        throw new BeautioError(
+          "INVENTORY_ITEM_NOT_FOUND",
+          `inventory item ${item.id} does not exist`,
+        );
+      }
+      let terminal: InventoryItem;
+      if (item.lifecycleStatus === "finished") {
+        terminal = endInventoryItemTransition(current, {
+          lifecycleStatus: "finished",
+        });
+      } else if (item.lifecycleStatus === "discarded") {
+        terminal = endInventoryItemTransition(current, {
+          lifecycleStatus: "discarded",
+          remainingPercentEstimate: item.remainingPercentEstimate,
+        });
+      } else {
+        throw new BeautioError(
+          "INVALID_INPUT",
+          "end-use persistence requires a terminal inventory item",
+        );
+      }
+
+      this.updateInventoryRow(terminal);
+      const committed = this.readInventoryItem(item.id);
+      if (committed === null) {
+        throw new BeautioError(
+          "INTERNAL_ERROR",
+          "ended inventory item could not be re-read",
         );
       }
       return committed;
@@ -640,6 +819,22 @@ export class SqliteInventoryRepository implements BackupInventoryRepository {
     return readProductRecord(this.#database, productId);
   }
 
+  private inheritProductPao(item: InventoryItem, product: Product): InventoryItem {
+    if (product.paoDurationMonths === null) {
+      return item;
+    }
+    if (
+      item.paoDurationMonths !== null &&
+      item.paoDurationMonths !== product.paoDurationMonths
+    ) {
+      throw new BeautioError(
+        "INVALID_INPUT",
+        "bottle pao_duration_months conflicts with the shared Product PAO",
+      );
+    }
+    return updateInventoryItemPao(item, product.paoDurationMonths);
+  }
+
   private readImageAsset(imageAssetId: string): ImageAsset | null {
     return readImageAssetRecord(this.#database, imageAssetId);
   }
@@ -776,4 +971,33 @@ export class SqliteInventoryRepository implements BackupInventoryRepository {
       throw error;
     }
   }
+
+  private beginImmediateForRecordProductOpened(): void {
+    try {
+      this.#database.exec("BEGIN IMMEDIATE");
+    } catch (error) {
+      if (isSqliteBusyOrLocked(error)) {
+        throw new BeautioError(
+          "BATCH_CONFLICT",
+          "inventory is busy; no write was performed",
+        );
+      }
+      throw new BeautioError("INTERNAL_ERROR", "database write failed");
+    }
+  }
+}
+
+function isSqliteBusyOrLocked(
+  error: unknown,
+): error is { readonly errcode: number } {
+  if (
+    typeof error !== "object" ||
+    error === null ||
+    !("errcode" in error) ||
+    typeof error.errcode !== "number"
+  ) {
+    return false;
+  }
+  const primaryResultCode = error.errcode & 0xff;
+  return primaryResultCode === 5 || primaryResultCode === 6;
 }

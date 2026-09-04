@@ -6,6 +6,12 @@ interface TableInfoRow {
   readonly notnull: 0 | 1;
 }
 
+/**
+ * Creates current tables and applies preserving, repeat-safe schema migrations.
+ *
+ * @param database - Open SQLite connection initialized before serving requests.
+ * @returns Nothing after migration; shared PAO backfill runs only when adding its column.
+ */
 export function applySchema(database: DatabaseSync): void {
   database.exec("PRAGMA foreign_keys = OFF");
   createCurrentTables(database);
@@ -17,6 +23,8 @@ export function applySchema(database: DatabaseSync): void {
   addBrandToLegacyProducts(database);
   addAliasToLegacyProducts(database);
   addCustomNotesToLegacyInventory(database);
+  addEndUseSnapshotToLegacyInventory(database);
+  addProductPaoFromLegacyInventory(database);
   rebuildProductsForNullableCategory(database);
   addInventoryCreationTimestamp(database);
   database.exec(`
@@ -49,6 +57,10 @@ function createCurrentTables(database: DatabaseSync): void {
       ),
       size_label TEXT CHECK (
         size_label IS NULL OR length(trim(size_label)) > 0
+      ),
+      pao_duration_months INTEGER CHECK (
+        pao_duration_months IS NULL OR
+        (pao_duration_months >= 1 AND pao_duration_months <= 120)
       ),
       image_asset_id TEXT REFERENCES image_assets(id),
       image_ref TEXT CHECK (
@@ -89,6 +101,14 @@ function createCurrentTables(database: DatabaseSync): void {
       ),
       pao_deadline TEXT,
       usable_until TEXT,
+      remaining_percent_estimate INTEGER CHECK (
+        remaining_percent_estimate IS NULL OR (
+          lifecycle_status IN ('finished', 'discarded') AND
+          remaining_percent_estimate >= 0 AND
+          remaining_percent_estimate <= 100 AND
+          (lifecycle_status != 'finished' OR remaining_percent_estimate = 0)
+        )
+      ),
       custom_notes TEXT CHECK (
         custom_notes IS NULL OR (
           length(trim(custom_notes)) > 0 AND
@@ -225,6 +245,22 @@ function addCustomNotesToLegacyInventory(database: DatabaseSync): void {
   );
 }
 
+function addEndUseSnapshotToLegacyInventory(database: DatabaseSync): void {
+  if (tableHasColumn(database, "inventory_items", "remaining_percent_estimate")) {
+    return;
+  }
+  database.exec(
+    `ALTER TABLE inventory_items ADD COLUMN remaining_percent_estimate INTEGER CHECK (
+      remaining_percent_estimate IS NULL OR (
+        lifecycle_status IN ('finished', 'discarded') AND
+        remaining_percent_estimate >= 0 AND
+        remaining_percent_estimate <= 100 AND
+        (lifecycle_status != 'finished' OR remaining_percent_estimate = 0)
+      )
+    )`,
+  );
+}
+
 function rebuildProductsForNullableCategory(database: DatabaseSync): void {
   const category = tableColumns(database, "products").find(
     (column) => column.name === "category",
@@ -253,6 +289,10 @@ function rebuildProductsForNullableCategory(database: DatabaseSync): void {
       size_label TEXT CHECK (
         size_label IS NULL OR length(trim(size_label)) > 0
       ),
+      pao_duration_months INTEGER CHECK (
+        pao_duration_months IS NULL OR
+        (pao_duration_months >= 1 AND pao_duration_months <= 120)
+      ),
       image_asset_id TEXT REFERENCES image_assets(id),
       image_ref TEXT CHECK (
         image_ref IS NULL OR length(trim(image_ref)) > 0
@@ -277,6 +317,7 @@ function rebuildProductsForNullableCategory(database: DatabaseSync): void {
       brand,
       category,
       size_label,
+      pao_duration_months,
       image_asset_id,
       image_ref,
       ingredient_list_text,
@@ -289,6 +330,7 @@ function rebuildProductsForNullableCategory(database: DatabaseSync): void {
       brand,
       category,
       size_label,
+      pao_duration_months,
       image_asset_id,
       image_ref,
       ingredient_list_text,
@@ -298,6 +340,32 @@ function rebuildProductsForNullableCategory(database: DatabaseSync): void {
     ALTER TABLE products_next RENAME TO products;
     COMMIT;
   `);
+}
+
+function addProductPaoFromLegacyInventory(database: DatabaseSync): void {
+  if (tableHasColumn(database, "products", "pao_duration_months")) {
+    return;
+  }
+  database.exec("BEGIN IMMEDIATE");
+  try {
+    database.exec(`
+      ALTER TABLE products ADD COLUMN pao_duration_months INTEGER CHECK (
+        pao_duration_months IS NULL OR
+        (pao_duration_months >= 1 AND pao_duration_months <= 120)
+      );
+      UPDATE products
+      SET pao_duration_months = (
+        SELECT MIN(inventory_items.pao_duration_months)
+        FROM inventory_items
+        WHERE inventory_items.product_id = products.id
+        HAVING COUNT(DISTINCT inventory_items.pao_duration_months) = 1
+      );
+    `);
+    database.exec("COMMIT");
+  } catch (error) {
+    database.exec("ROLLBACK");
+    throw error;
+  }
 }
 
 function addInventoryCreationTimestamp(database: DatabaseSync): void {

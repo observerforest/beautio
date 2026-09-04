@@ -4,6 +4,8 @@ import {
   BeautioError,
   createInventoryItem,
   createProduct,
+  openInventoryItem,
+  updateInventoryItemPao,
   type ImageAsset,
   type InventoryItem,
   type Product,
@@ -17,18 +19,24 @@ import {
   type InventoryItemCustomNotesPersistenceInput,
   type ProductFactsPersistenceInput,
   type ProductImagePersistenceInput,
+  type RecordProductOpenedPersistenceInput,
+  type RecordProductOpenedPersistenceResult,
 } from "../src/index.ts";
 
 class RecordingInventoryRepository implements InventoryRepository {
   item: InventoryItem | null;
   readonly products: Map<string, Product>;
   saveCalls = 0;
+  recordProductOpenedCalls = 0;
+  recordProductOpenedUpdateCalls = 0;
   createBatchCalls = 0;
   readonly updateProductFactsCalls: ProductFactsPersistenceInput[] = [];
   readonly updateInventoryItemCustomNotesCalls:
     InventoryItemCustomNotesPersistenceInput[] = [];
   readonly setProductDisplayImageCalls: ProductImagePersistenceInput[] = [];
   updateInventoryItemFactsCalls = 0;
+  endInventoryItemCalls = 0;
+  endInventoryItemFailure: Error | null = null;
 
   constructor(item: InventoryItem | null, products: readonly Product[] = []) {
     this.item = item;
@@ -50,6 +58,39 @@ class RecordingInventoryRepository implements InventoryRepository {
   async save(item: InventoryItem): Promise<void> {
     this.saveCalls += 1;
     this.item = item;
+  }
+
+  async recordProductOpened(
+    input: RecordProductOpenedPersistenceInput,
+  ): Promise<RecordProductOpenedPersistenceResult> {
+    this.recordProductOpenedCalls += 1;
+    if (this.item === null || this.item.id !== input.inventoryItemId) {
+      throw new BeautioError(
+        "INVENTORY_ITEM_NOT_FOUND",
+        `inventory item ${input.inventoryItemId} does not exist`,
+      );
+    }
+    let current = this.item;
+    if (
+      current.lifecycleStatus === "unopened" &&
+      current.paoDurationMonths === null &&
+      current.productId !== null
+    ) {
+      current = updateInventoryItemPao(
+        current,
+        this.products.get(current.productId)?.paoDurationMonths ?? null,
+      );
+    }
+    const transition = openInventoryItem(
+      current,
+      input.openedOn,
+      input.openedOnAccuracy,
+    );
+    if (transition.outcome === "opened") {
+      this.recordProductOpenedUpdateCalls += 1;
+      this.item = transition.item;
+    }
+    return { outcome: transition.outcome, item: this.item };
   }
 
   async createBatch(): Promise<void> {
@@ -74,6 +115,7 @@ class RecordingInventoryRepository implements InventoryRepository {
       brand: input.brand === undefined ? existing.brand : input.brand,
       category: input.category,
       sizeLabel: input.sizeLabel,
+      paoDurationMonths: input.paoDurationMonths === undefined ? existing.paoDurationMonths : input.paoDurationMonths,
       imageAssetId: input.imageAssetId,
       imageRef: existing.imageRef,
       ingredientListText: input.ingredientListText,
@@ -99,6 +141,15 @@ class RecordingInventoryRepository implements InventoryRepository {
 
   async updateInventoryItemFacts(item: InventoryItem): Promise<InventoryItem> {
     this.updateInventoryItemFactsCalls += 1;
+    this.item = item;
+    return item;
+  }
+
+  async endInventoryItem(item: InventoryItem): Promise<InventoryItem> {
+    this.endInventoryItemCalls += 1;
+    if (this.endInventoryItemFailure !== null) {
+      throw this.endInventoryItemFailure;
+    }
     this.item = item;
     return item;
   }
@@ -258,14 +309,19 @@ test("successful write persists once and same-date retry does not save twice", a
   const input = {
     inventory_item_id: "inventory-1",
     opened_on: "2026-08-18",
+    opened_on_accuracy: "exact",
   } as const;
 
   const first = await service.recordProductOpened(input);
   const retry = await service.recordProductOpened(input);
 
   assert.equal(first.outcome, "opened");
+  assert.equal(first.opened_on_accuracy, "exact");
   assert.equal(retry.outcome, "already_opened");
-  assert.equal(repository.saveCalls, 1);
+  assert.equal(retry.opened_on_accuracy, "exact");
+  assert.equal(repository.recordProductOpenedCalls, 2);
+  assert.equal(repository.recordProductOpenedUpdateCalls, 1);
+  assert.equal(repository.saveCalls, 0);
 });
 
 test("BD-DATA-001 negative 1: missing, malformed, and impossible dates do not write", async () => {
@@ -280,11 +336,17 @@ test("BD-DATA-001 negative 1: missing, malformed, and impossible dates do not wr
     { inventory_item_id: "inventory-invalid" },
     {
       inventory_item_id: "inventory-invalid",
+      opened_on: "2026-08-18",
+    },
+    {
+      inventory_item_id: "inventory-invalid",
       opened_on: "18-08-2026",
+      opened_on_accuracy: "exact",
     },
     {
       inventory_item_id: "inventory-invalid",
       opened_on: "2026-02-30",
+      opened_on_accuracy: "estimated",
     },
   ];
 
@@ -294,6 +356,7 @@ test("BD-DATA-001 negative 1: missing, malformed, and impossible dates do not wr
       hasBeautioCode("INVALID_INPUT"),
     );
   }
+  assert.equal(repository.recordProductOpenedCalls, 0);
   assert.equal(repository.saveCalls, 0);
   assert.equal(repository.item?.lifecycleStatus, "unopened");
 });
@@ -316,9 +379,11 @@ test("BD-DATA-001 negative 2: conflicting date has no write side effect", async 
     service.recordProductOpened({
       inventory_item_id: "inventory-conflict",
       opened_on: "2026-08-19",
+      opened_on_accuracy: "exact",
     }),
     hasBeautioCode("OPENED_ON_CONFLICT"),
   );
+  assert.equal(repository.recordProductOpenedUpdateCalls, 0);
   assert.equal(repository.saveCalls, 0);
   assert.equal(repository.item?.openedOn, "2026-08-18");
 });
@@ -337,9 +402,11 @@ test("BD-DATA-001 negative 3: terminal state has no write side effect", async ()
       service.recordProductOpened({
         inventory_item_id: `inventory-${lifecycleStatus}`,
         opened_on: "2026-08-18",
+        opened_on_accuracy: "exact",
       }),
       hasBeautioCode("INVENTORY_ITEM_TERMINAL"),
     );
+    assert.equal(repository.recordProductOpenedUpdateCalls, 0);
     assert.equal(repository.saveCalls, 0);
     assert.equal(repository.item?.lifecycleStatus, lifecycleStatus);
   }
@@ -353,11 +420,224 @@ test("BD-DATA-001 negative 4: missing item is not implicitly created", async () 
     service.recordProductOpened({
       inventory_item_id: "missing-inventory",
       opened_on: "2026-08-18",
+      opened_on_accuracy: "exact",
     }),
     hasBeautioCode("INVENTORY_ITEM_NOT_FOUND"),
   );
+  assert.equal(repository.recordProductOpenedUpdateCalls, 0);
   assert.equal(repository.saveCalls, 0);
   assert.equal(repository.item, null);
+});
+
+test("end use persists finished, discarded, and unknown remaining snapshots once", async () => {
+  const scenarios = [
+    {
+      id: "finish-bottle",
+      input: { as_of: "2026-09-01", lifecycle_status: "finished" } as const,
+      lifecycleStatus: "finished" as const,
+      remainingPercentEstimate: 0,
+    },
+    {
+      id: "discard-bottle",
+      input: {
+        as_of: "2026-09-01",
+        lifecycle_status: "discarded",
+        remaining_percent_estimate: 35,
+      } as const,
+      lifecycleStatus: "discarded" as const,
+      remainingPercentEstimate: 35,
+    },
+    {
+      id: "discard-unknown-bottle",
+      input: {
+        as_of: "2026-09-01",
+        lifecycle_status: "discarded",
+        remaining_percent_estimate: null,
+      } as const,
+      lifecycleStatus: "discarded" as const,
+      remainingPercentEstimate: null,
+    },
+  ];
+
+  for (const scenario of scenarios) {
+    const repository = new RecordingInventoryRepository(
+      createInventoryItem({
+        id: scenario.id,
+        productId: "product-end-use",
+        lifecycleStatus: "opened",
+        openedOn: "2026-08-01",
+        customNotes: "Preserve this note",
+      }),
+    );
+    const service = new InventoryApplicationService(repository);
+
+    const result = await service.endInventoryItem(scenario.id, scenario.input);
+
+    assert.equal(result.lifecycle_status, scenario.lifecycleStatus);
+    assert.equal(
+      result.remaining_percent_estimate,
+      scenario.remainingPercentEstimate,
+    );
+    assert.equal(result.opened_on, "2026-08-01");
+    assert.equal(result.custom_notes, "Preserve this note");
+    assert.equal(repository.endInventoryItemCalls, 1);
+    assert.equal(repository.saveCalls, 0);
+    assert.equal(repository.updateInventoryItemFactsCalls, 0);
+    assert.equal(repository.item?.lifecycleStatus, scenario.lifecycleStatus);
+    assert.equal(
+      repository.item?.remainingPercentEstimate,
+      scenario.remainingPercentEstimate,
+    );
+  }
+});
+
+test("end use supports an unlinked legacy bottle without inventing a Product", async () => {
+  const repository = new RecordingInventoryRepository(
+    createInventoryItem({
+      id: "unlinked-end-use",
+      lifecycleStatus: "opened",
+      openedOn: "2026-08-01",
+    }),
+  );
+
+  const result = await new InventoryApplicationService(
+    repository,
+  ).endInventoryItem("unlinked-end-use", {
+    as_of: "2026-09-01",
+    lifecycle_status: "finished",
+  });
+
+  assert.equal(result.product_id, null);
+  assert.equal(result.lifecycle_status, "finished");
+  assert.equal(result.remaining_percent_estimate, 0);
+  assert.equal(repository.endInventoryItemCalls, 1);
+});
+
+test("invalid end-use commands never reach persistence", async () => {
+  const invalidInputs: readonly unknown[] = [
+    {
+      as_of: "2026-09-01",
+      lifecycle_status: "discarded",
+      remaining_percent_estimate: -1,
+    },
+    {
+      as_of: "2026-09-01",
+      lifecycle_status: "discarded",
+      remaining_percent_estimate: 101,
+    },
+    {
+      as_of: "2026-09-01",
+      lifecycle_status: "discarded",
+      remaining_percent_estimate: 12.5,
+    },
+    { as_of: "2026-09-01", lifecycle_status: "discarded" },
+    {
+      as_of: "2026-09-01",
+      lifecycle_status: "finished",
+      remaining_percent_estimate: 0,
+    },
+  ];
+  const original = createInventoryItem({
+    id: "invalid-end-use",
+    productId: "product-end-use",
+    lifecycleStatus: "opened",
+    openedOn: "2026-08-01",
+  });
+  const repository = new RecordingInventoryRepository(original);
+  const service = new InventoryApplicationService(repository);
+
+  for (const invalidInput of invalidInputs) {
+    await assert.rejects(
+      service.endInventoryItem(original.id, invalidInput),
+      hasBeautioCode("INVALID_INPUT"),
+    );
+  }
+
+  assert.equal(repository.endInventoryItemCalls, 0);
+  assert.equal(repository.item, original);
+});
+
+test("unopened, repeated terminal, and missing end-use targets have no write side effect", async () => {
+  const scenarios = [
+    {
+      item: createInventoryItem({
+        id: "unopened-end-use",
+        productId: "product-end-use",
+        lifecycleStatus: "unopened",
+      }),
+      code: "INVALID_INPUT" as const,
+    },
+    {
+      item: createInventoryItem({
+        id: "finished-end-use",
+        productId: "product-end-use",
+        lifecycleStatus: "finished",
+        remainingPercentEstimate: 0,
+      }),
+      code: "INVENTORY_ITEM_TERMINAL" as const,
+    },
+    {
+      item: createInventoryItem({
+        id: "discarded-end-use",
+        productId: "product-end-use",
+        lifecycleStatus: "discarded",
+        remainingPercentEstimate: 40,
+      }),
+      code: "INVENTORY_ITEM_TERMINAL" as const,
+    },
+  ];
+
+  for (const scenario of scenarios) {
+    const repository = new RecordingInventoryRepository(scenario.item);
+    const service = new InventoryApplicationService(repository);
+
+    await assert.rejects(
+      service.endInventoryItem(scenario.item.id, {
+        as_of: "2026-09-01",
+        lifecycle_status: "finished",
+      }),
+      hasBeautioCode(scenario.code),
+    );
+    assert.equal(repository.endInventoryItemCalls, 0);
+    assert.equal(repository.item, scenario.item);
+  }
+
+  const missingRepository = new RecordingInventoryRepository(null);
+  await assert.rejects(
+    new InventoryApplicationService(missingRepository).endInventoryItem(
+      "missing-end-use",
+      { as_of: "2026-09-01", lifecycle_status: "finished" },
+    ),
+    hasBeautioCode("INVENTORY_ITEM_NOT_FOUND"),
+  );
+  assert.equal(missingRepository.endInventoryItemCalls, 0);
+  assert.equal(missingRepository.item, null);
+});
+
+test("end-use persistence failure leaves the previously read item unchanged", async () => {
+  const original = createInventoryItem({
+    id: "failed-end-use",
+    productId: "product-end-use",
+    lifecycleStatus: "opened",
+    openedOn: "2026-08-01",
+  });
+  const repository = new RecordingInventoryRepository(original);
+  repository.endInventoryItemFailure = new Error("test end-use write failure");
+  const service = new InventoryApplicationService(repository);
+
+  await assert.rejects(
+    service.endInventoryItem(original.id, {
+      as_of: "2026-09-01",
+      lifecycle_status: "discarded",
+      remaining_percent_estimate: 25,
+    }),
+    /test end-use write failure/,
+  );
+
+  assert.equal(repository.endInventoryItemCalls, 1);
+  assert.equal(repository.saveCalls, 0);
+  assert.equal(repository.updateInventoryItemFactsCalls, 0);
+  assert.equal(repository.item, original);
 });
 
 test("inventory list is read-only and derives status for the explicit date", async () => {
@@ -390,6 +670,7 @@ test("inventory list is read-only and derives status for the explicit date", asy
         pao_deadline: "2027-02-18",
         pao_deadline_accuracy: "legacy_unknown",
         usable_until: "2027-01-31",
+        remaining_percent_estimate: null,
         usability_status: "expired",
         warnings: ["already_expired"],
         custom_notes: null,
@@ -438,6 +719,9 @@ test("inventory list keeps bottles separate while sharing product facts", async 
       return id === product.id ? product : null;
     },
     async save() {},
+    async recordProductOpened() {
+      throw new Error("not used by this test repository");
+    },
     async createBatch() {
       throw new Error("not used by this test repository");
     },
@@ -448,6 +732,9 @@ test("inventory list keeps bottles separate while sharing product facts", async 
       throw new Error("not used by this test repository");
     },
     async updateInventoryItemFacts() {
+      throw new Error("not used by this test repository");
+    },
+    async endInventoryItem() {
       throw new Error("not used by this test repository");
     },
     async updateInventoryItemCustomNotes() {
@@ -592,6 +879,7 @@ test("BD-DATA-005 search matches every frozen literal field without returning lo
         opened_on: "2026-08-20",
         expires_on: null,
         usable_until: "2027-08-20",
+        remaining_percent_estimate: null,
         has_image: true,
         derived_status: null,
       },
@@ -602,6 +890,7 @@ test("BD-DATA-005 search matches every frozen literal field without returning lo
   assert.equal(repository.updateProductFactsCalls.length, 0);
   assert.equal(repository.setProductDisplayImageCalls.length, 0);
   assert.equal(repository.updateInventoryItemFactsCalls, 0);
+  assert.equal(repository.endInventoryItemCalls, 0);
   assert.equal(repository.updateInventoryItemCustomNotesCalls.length, 0);
   assert.equal(repository.item, item);
   assert.equal("ingredient_list_text" in result.items[0]!, false);
@@ -721,6 +1010,7 @@ test("BD-DATA-005 fetch returns complete private facts without implicit status o
         brand: "Beautio Lab",
         category: "serum",
         size_label: "15 ml",
+        pao_duration_months: null,
         ingredient_list_text: "Water, Glycerin",
         shared_notes: "Shared note",
         has_image: true,
@@ -733,6 +1023,7 @@ test("BD-DATA-005 fetch returns complete private facts without implicit status o
       pao_deadline: null,
       pao_deadline_accuracy: null,
       usable_until: "2027-01-01",
+      remaining_percent_estimate: null,
       custom_notes: "Bottle note",
       derived_status: null,
     },
@@ -744,6 +1035,7 @@ test("BD-DATA-005 fetch returns complete private facts without implicit status o
   assert.equal(repository.updateProductFactsCalls.length, 0);
   assert.equal(repository.setProductDisplayImageCalls.length, 0);
   assert.equal(repository.updateInventoryItemFactsCalls, 0);
+  assert.equal(repository.endInventoryItemCalls, 0);
   assert.equal(repository.updateInventoryItemCustomNotesCalls.length, 0);
   assert.equal(repository.item, item);
 });
@@ -1160,6 +1452,7 @@ test("setting a Product display image validates, timestamps, delegates, and retu
       size_label: "30 ml",
       image_asset_id: "image-asset-new",
       image_ref: "legacy-audit-value",
+      pao_duration_months: null,
       ingredient_list_text: null,
       shared_notes: null,
     },
@@ -1275,6 +1568,7 @@ function productOutput(product: Product): {
   readonly brand: string | null;
   readonly category: string | null;
   readonly size_label: string | null;
+  readonly pao_duration_months: number | null;
   readonly image_asset_id: string | null;
   readonly image_ref: string | null;
   readonly ingredient_list_text: string | null;
@@ -1287,6 +1581,7 @@ function productOutput(product: Product): {
     brand: product.brand,
     category: product.category,
     size_label: product.sizeLabel,
+    pao_duration_months: product.paoDurationMonths,
     image_asset_id: product.imageAssetId,
     image_ref: product.imageRef,
     ingredient_list_text: product.ingredientListText,

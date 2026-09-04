@@ -21,6 +21,7 @@ export interface InventoryRow {
   readonly pao_duration_months: number | null;
   readonly pao_deadline: string | null;
   readonly usable_until: string | null;
+  readonly remaining_percent_estimate: number | null;
   readonly custom_notes: string | null;
 }
 
@@ -31,6 +32,7 @@ export interface ProductRow {
   readonly brand: string | null;
   readonly category: string | null;
   readonly size_label: string | null;
+  readonly pao_duration_months: number | null;
   readonly image_asset_id: string | null;
   readonly image_ref: string | null;
   readonly ingredient_list_text: string | null;
@@ -60,10 +62,17 @@ export function mapInventoryRow(row: InventoryRow): InventoryItem {
     paoDurationMonths: row.pao_duration_months,
     paoDeadline: row.pao_deadline,
     usableUntil: row.usable_until,
+    remainingPercentEstimate: row.remaining_percent_estimate,
     customNotes: row.custom_notes,
   });
 }
 
+/**
+ * Normalizes stored shared Product facts through domain validation.
+ *
+ * @param row - Product row selected from the current SQLite schema.
+ * @returns A Product entity including the nullable shared PAO duration.
+ */
 export function mapProductRow(row: ProductRow): Product {
   return createProduct({
     id: row.id,
@@ -72,6 +81,7 @@ export function mapProductRow(row: ProductRow): Product {
     brand: row.brand,
     category: row.category,
     sizeLabel: row.size_label,
+    paoDurationMonths: row.pao_duration_months,
     imageAssetId: row.image_asset_id,
     imageRef: row.image_ref,
     ingredientListText: row.ingredient_list_text,

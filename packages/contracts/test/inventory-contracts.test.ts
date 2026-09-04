@@ -2,9 +2,15 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   createInventoryBatchInputSchema,
+  endInventoryItemInputSchema,
+  endInventoryItemOutputSchema,
   fetchInventoryInputSchema,
   fetchInventoryOutputSchema,
   inventoryListItemOutputSchema,
+  localInventoryImportSchema,
+  productOutputSchema,
+  recordProductOpenedCommandSchema,
+  recordProductOpenedInputSchema,
   searchInventoryInputSchema,
   searchInventoryOutputSchema,
   setProductDisplayImageInputSchema,
@@ -16,6 +22,67 @@ import {
   uploadProductImagesMcpInputSchema,
   uploadProductImagesOutputSchema,
 } from "../src/index.ts";
+
+test("record-open tool requires known accuracy while the internal command accepts legacy data", () => {
+  const base = {
+    inventory_item_id: "bottle-1",
+    opened_on: "2026-09-04",
+  } as const;
+  for (const opened_on_accuracy of ["exact", "estimated"] as const) {
+    assert.equal(
+      recordProductOpenedInputSchema.safeParse({
+        ...base,
+        opened_on_accuracy,
+      }).success,
+      true,
+    );
+  }
+  for (const input of [
+    base,
+    { ...base, opened_on_accuracy: "legacy_unknown" },
+    { ...base, opened_on_accuracy: null },
+    { ...base, opened_on_accuracy: undefined },
+    { ...base, opened_on_accuracy: "exact", extra: true },
+  ]) {
+    assert.equal(recordProductOpenedInputSchema.safeParse(input).success, false);
+  }
+  assert.equal(
+    recordProductOpenedCommandSchema.safeParse({
+      ...base,
+      opened_on_accuracy: "legacy_unknown",
+    }).success,
+    true,
+  );
+  assert.equal(recordProductOpenedCommandSchema.safeParse(base).success, false);
+});
+
+test("shared Product PAO inputs remain optional while output normalizes legacy omissions", () => {
+  const editable = {
+    name: "Sample serum", category: null, size_label: null, image_asset_id: null,
+    ingredient_list_text: null, shared_notes: null,
+  };
+  assert.equal(updateProductInputSchema.parse(editable).pao_duration_months, undefined);
+  for (const duration of [null, 1, 12, 120]) {
+    assert.equal(updateProductInputSchema.parse({ ...editable, pao_duration_months: duration }).pao_duration_months, duration);
+    const batch = createInventoryBatchInputSchema.parse({
+      as_of: "2026-08-31",
+      products: [{ batch_ref: "sample", name: "Sample", pao_duration_months: duration }],
+      inventory_items: [{ batch_ref: "bottle", product_ref: { kind: "new", batch_ref: "sample" }, lifecycle_status: "unopened" }],
+    });
+    assert.equal(batch.products[0]?.pao_duration_months, duration);
+  }
+  for (const invalid of [0, 121, 6.5, "6"]) {
+    assert.equal(updateProductInputSchema.safeParse({ ...editable, pao_duration_months: invalid }).success, false);
+  }
+  assert.equal(productOutputSchema.parse({ ...editable, product_id: "sample", image_ref: null }).pao_duration_months, null);
+  const legacyImport = localInventoryImportSchema.parse({
+    products: [{ id: "sample", name: "Sample serum" }], inventory_items: [],
+  });
+  assert.equal(Object.hasOwn(legacyImport.products[0] ?? {}, "pao_duration_months"), false);
+  assert.equal(localInventoryImportSchema.parse({
+    products: [{ id: "sample", name: "Sample serum", pao_duration_months: null }], inventory_items: [],
+  }).products[0]?.pao_duration_months, null);
+});
 
 test("inventory list items normalize an omitted legacy creation timestamp to null", () => {
   const item = {
@@ -29,6 +96,7 @@ test("inventory list items normalize an omitted legacy creation timestamp to nul
     pao_deadline: null,
     pao_deadline_accuracy: null,
     usable_until: null,
+    remaining_percent_estimate: null,
     usability_status: "unknown",
     warnings: [],
     custom_notes: null,
@@ -47,6 +115,15 @@ test("inventory list items normalize an omitted legacy creation timestamp to nul
   const { created_at: _createdAt, ...withoutCreationTime } = item;
   assert.equal(
     inventoryListItemOutputSchema.parse(withoutCreationTime).created_at,
+    null,
+  );
+  const {
+    remaining_percent_estimate: _remainingPercentEstimate,
+    ...withoutRemainingSnapshot
+  } = item;
+  assert.equal(
+    inventoryListItemOutputSchema.parse(withoutRemainingSnapshot)
+      .remaining_percent_estimate,
     null,
   );
 });
@@ -125,12 +202,22 @@ test("BD-DATA-005 fetch output exposes image presence without managed or legacy 
       pao_deadline: "2027-08-20",
       pao_deadline_accuracy: "estimated",
       usable_until: "2027-08-20",
+      remaining_percent_estimate: null,
       custom_notes: "Bottle note",
       derived_status: null,
     },
   };
 
   assert.equal(fetchInventoryOutputSchema.safeParse(output).success, true);
+  const {
+    remaining_percent_estimate: _remainingPercentEstimate,
+    ...legacyInventoryItem
+  } = output.inventory_item;
+  assert.equal(
+    fetchInventoryOutputSchema.parse({ inventory_item: legacyInventoryItem })
+      .inventory_item.remaining_percent_estimate,
+    null,
+  );
   const legacyCompatible = {
     ...output,
     inventory_item: {
@@ -204,6 +291,7 @@ test("BD-DATA-005 search output keeps long text out of result summaries", () => 
         opened_on: null,
         expires_on: null,
         usable_until: null,
+        remaining_percent_estimate: null,
         has_image: false,
         derived_status: {
           as_of: "2026-08-21",
@@ -215,6 +303,17 @@ test("BD-DATA-005 search output keeps long text out of result summaries", () => 
   };
 
   assert.equal(searchInventoryOutputSchema.safeParse(output).success, true);
+  const {
+    remaining_percent_estimate: _remainingPercentEstimate,
+    ...legacySearchItem
+  } = output.items[0]!;
+  assert.equal(
+    searchInventoryOutputSchema.parse({
+      ...output,
+      items: [legacySearchItem],
+    }).items[0]?.remaining_percent_estimate,
+    null,
+  );
   assert.equal(
     searchInventoryOutputSchema.safeParse({ ...output, query: null }).success,
     true,
@@ -232,6 +331,103 @@ test("BD-DATA-005 search output keeps long text out of result summaries", () => 
           ingredient_list_text: "must not be in a summary",
         },
       ],
+    }).success,
+    false,
+  );
+});
+
+test("end-use contracts distinguish finished from discarded remaining snapshots", () => {
+  assert.deepEqual(
+    endInventoryItemInputSchema.parse({
+      as_of: "2026-09-01",
+      lifecycle_status: "finished",
+    }),
+    { as_of: "2026-09-01", lifecycle_status: "finished" },
+  );
+
+  for (const remainingPercentEstimate of [0, 35, 100, null]) {
+    const parsed = endInventoryItemInputSchema.parse({
+      as_of: "2026-09-01",
+      lifecycle_status: "discarded",
+      remaining_percent_estimate: remainingPercentEstimate,
+    });
+    assert.equal(parsed.lifecycle_status, "discarded");
+    if (parsed.lifecycle_status !== "discarded") {
+      assert.fail("discarded input must remain discriminated after parsing");
+    }
+    assert.equal(parsed.remaining_percent_estimate, remainingPercentEstimate);
+  }
+
+  for (const invalid of [
+    {
+      as_of: "2026-09-01",
+      lifecycle_status: "discarded",
+    },
+    {
+      as_of: "2026-09-01",
+      lifecycle_status: "discarded",
+      remaining_percent_estimate: -1,
+    },
+    {
+      as_of: "2026-09-01",
+      lifecycle_status: "discarded",
+      remaining_percent_estimate: 101,
+    },
+    {
+      as_of: "2026-09-01",
+      lifecycle_status: "discarded",
+      remaining_percent_estimate: 12.5,
+    },
+    {
+      as_of: "2026-09-01",
+      lifecycle_status: "finished",
+      remaining_percent_estimate: 0,
+    },
+    { as_of: "2026-02-30", lifecycle_status: "finished" },
+    { as_of: "2026-09-01", lifecycle_status: "finished", extra: true },
+  ]) {
+    assert.equal(endInventoryItemInputSchema.safeParse(invalid).success, false);
+  }
+
+  const terminalOutput = {
+    inventory_item_id: "bottle-terminal",
+    as_of: "2026-09-01",
+    product_id: "product-terminal",
+    lifecycle_status: "discarded",
+    opened_on: "2026-08-01",
+    opened_on_accuracy: "estimated",
+    expires_on: "2027-01-01",
+    pao_duration_months: 6,
+    pao_deadline: "2027-02-01",
+    pao_deadline_accuracy: "estimated",
+    usable_until: "2027-01-01",
+    usability_status: "usable",
+    warnings: [],
+    custom_notes: null,
+    remaining_percent_estimate: 35,
+  } as const;
+  assert.equal(
+    endInventoryItemOutputSchema.safeParse(terminalOutput).success,
+    true,
+  );
+  assert.equal(
+    endInventoryItemOutputSchema.safeParse({
+      ...terminalOutput,
+      product_id: null,
+    }).success,
+    true,
+  );
+  assert.equal(
+    endInventoryItemOutputSchema.safeParse({
+      ...terminalOutput,
+      lifecycle_status: "opened",
+    }).success,
+    false,
+  );
+  assert.equal(
+    endInventoryItemOutputSchema.safeParse({
+      ...terminalOutput,
+      remaining_percent_estimate: 101,
     }).success,
     false,
   );

@@ -30,8 +30,8 @@ const repository = new SqliteInventoryRepository(databasePath);
 
 try {
   const result = await repository.importInventoryData({
-    products: parsed.products.map((product) =>
-      createProduct({
+    products: parsed.products.map((product) => {
+      const normalized = createProduct({
         id: product.id,
         name: product.name,
         alias: product.alias,
@@ -41,8 +41,15 @@ try {
         imageRef: product.image_ref,
         ingredientListText: product.ingredient_list_text,
         sharedNotes: product.shared_notes,
-      }),
-    ),
+        paoDurationMonths: product.pao_duration_months ?? null,
+      });
+      if (product.pao_duration_months === undefined) {
+        // Old imports do not assert an unknown PAO over a migrated shared value.
+        const { paoDurationMonths: _pao, ...legacyFacts } = normalized;
+        return legacyFacts;
+      }
+      return normalized;
+    }),
     inventoryItems: parsed.inventory_items.map((item) =>
       createInventoryItem({
         id: item.id,
@@ -55,6 +62,7 @@ try {
         paoDurationMonths: item.pao_duration_months,
         paoDeadline: item.pao_deadline,
         usableUntil: item.usable_until,
+        remainingPercentEstimate: item.remaining_percent_estimate,
         customNotes: item.custom_notes,
       }),
     ),

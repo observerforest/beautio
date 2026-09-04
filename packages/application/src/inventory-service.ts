@@ -3,17 +3,19 @@ import {
   beautioBackupInventoryItemSchema,
   beautioBackupProductSchema,
   createInventoryBatchInputSchema,
+  endInventoryItemInputSchema,
   fetchInventoryInputSchema,
   getInventoryItemInputSchema,
   listInventoryInputSchema,
   productIdSchema,
-  recordProductOpenedInputSchema,
+  recordProductOpenedCommandSchema,
   searchInventoryInputSchema,
   setProductDisplayImageInputSchema,
   updateInventoryItemFactsInputSchema,
   updateInventoryItemCustomNotesInputSchema,
   updateProductInputSchema,
   type CreateInventoryBatchOutput,
+  type EndInventoryItemOutput,
   type BeautioBackup,
   type FetchInventoryOutput,
   type InventoryListOutput,
@@ -33,8 +35,8 @@ import {
   createInventoryItemFromFacts,
   createProduct,
   deriveInventorySnapshot,
+  endInventoryItem as endInventoryItemTransition,
   imageMediaTypes,
-  openInventoryItem,
   parseIsoDate,
   type ImageAsset,
   type InventoryItem,
@@ -131,25 +133,20 @@ export class InventoryApplicationService {
   async recordProductOpened(
     untrustedInput: unknown,
   ): Promise<RecordProductOpenedOutput> {
-    const input = parseInput(recordProductOpenedInputSchema, untrustedInput);
-    const item = await requireInventoryItem(
-      this.#repository,
-      input.inventory_item_id,
-    );
-    const transition = openInventoryItem(
-      item,
-      parseIsoDate(input.opened_on, "opened_on"),
-    );
-
-    if (transition.outcome === "opened") {
-      await this.#repository.save(transition.item);
-    }
+    const input = parseInput(recordProductOpenedCommandSchema, untrustedInput);
+    const openedOn = parseIsoDate(input.opened_on, "opened_on");
+    const transition = await this.#repository.recordProductOpened({
+      inventoryItemId: input.inventory_item_id,
+      openedOn,
+      openedOnAccuracy: input.opened_on_accuracy,
+    });
+    const snapshot = deriveInventorySnapshot(transition.item, openedOn);
 
     return {
       outcome: transition.outcome,
-      ...toInventoryStateOutput(transition.snapshot),
+      ...toInventoryStateOutput(snapshot),
       lifecycle_status: "opened",
-      opened_on: transition.snapshot.openedOn,
+      opened_on: openedOn,
     };
   }
 
@@ -291,6 +288,9 @@ export class InventoryApplicationService {
 
   /**
    * Creates Products and one InventoryItem per bottle in one repository transaction.
+   * Legacy new-Product requests infer a shared PAO only from one distinct known
+   * bottle value; explicit null and conflicting legacy values remain unknown.
+   * The repository resolves inherited PAO against the Product at commit time.
    *
    * @param untrustedInput - Strict batch contract input from any write adapter.
    * @returns Server-generated identifiers and committed facts in input order.
@@ -344,6 +344,17 @@ export class InventoryApplicationService {
         brand: productInput.brand ?? null,
         category: productInput.category ?? null,
         sizeLabel: productInput.size_label ?? null,
+        paoDurationMonths:
+          productInput.pao_duration_months === undefined
+            ? inferLegacyProductPao(
+                input.inventory_items.flatMap((item) =>
+                  item.product_ref.kind === "new" &&
+                  item.product_ref.batch_ref === productInput.batch_ref
+                    ? [item.pao_duration_months ?? null]
+                    : [],
+                ),
+              )
+            : productInput.pao_duration_months,
         imageAssetId: productInput.image_asset_id ?? null,
         imageRef: null,
         ingredientListText: productInput.ingredient_list_text ?? null,
@@ -429,6 +440,8 @@ export class InventoryApplicationService {
 
   /**
    * Replaces all editable shared Product facts and transfers image ownership.
+   * Omitting PAO preserves bottle snapshots; an explicit value or null applies
+   * to every associated bottle in the same repository transaction.
    *
    * @param productId - Existing opaque Product identifier.
    * @param untrustedInput - Complete strict Product edit body.
@@ -449,6 +462,9 @@ export class InventoryApplicationService {
       ...(input.brand === undefined ? {} : { brand: input.brand }),
       category: input.category,
       sizeLabel: input.size_label,
+      ...(input.pao_duration_months === undefined
+        ? {}
+        : { paoDurationMonths: input.pao_duration_months }),
       imageAssetId: input.image_asset_id,
       ingredientListText: input.ingredient_list_text,
       sharedNotes: input.shared_notes,
@@ -526,7 +542,10 @@ export class InventoryApplicationService {
         customNotes: existing.customNotes,
       },
     );
-    const committed = await this.#repository.updateInventoryItemFacts(updated);
+    const committed = await this.#repository.updateInventoryItemFacts(
+      updated,
+      existing.paoDurationMonths,
+    );
     const asOf = parseIsoDate(input.as_of, "as_of");
 
     return {
@@ -534,6 +553,57 @@ export class InventoryApplicationService {
       product_id: productId,
       ...toInventoryStateOutput(deriveInventorySnapshot(committed, asOf)),
       lifecycle_status: asActiveLifecycle(committed),
+    };
+  }
+
+  /**
+   * Ends use of one opened bottle and records its terminal remaining snapshot.
+   *
+   * @param inventoryItemId - Existing opaque inventory identifier.
+   * @param untrustedInput - Strict terminal command with explicit readback date.
+   * @returns The committed terminal facts and derived state after repository readback.
+   */
+  async endInventoryItem(
+    inventoryItemId: string,
+    untrustedInput: unknown,
+  ): Promise<EndInventoryItemOutput> {
+    const normalizedInventoryItemId = parseRequiredId(
+      inventoryItemId,
+      "inventory_item_id",
+    );
+    const input = parseInput(endInventoryItemInputSchema, untrustedInput);
+    const existing = await requireInventoryItem(
+      this.#repository,
+      normalizedInventoryItemId,
+    );
+    const productId = existing.productId;
+    const ended = endInventoryItemTransition(
+      existing,
+      input.lifecycle_status === "finished"
+        ? { lifecycleStatus: "finished" }
+        : {
+            lifecycleStatus: "discarded",
+            remainingPercentEstimate: input.remaining_percent_estimate,
+          },
+    );
+    const committed = await this.#repository.endInventoryItem(ended);
+    if (
+      committed.lifecycleStatus !== "finished" &&
+      committed.lifecycleStatus !== "discarded"
+    ) {
+      throw new BeautioError(
+        "INTERNAL_ERROR",
+        "end-use write produced an active lifecycle",
+      );
+    }
+    const asOf = parseIsoDate(input.as_of, "as_of");
+
+    return {
+      as_of: asOf,
+      product_id: productId,
+      ...toInventoryStateOutput(deriveInventorySnapshot(committed, asOf)),
+      lifecycle_status: committed.lifecycleStatus,
+      remaining_percent_estimate: committed.remainingPercentEstimate,
     };
   }
 
@@ -1067,6 +1137,7 @@ export class InventoryApplicationService {
         brand: product.brand,
         category: product.category,
         sizeLabel: product.size_label,
+        paoDurationMonths: product.pao_duration_months,
         imageAssetId: product.image_asset_id,
         imageRef: product.image_ref,
         ingredientListText: product.ingredient_list_text,
@@ -1102,6 +1173,7 @@ export class InventoryApplicationService {
         paoDurationMonths: item.pao_duration_months,
         paoDeadline: item.pao_deadline,
         usableUntil: item.usable_until,
+        remainingPercentEstimate: item.remaining_percent_estimate,
         customNotes: item.custom_notes,
       });
     });
@@ -1353,11 +1425,19 @@ function toBackupProduct(product: Product) {
     brand: product.brand,
     category: product.category,
     size_label: product.sizeLabel,
+    pao_duration_months: product.paoDurationMonths,
     image_asset_id: product.imageAssetId,
     image_ref: product.imageRef,
     ingredient_list_text: product.ingredientListText,
     shared_notes: product.sharedNotes,
   };
+}
+
+function inferLegacyProductPao(
+  durations: readonly (number | null)[],
+): number | null {
+  const known = new Set(durations.filter((duration) => duration !== null));
+  return known.size === 1 ? (known.values().next().value ?? null) : null;
 }
 
 function toBackupInventoryItem(item: InventoryItem) {
@@ -1372,6 +1452,7 @@ function toBackupInventoryItem(item: InventoryItem) {
     pao_duration_months: item.paoDurationMonths,
     pao_deadline: item.paoDeadline,
     usable_until: item.usableUntil,
+    remaining_percent_estimate: item.remainingPercentEstimate,
     custom_notes: item.customNotes,
   };
 }

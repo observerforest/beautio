@@ -7,9 +7,29 @@ import {
   createInventoryItemFromFacts,
   createProduct,
   deriveInventorySnapshot,
+  endInventoryItem,
   openInventoryItem,
   parseIsoDate,
+  updateInventoryItemPao,
 } from "../src/index.ts";
+
+test("Product PAO validates durations and bottle recalculation preserves other direct facts", () => {
+  for (const value of [0, -1, 1.5, 121, Number.NaN]) {
+    assert.throws(() => createProduct({ id: "sample", name: "Sample", paoDurationMonths: value }), /integer from 1 through 120/u);
+  }
+  assert.equal(createProduct({ id: "sample", name: "Sample", paoDurationMonths: 12 }).paoDurationMonths, 12);
+  const bottle = createInventoryItem({
+    id: "sample", lifecycleStatus: "discarded", openedOn: "2026-01-31",
+    expiresOn: "2026-02-15", paoDurationMonths: 12, customNotes: "Keep note",
+  });
+  const updated = updateInventoryItemPao(bottle, 1);
+  assert.equal(updated.paoDeadline, "2026-02-28");
+  assert.equal(updated.usableUntil, "2026-02-15");
+  assert.equal(updated.lifecycleStatus, "discarded");
+  assert.equal(updated.customNotes, "Keep note");
+  assert.equal(updateInventoryItemPao(updated, null).paoDeadline, null);
+  assert.equal(updateInventoryItemPao(updated, null).usableUntil, "2026-02-15");
+});
 
 test("BD-DATA-001 positive 1: PAO is the earlier usable deadline", () => {
   const item = createInventoryItem({
@@ -22,6 +42,7 @@ test("BD-DATA-001 positive 1: PAO is the earlier usable deadline", () => {
   const result = openInventoryItem(
     item,
     parseIsoDate("2026-08-18", "opened_on"),
+    "exact",
   );
 
   assert.equal(result.outcome, "opened");
@@ -42,6 +63,7 @@ test("BD-DATA-001 positive 2: packaging expiry is the earlier usable deadline", 
   const result = openInventoryItem(
     item,
     parseIsoDate("2026-08-18", "opened_on"),
+    "estimated",
   );
 
   assert.equal(result.snapshot.paoDeadline, "2027-08-18");
@@ -59,6 +81,7 @@ test("BD-DATA-001 positive 3: unknown PAO does not block opening", () => {
   const result = openInventoryItem(
     item,
     parseIsoDate("2026-08-18", "opened_on"),
+    "exact",
   );
 
   assert.equal(result.snapshot.paoDeadline, null);
@@ -77,6 +100,7 @@ test("BD-DATA-001 positive 4: an already expired item still records the opening 
   const result = openInventoryItem(
     item,
     parseIsoDate("2026-08-18", "opened_on"),
+    "estimated",
   );
 
   assert.equal(result.item.lifecycleStatus, "opened");
@@ -95,8 +119,8 @@ test("BD-DATA-001 positive 5: same-date retry is idempotent", () => {
     paoDurationMonths: 12,
   });
   const openedOn = parseIsoDate("2026-08-18", "opened_on");
-  const first = openInventoryItem(unopened, openedOn);
-  const retry = openInventoryItem(first.item, openedOn);
+  const first = openInventoryItem(unopened, openedOn, "exact");
+  const retry = openInventoryItem(first.item, openedOn, "exact");
 
   assert.equal(retry.outcome, "already_opened");
   assert.strictEqual(retry.item, first.item);
@@ -124,6 +148,7 @@ test("usable-until remains usable on the boundary date", () => {
   const result = openInventoryItem(
     item,
     parseIsoDate("2026-08-18", "opened_on"),
+    "exact",
   );
 
   assert.equal(result.snapshot.usabilityStatus, "usable");
@@ -145,6 +170,7 @@ test("BD-DATA-001 negative 2: a different opening date conflicts", () => {
       openInventoryItem(
         opened,
         parseIsoDate("2026-08-19", "opened_on"),
+        "legacy_unknown",
       ),
     "OPENED_ON_CONFLICT",
   );
@@ -164,10 +190,126 @@ test("BD-DATA-001 negative 3: finished and discarded items are terminal", () => 
         openInventoryItem(
           terminal,
           parseIsoDate("2026-08-18", "opened_on"),
+          "exact",
         ),
       "INVENTORY_ITEM_TERMINAL",
     );
   }
+});
+
+test("end use records terminal snapshots while preserving prior bottle facts", () => {
+  const opened = createInventoryItem({
+    id: "end-use-domain",
+    productId: "product-end-use",
+    createdAt: "2026-07-01T00:00:00.000Z",
+    lifecycleStatus: "opened",
+    openedOn: "2026-08-01",
+    openedOnAccuracy: "estimated",
+    expiresOn: "2027-01-01",
+    paoDurationMonths: 6,
+    customNotes: "Keep this note",
+  });
+
+  const finished = endInventoryItem(opened, { lifecycleStatus: "finished" });
+  const discarded = endInventoryItem(opened, {
+    lifecycleStatus: "discarded",
+    remainingPercentEstimate: 35,
+  });
+  const discardedUnknown = endInventoryItem(opened, {
+    lifecycleStatus: "discarded",
+    remainingPercentEstimate: null,
+  });
+
+  assert.equal(finished.lifecycleStatus, "finished");
+  assert.equal(finished.remainingPercentEstimate, 0);
+  assert.equal(discarded.lifecycleStatus, "discarded");
+  assert.equal(discarded.remainingPercentEstimate, 35);
+  assert.equal(discardedUnknown.remainingPercentEstimate, null);
+  for (const terminal of [finished, discarded, discardedUnknown]) {
+    assert.equal(terminal.productId, opened.productId);
+    assert.equal(terminal.createdAt, opened.createdAt);
+    assert.equal(terminal.openedOn, opened.openedOn);
+    assert.equal(terminal.openedOnAccuracy, opened.openedOnAccuracy);
+    assert.equal(terminal.expiresOn, opened.expiresOn);
+    assert.equal(terminal.paoDeadline, opened.paoDeadline);
+    assert.equal(terminal.usableUntil, opened.usableUntil);
+    assert.equal(terminal.customNotes, opened.customNotes);
+  }
+  assert.equal(opened.lifecycleStatus, "opened");
+  assert.equal(opened.remainingPercentEstimate, null);
+  assert.equal(
+    deriveInventorySnapshot(discarded, parseIsoDate("2026-09-01", "as_of"))
+      .remainingPercentEstimate,
+    35,
+  );
+});
+
+test("end use rejects invalid remaining values and non-opened lifecycle states", () => {
+  const opened = createInventoryItem({
+    id: "strict-end-use",
+    lifecycleStatus: "opened",
+    openedOn: "2026-08-01",
+  });
+  for (const remainingPercentEstimate of [
+    -1,
+    101,
+    12.5,
+    Number.NaN,
+  ]) {
+    assertBeautioError(
+      () =>
+        endInventoryItem(opened, {
+          lifecycleStatus: "discarded",
+          remainingPercentEstimate,
+        }),
+      "INVALID_INPUT",
+    );
+  }
+
+  assertBeautioError(
+    () =>
+      endInventoryItem(
+        createInventoryItem({
+          id: "unopened-end-use",
+          lifecycleStatus: "unopened",
+        }),
+        { lifecycleStatus: "finished" },
+      ),
+    "INVALID_INPUT",
+  );
+
+  for (const lifecycleStatus of ["finished", "discarded"] as const) {
+    assertBeautioError(
+      () =>
+        endInventoryItem(
+          createInventoryItem({
+            id: `repeat-${lifecycleStatus}`,
+            lifecycleStatus,
+            remainingPercentEstimate:
+              lifecycleStatus === "finished" ? 0 : 25,
+          }),
+          { lifecycleStatus: "finished" },
+        ),
+      "INVENTORY_ITEM_TERMINAL",
+    );
+  }
+
+  assert.equal(
+    createInventoryItem({
+      id: "legacy-finished-unknown",
+      lifecycleStatus: "finished",
+    }).remainingPercentEstimate,
+    null,
+  );
+  assertBeautioError(
+    () =>
+      createInventoryItem({
+        id: "invalid-finished-remaining",
+        lifecycleStatus: "finished",
+        remainingPercentEstimate: 1,
+      }),
+    "INVALID_INPUT",
+  );
 });
 
 test("BD-DATA-001 negative 1: impossible calendar dates are invalid", () => {
@@ -205,6 +347,7 @@ test("BD-DATA-002 Product keeps genuinely missing shared facts as null", () => {
     brand: null,
     category: null,
     sizeLabel: null,
+    paoDurationMonths: null,
     imageAssetId: null,
     imageRef: null,
     ingredientListText: null,
@@ -324,6 +467,7 @@ test("BD-DATA-004 facts and lifecycle transitions preserve custom notes", () => 
   const opened = openInventoryItem(
     item,
     parseIsoDate("2026-08-20", "opened_on"),
+    "exact",
   );
 
   assert.equal(opened.item.customNotes, "Keep this bottle upright");
@@ -382,26 +526,57 @@ test("BD-DATA-002 active lifecycle rejects incomplete or contradictory opening f
   );
 });
 
-test("record_product_opened preserves prior accuracy on an already-opened item", () => {
-  const opened = createInventoryItemFromFacts(
-    { id: "already-exact", productId: "product-exact" },
-    {
-      lifecycleStatus: "opened",
-      openedOn: "2026-08-18",
-      openedOnAccuracy: "exact",
-      expiresOn: null,
-      paoDurationMonths: 12,
-    },
-  );
+test("record_product_opened is idempotent only for the same date and accuracy", () => {
+  const accuracies = ["exact", "estimated", "legacy_unknown"] as const;
+  for (const existingAccuracy of accuracies) {
+    const opened = createInventoryItemFromFacts(
+      { id: `already-${existingAccuracy}`, productId: "product-shared" },
+      {
+        lifecycleStatus: "opened",
+        openedOn: "2026-08-18",
+        openedOnAccuracy: existingAccuracy,
+        expiresOn: null,
+        paoDurationMonths: 12,
+      },
+    );
+    const before = structuredClone(opened);
 
-  const retry = openInventoryItem(
-    opened,
-    parseIsoDate("2026-08-18", "opened_on"),
-  );
+    const retry = openInventoryItem(
+      opened,
+      parseIsoDate("2026-08-18", "opened_on"),
+      existingAccuracy,
+    );
+    assert.equal(retry.outcome, "already_opened");
+    assert.strictEqual(retry.item, opened);
+    assert.equal(retry.snapshot.paoDeadlineAccuracy, existingAccuracy);
 
-  assert.equal(retry.outcome, "already_opened");
-  assert.equal(retry.item.openedOnAccuracy, "exact");
-  assert.equal(retry.snapshot.paoDeadlineAccuracy, "exact");
+    for (const requestedAccuracy of accuracies) {
+      if (requestedAccuracy === existingAccuracy) {
+        continue;
+      }
+      assertBeautioError(
+        () =>
+          openInventoryItem(
+            opened,
+            parseIsoDate("2026-08-18", "opened_on"),
+            requestedAccuracy,
+          ),
+        "OPENED_ON_CONFLICT",
+      );
+      assert.deepEqual(opened, before);
+    }
+
+    assertBeautioError(
+      () =>
+        openInventoryItem(
+          opened,
+          parseIsoDate("2026-08-19", "opened_on"),
+          existingAccuracy,
+        ),
+      "OPENED_ON_CONFLICT",
+    );
+    assert.deepEqual(opened, before);
+  }
 });
 
 function assertBeautioError(

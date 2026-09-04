@@ -32,6 +32,7 @@ export function readInventoryItem(
         pao_duration_months,
         pao_deadline,
         usable_until,
+        remaining_percent_estimate,
         custom_notes
       FROM inventory_items
       WHERE id = ?`,
@@ -40,6 +41,13 @@ export function readInventoryItem(
   return row === undefined ? null : mapInventoryRow(row);
 }
 
+/**
+ * Reads shared Product facts without mutating persisted inventory.
+ *
+ * @param database - Open SQLite connection with the current schema.
+ * @param productId - Opaque Product identifier to find.
+ * @returns The normalized Product, or null when absent.
+ */
 export function readProduct(
   database: DatabaseSync,
   productId: string,
@@ -53,6 +61,7 @@ export function readProduct(
         brand,
         category,
         size_label,
+        pao_duration_months,
         image_asset_id,
         image_ref,
         ingredient_list_text,
@@ -86,6 +95,13 @@ export function readImageAsset(
   return row === undefined ? null : mapImageAssetRow(row);
 }
 
+/**
+ * Inserts one validated Product, including its nullable shared PAO.
+ *
+ * @param database - Connection participating in the caller's write transaction.
+ * @param product - Product entity to insert without changing bottle snapshots.
+ * @returns Nothing after insertion; constraint errors use stable domain codes.
+ */
 export function insertProduct(database: DatabaseSync, product: Product): void {
   try {
     database
@@ -97,11 +113,12 @@ export function insertProduct(database: DatabaseSync, product: Product): void {
           brand,
           category,
           size_label,
+          pao_duration_months,
           image_asset_id,
           image_ref,
           ingredient_list_text,
           shared_notes
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         product.id,
@@ -110,6 +127,7 @@ export function insertProduct(database: DatabaseSync, product: Product): void {
         product.brand,
         product.category,
         product.sizeLabel,
+        product.paoDurationMonths,
         product.imageAssetId,
         product.imageRef,
         product.ingredientListText,
@@ -138,8 +156,9 @@ export function insertInventoryItem(
           pao_duration_months,
           pao_deadline,
           usable_until,
+          remaining_percent_estimate,
           custom_notes
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         item.id,
@@ -152,6 +171,7 @@ export function insertInventoryItem(
         item.paoDurationMonths,
         item.paoDeadline,
         item.usableUntil,
+        item.remainingPercentEstimate,
         item.customNotes,
       );
   } catch (error) {
@@ -172,7 +192,8 @@ export function updateInventoryRow(
         expires_on = ?,
         pao_duration_months = ?,
         pao_deadline = ?,
-        usable_until = ?
+        usable_until = ?,
+        remaining_percent_estimate = ?
       WHERE id = ?`,
     )
     .run(
@@ -183,6 +204,7 @@ export function updateInventoryRow(
       item.paoDurationMonths,
       item.paoDeadline,
       item.usableUntil,
+      item.remainingPercentEstimate,
       item.id,
     );
 

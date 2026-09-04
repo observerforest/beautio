@@ -2,6 +2,8 @@ import type {
   ImageAsset,
   ImageMediaType,
   InventoryItem,
+  IsoDate,
+  OpenedOnAccuracy,
   Product,
 } from "@beautio/domain";
 
@@ -41,6 +43,7 @@ export interface ProductFactsPersistenceInput {
   readonly brand?: string | null;
   readonly category: string | null;
   readonly sizeLabel: string | null;
+  readonly paoDurationMonths?: number | null;
   readonly imageAssetId: string | null;
   readonly ingredientListText: string | null;
   readonly sharedNotes: string | null;
@@ -51,6 +54,17 @@ export interface ProductFactsPersistenceInput {
 export interface InventoryItemCustomNotesPersistenceInput {
   readonly inventoryItemId: string;
   readonly customNotes: string | null;
+}
+
+export interface RecordProductOpenedPersistenceInput {
+  readonly inventoryItemId: string;
+  readonly openedOn: IsoDate;
+  readonly openedOnAccuracy: OpenedOnAccuracy;
+}
+
+export interface RecordProductOpenedPersistenceResult {
+  readonly outcome: "opened" | "already_opened";
+  readonly item: InventoryItem;
 }
 
 export interface ProductImagePersistenceInput {
@@ -162,6 +176,8 @@ export interface InventoryRepository {
 
   /**
    * Persists a complete inventory item state.
+   * Retains the latest persisted PAO snapshot; only a newly opened bottle with
+   * no known duration inherits the current shared Product PAO.
    *
    * @param item - Valid domain state to store atomically.
    * @returns A promise resolved after persistence succeeds.
@@ -169,7 +185,21 @@ export interface InventoryRepository {
   save(item: InventoryItem): Promise<void>;
 
   /**
+   * Atomically records an opening fact against the latest persisted bottle.
+   * A competing SQLite writer may reject this command before it starts; that
+   * rejection performs no write and is never retried automatically.
+   *
+   * @param input - Explicit item, date, and date-accuracy fact.
+   * @returns The opened row re-read inside the same transaction.
+   */
+  recordProductOpened(
+    input: RecordProductOpenedPersistenceInput,
+  ): Promise<RecordProductOpenedPersistenceResult>;
+
+  /**
    * Atomically inserts all batch entities and claims any referenced images.
+   * Reads the current Product PAO inside the transaction, inheriting known values
+   * and rejecting conflicting non-null bottle durations before any commit.
    *
    * @param input - Server-generated entities and an explicit timestamp for image expiry checks.
    * @returns Nothing after the complete transaction commits.
@@ -178,6 +208,8 @@ export interface InventoryRepository {
 
   /**
    * Atomically replaces Product facts and transfers image associations.
+   * An explicit PAO value or null recalculates every associated bottle in the
+   * same transaction; an omitted duration preserves all bottle snapshots.
    *
    * @param input - Complete Product facts plus deterministic lifecycle timestamps.
    * @returns The Product re-read after commit.
@@ -196,9 +228,21 @@ export interface InventoryRepository {
    * Persists recalculated direct and derived inventory facts.
    *
    * @param item - Complete validated inventory state for an existing row.
+   * @param expectedPaoDurationMonths - Optional snapshot observed before editing; a concurrent change rejects the stale write.
    * @returns The item re-read after persistence.
    */
-  updateInventoryItemFacts(item: InventoryItem): Promise<InventoryItem>;
+  updateInventoryItemFacts(
+    item: InventoryItem,
+    expectedPaoDurationMonths?: number | null,
+  ): Promise<InventoryItem>;
+
+  /**
+   * Atomically transitions one currently opened bottle into a terminal state.
+   *
+   * @param item - Domain-validated finished or discarded state with its remaining snapshot.
+   * @returns The terminal item re-read after persistence.
+   */
+  endInventoryItem(item: InventoryItem): Promise<InventoryItem>;
 
   /**
    * Replaces only one bottle's optional custom notes for any lifecycle state.

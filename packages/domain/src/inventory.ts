@@ -60,6 +60,7 @@ export interface Product {
   readonly brand: string | null;
   readonly category: string | null;
   readonly sizeLabel: string | null;
+  readonly paoDurationMonths: number | null;
   readonly imageAssetId: string | null;
   readonly imageRef: string | null;
   readonly ingredientListText: string | null;
@@ -77,6 +78,7 @@ export interface InventoryItem {
   readonly paoDurationMonths: number | null;
   readonly paoDeadline: IsoDate | null;
   readonly usableUntil: IsoDate | null;
+  readonly remainingPercentEstimate: number | null;
   readonly customNotes: string | null;
 }
 
@@ -90,6 +92,7 @@ export interface InventorySnapshot {
   readonly paoDeadline: IsoDate | null;
   readonly paoDeadlineAccuracy: OpenedOnAccuracy | null;
   readonly usableUntil: IsoDate | null;
+  readonly remainingPercentEstimate: number | null;
   readonly usabilityStatus: UsabilityStatus;
   readonly warnings: readonly InventoryWarning[];
   readonly customNotes: string | null;
@@ -114,6 +117,13 @@ export interface OpenInventoryResult {
     readonly openedOn: IsoDate;
   };
 }
+
+export type EndInventoryInput =
+  | { readonly lifecycleStatus: "finished" }
+  | {
+      readonly lifecycleStatus: "discarded";
+      readonly remainingPercentEstimate: number | null;
+    };
 
 export interface EditableInventoryFacts {
   readonly lifecycleStatus: "unopened" | "opened";
@@ -141,6 +151,7 @@ export function createInventoryItem(input: {
   readonly paoDurationMonths?: number | null;
   readonly paoDeadline?: string | null;
   readonly usableUntil?: string | null;
+  readonly remainingPercentEstimate?: number | null;
   readonly customNotes?: string | null;
 }): InventoryItem {
   const id = input.id.trim();
@@ -163,6 +174,9 @@ export function createInventoryItem(input: {
     "usable_until",
   );
   const paoDurationMonths = input.paoDurationMonths ?? null;
+  const remainingPercentEstimate = normalizeRemainingPercentEstimate(
+    input.remainingPercentEstimate,
+  );
   const customNotes = normalizeNullableText(
     input.customNotes,
     "custom_notes",
@@ -202,6 +216,27 @@ export function createInventoryItem(input: {
     );
   }
 
+  if (
+    (input.lifecycleStatus === "unopened" ||
+      input.lifecycleStatus === "opened") &&
+    remainingPercentEstimate !== null
+  ) {
+    throw new BeautioError(
+      "INVALID_INPUT",
+      "active inventory cannot have an end-use remaining snapshot",
+    );
+  }
+  if (
+    input.lifecycleStatus === "finished" &&
+    remainingPercentEstimate !== null &&
+    remainingPercentEstimate !== 0
+  ) {
+    throw new BeautioError(
+      "INVALID_INPUT",
+      "finished inventory remaining snapshot must be zero",
+    );
+  }
+
   return {
     id,
     productId,
@@ -213,6 +248,7 @@ export function createInventoryItem(input: {
     paoDurationMonths,
     paoDeadline,
     usableUntil: explicitUsableUntil ?? minimumKnownDate(expiresOn, paoDeadline),
+    remainingPercentEstimate,
     customNotes,
   };
 }
@@ -230,6 +266,7 @@ export function createProduct(input: {
   readonly brand?: string | null;
   readonly category?: string | null;
   readonly sizeLabel?: string | null;
+  readonly paoDurationMonths?: number | null;
   readonly imageAssetId?: string | null;
   readonly imageRef?: string | null;
   readonly ingredientListText?: string | null;
@@ -246,6 +283,7 @@ export function createProduct(input: {
     brand: normalizeOptionalText(input.brand, "product_brand"),
     category: normalizeOptionalText(input.category, "product_category"),
     sizeLabel: normalizeOptionalText(input.sizeLabel, "size_label"),
+    paoDurationMonths: normalizePaoDurationMonths(input.paoDurationMonths),
     imageAssetId: normalizeOptionalText(input.imageAssetId, "image_asset_id"),
     imageRef: normalizeOptionalText(input.imageRef, "image_ref"),
     ingredientListText: normalizeNullableText(
@@ -259,6 +297,30 @@ export function createProduct(input: {
       sharedNotesMaximumLength,
     ),
   };
+}
+
+/**
+ * Recalculates one bottle's PAO snapshot without changing its other direct facts.
+ *
+ * @param item - Any persisted lifecycle state, including finished or discarded bottles.
+ * @param paoDurationMonths - Shared duration to apply, or null to clear the PAO deadline.
+ * @returns A new item using its own opening date and unchanged packaging expiry.
+ */
+export function updateInventoryItemPao(
+  item: InventoryItem,
+  paoDurationMonths: number | null,
+): InventoryItem {
+  const duration = normalizePaoDurationMonths(paoDurationMonths);
+  const paoDeadline =
+    item.openedOn === null || duration === null
+      ? null
+      : addCalendarMonthsClamped(item.openedOn, duration);
+  return createInventoryItem({
+    ...item,
+    paoDurationMonths: duration,
+    paoDeadline,
+    usableUntil: minimumKnownDate(item.expiresOn, paoDeadline),
+  });
 }
 
 /**
@@ -331,11 +393,13 @@ export function createInventoryItemFromFacts(
  *
  * @param item - Current inventory state.
  * @param openedOn - Explicit date supplied by the caller.
+ * @param openedOnAccuracy - Explicit confidence classification for that date.
  * @returns The new state and a snapshot evaluated on the opening date.
  */
 export function openInventoryItem(
   item: InventoryItem,
   openedOn: IsoDate,
+  openedOnAccuracy: OpenedOnAccuracy,
 ): OpenInventoryResult {
   if (
     item.lifecycleStatus === "finished" ||
@@ -348,10 +412,13 @@ export function openInventoryItem(
   }
 
   if (item.lifecycleStatus === "opened") {
-    if (item.openedOn !== openedOn) {
+    if (
+      item.openedOn !== openedOn ||
+      item.openedOnAccuracy !== openedOnAccuracy
+    ) {
       throw new BeautioError(
         "OPENED_ON_CONFLICT",
-        "inventory item is already opened on a different date",
+        "inventory item is already opened with different opening facts",
       );
     }
 
@@ -371,7 +438,7 @@ export function openInventoryItem(
     ...item,
     lifecycleStatus: "opened",
     openedOn,
-    openedOnAccuracy: "legacy_unknown",
+    openedOnAccuracy,
     paoDeadline,
     usableUntil,
   };
@@ -383,6 +450,45 @@ export function openInventoryItem(
       deriveInventorySnapshot(openedItem, openedOn),
     ),
   };
+}
+
+/**
+ * Ends use of one opened bottle while preserving all earlier lifecycle facts.
+ *
+ * @param item - Current inventory state; only an opened bottle may transition.
+ * @param input - Target terminal lifecycle and, for discarded bottles, an approximate remaining percentage or unknown.
+ * @returns A validated terminal item. Finished bottles always record zero remaining.
+ */
+export function endInventoryItem(
+  item: InventoryItem,
+  input: EndInventoryInput,
+): InventoryItem {
+  if (
+    item.lifecycleStatus === "finished" ||
+    item.lifecycleStatus === "discarded"
+  ) {
+    throw new BeautioError(
+      "INVENTORY_ITEM_TERMINAL",
+      `inventory item is already ${item.lifecycleStatus}`,
+    );
+  }
+  if (item.lifecycleStatus !== "opened") {
+    throw new BeautioError(
+      "INVALID_INPUT",
+      "only opened inventory can end use",
+    );
+  }
+
+  const remainingPercentEstimate =
+    input.lifecycleStatus === "finished"
+      ? 0
+      : normalizeRemainingPercentEstimate(input.remainingPercentEstimate);
+
+  return createInventoryItem({
+    ...item,
+    lifecycleStatus: input.lifecycleStatus,
+    remainingPercentEstimate,
+  });
 }
 
 /**
@@ -422,10 +528,43 @@ export function deriveInventorySnapshot(
     paoDeadlineAccuracy:
       item.paoDeadline === null ? null : item.openedOnAccuracy,
     usableUntil: item.usableUntil,
+    remainingPercentEstimate: item.remainingPercentEstimate,
     usabilityStatus,
     warnings,
     customNotes: item.customNotes,
   };
+}
+
+function normalizePaoDurationMonths(
+  value: number | null | undefined,
+): number | null {
+  const duration = value ?? null;
+  if (
+    duration !== null &&
+    (!Number.isInteger(duration) || duration < 1 || duration > 120)
+  ) {
+    throw new BeautioError(
+      "INVALID_INPUT",
+      "pao_duration_months must be an integer from 1 through 120",
+    );
+  }
+  return duration;
+}
+
+function normalizeRemainingPercentEstimate(
+  value: number | null | undefined,
+): number | null {
+  const remaining = value ?? null;
+  if (
+    remaining !== null &&
+    (!Number.isInteger(remaining) || remaining < 0 || remaining > 100)
+  ) {
+    throw new BeautioError(
+      "INVALID_INPUT",
+      "remaining_percent_estimate must be an integer from 0 through 100 or null",
+    );
+  }
+  return remaining;
 }
 
 function normalizeMissingAccuracy(

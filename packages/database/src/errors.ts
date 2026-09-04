@@ -12,6 +12,7 @@ export function assertProductMatches(
     existing.name !== incoming.name ||
     existing.category !== incoming.category ||
     existing.sizeLabel !== incoming.sizeLabel ||
+    existing.paoDurationMonths !== incoming.paoDurationMonths ||
     existing.imageAssetId !== incoming.imageAssetId ||
     existing.imageRef !== incoming.imageRef ||
     existing.ingredientListText !== incoming.ingredientListText ||
@@ -35,6 +36,7 @@ export function assertInventoryMatches(
     existing.paoDurationMonths !== incoming.paoDurationMonths ||
     existing.paoDeadline !== incoming.paoDeadline ||
     existing.usableUntil !== incoming.usableUntil ||
+    existing.remainingPercentEstimate !== incoming.remainingPercentEstimate ||
     existing.customNotes !== incoming.customNotes
   ) {
     throw importConflict("inventory item", incoming.id);

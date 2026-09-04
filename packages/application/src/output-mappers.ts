@@ -34,6 +34,7 @@ export function toInventoryReadModelOutput(
     pao_deadline_accuracy:
       item.paoDeadline === null ? null : item.openedOnAccuracy,
     usable_until: item.usableUntil,
+    remaining_percent_estimate: item.remainingPercentEstimate,
     custom_notes: item.customNotes,
     derived_status:
       asOf === null || derivedSnapshot === null
@@ -56,6 +57,7 @@ function toReadInventoryProductOutput(
     brand: product.brand,
     category: product.category,
     size_label: product.sizeLabel,
+    pao_duration_months: product.paoDurationMonths,
     ingredient_list_text: product.ingredientListText,
     shared_notes: product.sharedNotes,
     has_image: product.imageAssetId !== null,
@@ -80,6 +82,7 @@ export function toInventorySearchItemOutput(
     opened_on: complete.opened_on,
     expires_on: complete.expires_on,
     usable_until: complete.usable_until,
+    remaining_percent_estimate: item.remainingPercentEstimate,
     has_image: product !== null && product.imageAssetId !== null,
     derived_status: complete.derived_status,
   };
@@ -131,6 +134,12 @@ export function toInventoryStateOutput(
   };
 }
 
+/**
+ * Maps shared Product facts to the public snake-case contract.
+ *
+ * @param product - Validated shared Product entity.
+ * @returns Product facts including nullable shared PAO and managed image metadata.
+ */
 export function toProductOutput(product: Product): {
   readonly product_id: string;
   readonly name: string;
@@ -138,6 +147,7 @@ export function toProductOutput(product: Product): {
   readonly brand: string | null;
   readonly category: string | null;
   readonly size_label: string | null;
+  readonly pao_duration_months: number | null;
   readonly image_asset_id: string | null;
   readonly image_ref: string | null;
   readonly ingredient_list_text: string | null;
@@ -150,6 +160,7 @@ export function toProductOutput(product: Product): {
     brand: product.brand,
     category: product.category,
     size_label: product.sizeLabel,
+    pao_duration_months: product.paoDurationMonths,
     image_asset_id: product.imageAssetId,
     image_ref: product.imageRef,
     ingredient_list_text: product.ingredientListText,
@@ -166,6 +177,7 @@ export function toInventoryListItemOutput(
 ): InventoryListItemOutput {
   return {
     ...toInventoryStateOutput(deriveInventorySnapshot(item, asOf)),
+    remaining_percent_estimate: item.remainingPercentEstimate,
     created_at: item.createdAt,
     product_id: item.productId,
     product: product === null ? null : toProductOutput(product),

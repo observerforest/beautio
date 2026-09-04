@@ -113,12 +113,26 @@ export const isoDateSchema = z
   })
   .describe("Explicit real calendar date in YYYY-MM-DD format.");
 
+export const openedOnAccuracySchema = z.enum(openedOnAccuracies);
+export const newOpenedOnAccuracySchema = z.enum(["exact", "estimated"]);
+
 export const recordProductOpenedInputSchema = z
   .object({
     inventory_item_id: inventoryItemIdSchema,
     opened_on: isoDateSchema.describe(
       "Explicit opening date. The caller must resolve words such as today before calling; the service never guesses a date or time zone.",
     ),
+    opened_on_accuracy: newOpenedOnAccuracySchema.describe(
+      "Whether the opening date is exact or estimated. New tool calls must never invent or use legacy_unknown.",
+    ),
+  })
+  .strict();
+
+export const recordProductOpenedCommandSchema = z
+  .object({
+    inventory_item_id: inventoryItemIdSchema,
+    opened_on: isoDateSchema,
+    opened_on_accuracy: openedOnAccuracySchema,
   })
   .strict();
 
@@ -176,8 +190,7 @@ export const fetchInventoryInputSchema = z
 
 export const lifecycleStatusSchema = z.enum(lifecycleStatuses);
 export const activeLifecycleStatusSchema = z.enum(["unopened", "opened"]);
-export const openedOnAccuracySchema = z.enum(openedOnAccuracies);
-export const newOpenedOnAccuracySchema = z.enum(["exact", "estimated"]);
+export const terminalLifecycleStatusSchema = z.enum(["finished", "discarded"]);
 export const usabilityStatusSchema = z.enum(usabilityStatuses);
 export const inventoryWarningSchema = z.enum(inventoryWarnings);
 export const imageMediaTypeSchema = z.enum(imageMediaTypes);
@@ -211,6 +224,7 @@ export const productOutputSchema = z
     brand: z.string().nullable().default(null),
     category: z.string().nullable(),
     size_label: z.string().nullable(),
+    pao_duration_months: z.number().int().min(1).max(120).nullable().default(null),
     image_asset_id: z.string().nullable(),
     image_ref: z.string().nullable(),
     ingredient_list_text: nullablePersistedTextSchema(
@@ -233,6 +247,13 @@ export const getInventoryItemOutputSchema = inventoryStateOutputSchema
 
 export const inventoryListItemOutputSchema = inventoryStateOutputSchema
   .extend({
+    remaining_percent_estimate: z
+      .number()
+      .int()
+      .min(0)
+      .max(100)
+      .nullable()
+      .default(null),
     created_at: z.string().datetime({ offset: true }).nullable().default(null),
     product_id: z.string().nullable(),
     product: productOutputSchema.nullable(),
@@ -264,6 +285,7 @@ export const readInventoryProductOutputSchema = z
     brand: z.string().nullable().default(null),
     category: z.string().nullable(),
     size_label: z.string().nullable(),
+    pao_duration_months: z.number().int().min(1).max(120).nullable().default(null),
     ingredient_list_text: nullablePersistedTextSchema(
       "ingredient_list_text",
       ingredientListTextMaximumLength,
@@ -297,6 +319,13 @@ export const inventoryReadModelOutputSchema = z
     pao_deadline: isoDateSchema.nullable(),
     pao_deadline_accuracy: openedOnAccuracySchema.nullable(),
     usable_until: isoDateSchema.nullable(),
+    remaining_percent_estimate: z
+      .number()
+      .int()
+      .min(0)
+      .max(100)
+      .nullable()
+      .default(null),
     custom_notes: nullablePersistedTextSchema(
       "custom_notes",
       customNotesMaximumLength,
@@ -318,6 +347,13 @@ export const inventorySearchItemOutputSchema = z
     opened_on: isoDateSchema.nullable(),
     expires_on: isoDateSchema.nullable(),
     usable_until: isoDateSchema.nullable(),
+    remaining_percent_estimate: z
+      .number()
+      .int()
+      .min(0)
+      .max(100)
+      .nullable()
+      .default(null),
     has_image: z.boolean(),
     derived_status: inventoryDerivedStatusOutputSchema.nullable(),
   })
@@ -354,6 +390,7 @@ const newProductInputSchema = z
       .optional(),
     category: nullableTrimmedTextSchema("category", 100).optional(),
     size_label: nullableTrimmedTextSchema("size_label", 100).optional(),
+    pao_duration_months: z.number().int().min(1).max(120).nullable().optional(),
     image_asset_id: imageAssetIdSchema.nullable().optional(),
     ingredient_list_text: nullableNormalizedTextSchema(
       "ingredient_list_text",
@@ -466,6 +503,7 @@ export const updateProductInputSchema = z
     brand: nullableTrimmedTextSchema("brand", 100).optional(),
     category: nullableTrimmedTextSchema("category", 100),
     size_label: nullableTrimmedTextSchema("size_label", 100),
+    pao_duration_months: z.number().int().min(1).max(120).nullable().optional(),
     image_asset_id: imageAssetIdSchema.nullable(),
     ingredient_list_text: nullableNormalizedTextSchema(
       "ingredient_list_text",
@@ -512,6 +550,35 @@ export const updateInventoryItemFactsOutputSchema = inventoryStateOutputSchema
   })
   .strict();
 
+const endUseBaseSchema = {
+  as_of: isoDateSchema,
+};
+
+export const endInventoryItemInputSchema = z.discriminatedUnion("lifecycle_status", [
+  z
+    .object({
+      ...endUseBaseSchema,
+      lifecycle_status: z.literal("finished"),
+    })
+    .strict(),
+  z
+    .object({
+      ...endUseBaseSchema,
+      lifecycle_status: z.literal("discarded"),
+      remaining_percent_estimate: z.number().int().min(0).max(100).nullable(),
+    })
+    .strict(),
+]);
+
+export const endInventoryItemOutputSchema = inventoryStateOutputSchema
+  .extend({
+    as_of: isoDateSchema,
+    product_id: z.string().nullable(),
+    lifecycle_status: terminalLifecycleStatusSchema,
+    remaining_percent_estimate: z.number().int().min(0).max(100).nullable(),
+  })
+  .strict();
+
 export const updateInventoryItemCustomNotesInputSchema = z
   .object({
     custom_notes: nullableNormalizedTextSchema(
@@ -554,6 +621,7 @@ export const localInventoryImportSchema = z
           brand: z.string().trim().min(1).nullable().default(null),
           category: z.string().trim().min(1).nullable().default(null),
           size_label: z.string().trim().min(1).nullable().default(null),
+          pao_duration_months: z.number().int().min(1).max(120).nullable().optional(),
           image_ref: z.string().trim().min(1).nullable().default(null),
           ingredient_list_text: nullableNormalizedTextSchema(
             "ingredient_list_text",
@@ -589,6 +657,13 @@ export const localInventoryImportSchema = z
             .default(null),
           pao_deadline: isoDateSchema.nullable().default(null),
           usable_until: isoDateSchema.nullable().default(null),
+          remaining_percent_estimate: z
+            .number()
+            .int()
+            .min(0)
+            .max(100)
+            .nullable()
+            .default(null),
           custom_notes: nullableNormalizedTextSchema(
             "custom_notes",
             customNotesMaximumLength,
@@ -609,6 +684,9 @@ export const toolErrorOutputSchema = z
 
 export type RecordProductOpenedInput = z.infer<
   typeof recordProductOpenedInputSchema
+>;
+export type RecordProductOpenedCommand = z.infer<
+  typeof recordProductOpenedCommandSchema
 >;
 export type GetInventoryItemInput = z.infer<typeof getInventoryItemInputSchema>;
 export type GetInventoryItemOutput = z.infer<
@@ -657,6 +735,12 @@ export type UpdateInventoryItemFactsInput = z.infer<
 >;
 export type UpdateInventoryItemFactsOutput = z.infer<
   typeof updateInventoryItemFactsOutputSchema
+>;
+export type EndInventoryItemInput = z.infer<
+  typeof endInventoryItemInputSchema
+>;
+export type EndInventoryItemOutput = z.infer<
+  typeof endInventoryItemOutputSchema
 >;
 export type UpdateInventoryItemCustomNotesInput = z.infer<
   typeof updateInventoryItemCustomNotesInputSchema
