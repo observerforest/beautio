@@ -1,10 +1,16 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import type { BeautioBackup } from "@beautio/contracts";
+import {
+  createInventoryBatchInputSchema,
+  createInventoryBatchOutputSchema,
+  endInventoryItemInputSchema,
+  type BeautioBackup,
+} from "@beautio/contracts";
 import {
   AdminApiClient,
   AdminApiError,
   prepareBeautioBackupFile,
+  type EndUseInput,
   type FetchLike,
   type ObjectUrlApi,
 } from "../src/admin-api.ts";
@@ -47,12 +53,319 @@ const inventoryBody = {
       pao_deadline: "2027-02-01",
       pao_deadline_accuracy: "estimated",
       usable_until: "2027-02-01",
+      remaining_percent_estimate: null,
       usability_status: "usable",
       warnings: [],
       custom_notes: "Bottle-level note",
     },
   ],
 } as const;
+
+const creationInput = createInventoryBatchInputSchema.parse({
+  as_of: "2026-08-19",
+  products: [{ batch_ref: "new-product", name: "  Example serum  ", alias: " Cloud Drop " }],
+  inventory_items: [{
+    batch_ref: "bottle-1",
+    product_ref: { kind: "new", batch_ref: "new-product" },
+    lifecycle_status: "unopened",
+  }],
+});
+
+const creationBody = createInventoryBatchOutputSchema.parse({
+  outcome: "created",
+  as_of: "2026-08-19",
+  products: [{
+    ...inventoryBody.items[0].product,
+    batch_ref: "new-product",
+    image_ref: null,
+  }],
+  inventory_items: [{
+    batch_ref: "bottle-1",
+    inventory_item_id: "inventory-new",
+    product_id: "product-one",
+    lifecycle_status: "unopened",
+    opened_on: null,
+    opened_on_accuracy: null,
+    expires_on: null,
+    pao_duration_months: null,
+    pao_deadline: null,
+    pao_deadline_accuracy: null,
+    usable_until: null,
+    usability_status: "unknown",
+    warnings: [],
+    custom_notes: null,
+  }],
+});
+
+const endedInventoryBody = {
+  as_of: "2026-09-01",
+  inventory_item_id: "inventory one",
+  product_id: "product-one",
+  lifecycle_status: "discarded",
+  opened_on: "2026-08-01",
+  opened_on_accuracy: "estimated",
+  expires_on: null,
+  pao_duration_months: 6,
+  pao_deadline: "2027-02-01",
+  pao_deadline_accuracy: "estimated",
+  usable_until: "2027-02-01",
+  remaining_percent_estimate: 25,
+  usability_status: "usable",
+  warnings: [],
+  custom_notes: "Existing bottle note",
+} as const;
+
+test("manual creation uses Admin POST, normalizes input, and accepts matching returned identifiers", async () => {
+  const calls: Array<{ path: string; init: RequestInit }> = [];
+  const client = new AdminApiClient("admin-secret", async (input, init = {}) => {
+    calls.push({ path: String(input), init });
+    return jsonResponse(creationBody);
+  });
+  const result = await client.createInventoryBatch(creationInput);
+  assert.deepEqual(result, creationBody);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0]?.path, "/api/admin/create-inventory-batch");
+  assert.equal(calls[0]?.init.method, "POST");
+  assert.equal(new Headers(calls[0]?.init.headers).get("authorization"), "Bearer admin-secret");
+  assert.equal(new Headers(calls[0]?.init.headers).get("content-type"), "application/json");
+  const request = JSON.parse(String(calls[0]?.init.body));
+  assert.equal(request.products[0].name, "Example serum");
+  assert.equal(request.products[0].alias, "Cloud Drop");
+  assert.doesNotMatch(String(calls[0]?.init.body), /admin-secret/);
+  client.destroy();
+});
+
+test("Product PAO is sent once and mismatching create/update responses are not accepted", async () => {
+  const input = createInventoryBatchInputSchema.parse({
+    ...creationInput,
+    products: creationInput.products.map((product) => ({ ...product, pao_duration_months: 12 })),
+  });
+  let calls = 0;
+  const client = new AdminApiClient("admin-secret", async (_url, init) => {
+    calls += 1;
+    const body = JSON.parse(String(init?.body));
+    if (init?.method === "POST") {
+      assert.equal(body.products[0].pao_duration_months, 12);
+      assert.equal(body.inventory_items[0].pao_duration_months, undefined);
+      return jsonResponse(creationBody);
+    }
+    assert.equal(body.pao_duration_months, 12);
+    return jsonResponse({ product: { ...inventoryBody.items[0].product, pao_duration_months: 6 } });
+  });
+  await assert.rejects(client.createInventoryBatch(input), (error: unknown) =>
+    error instanceof AdminApiError && error.status === 0);
+  const product = creationBody.products[0];
+  assert.ok(product);
+  await assert.rejects(client.updateProduct(product.product_id, {
+    name: product.name, category: null, size_label: null,
+    image_asset_id: null, ingredient_list_text: null, shared_notes: null,
+    pao_duration_months: 12,
+  }), (error: unknown) => error instanceof AdminApiError && error.status === 0);
+  assert.equal(calls, 2);
+  client.destroy();
+});
+
+test("manual creation can reference an existing Product without sending shared facts", async () => {
+  const resultBody = { ...creationBody, products: [] };
+  const client = new AdminApiClient("admin-secret", async (_input, init) => {
+    const request = JSON.parse(String(init?.body));
+    assert.deepEqual(request.products, []);
+    assert.deepEqual(request.inventory_items[0].product_ref, { kind: "existing", product_id: "product-one" });
+    return jsonResponse(resultBody);
+  });
+  assert.deepEqual(await client.createInventoryBatch({
+    as_of: creationInput.as_of,
+    products: [],
+    inventory_items: [{
+      batch_ref: "bottle-1",
+      product_ref: { kind: "existing", product_id: "product-one" },
+      lifecycle_status: "unopened",
+    }],
+  }), resultBody);
+  client.destroy();
+});
+
+test("manual creation rejects invalid input before making a request", async () => {
+  let calls = 0;
+  const client = new AdminApiClient("admin-secret", async () => {
+    calls += 1;
+    return jsonResponse(creationBody);
+  });
+  await assert.rejects(client.createInventoryBatch({ ...creationInput, inventory_items: [] }));
+  await assert.rejects(client.createInventoryBatch({
+    ...creationInput,
+    products: [{ batch_ref: "new-product", name: "Example", alias: "12345678901" }],
+  }));
+  assert.equal(calls, 0);
+  client.destroy();
+});
+
+test("manual creation rejects malformed or mismatched success responses without retrying", async () => {
+  const mismatchedBodies = [
+    {},
+    { ...creationBody, as_of: "2026-08-20" },
+    { ...creationBody, inventory_items: [] },
+    { ...creationBody, products: [] },
+    { ...creationBody, products: [{ ...creationBody.products[0], batch_ref: "other-product" }] },
+    { ...creationBody, inventory_items: [{ ...creationBody.inventory_items[0], batch_ref: "other-bottle" }] },
+    { ...creationBody, inventory_items: [{ ...creationBody.inventory_items[0], product_id: "other-product" }] },
+  ];
+  for (const body of mismatchedBodies) {
+    let calls = 0;
+    const client = new AdminApiClient("admin-secret", async () => {
+      calls += 1;
+      return jsonResponse(body);
+    });
+    await assert.rejects(client.createInventoryBatch(creationInput),
+      (error: unknown) => error instanceof AdminApiError && error.code === "INVALID_RESPONSE");
+    assert.equal(calls, 1);
+    client.destroy();
+  }
+});
+
+test("manual creation preserves uncertain network and server failures without automatic retries", async () => {
+  for (const serverFailure of [false, true]) {
+    let calls = 0;
+    const client = new AdminApiClient("admin-secret", async () => {
+      calls += 1;
+      if (serverFailure) return jsonResponse({ error: { code: "INTERNAL_ERROR", message: "Unknown result" } }, 500);
+      throw new TypeError("Connection lost after sending");
+    });
+    await assert.rejects(client.createInventoryBatch(creationInput));
+    assert.equal(calls, 1);
+    client.destroy();
+  }
+});
+
+test("end use sends one strict Admin POST and correlates terminal readback", async () => {
+  const cases = [
+    {
+      input: endInventoryItemInputSchema.parse({
+        as_of: "2026-09-01",
+        lifecycle_status: "finished",
+      }),
+      response: {
+        ...endedInventoryBody,
+        lifecycle_status: "finished" as const,
+        remaining_percent_estimate: 0,
+      },
+    },
+    {
+      input: endInventoryItemInputSchema.parse({
+        as_of: "2026-09-01",
+        lifecycle_status: "discarded",
+        remaining_percent_estimate: 25,
+      }),
+      response: endedInventoryBody,
+    },
+    {
+      input: endInventoryItemInputSchema.parse({
+        as_of: "2026-09-01",
+        lifecycle_status: "discarded",
+        remaining_percent_estimate: null,
+      }),
+      response: {
+        ...endedInventoryBody,
+        remaining_percent_estimate: null,
+      },
+    },
+  ];
+
+  for (const { input, response } of cases) {
+    const calls: Array<{ path: string; init: RequestInit }> = [];
+    const client = new AdminApiClient("admin-secret", async (url, init = {}) => {
+      calls.push({ path: String(url), init });
+      return jsonResponse(response);
+    });
+
+    assert.deepEqual(await client.endInventoryItem(" inventory one ", input), response);
+    assert.equal(calls.length, 1);
+    assert.equal(
+      calls[0]?.path,
+      "/api/admin/inventory-items/inventory%20one/end-use",
+    );
+    assert.equal(calls[0]?.init.method, "POST");
+    assert.equal(
+      new Headers(calls[0]?.init.headers).get("authorization"),
+      "Bearer admin-secret",
+    );
+    assert.deepEqual(JSON.parse(String(calls[0]?.init.body)), input);
+    client.destroy();
+  }
+});
+
+test("end use rejects invalid drafts before HTTP and never retries uncertain writes", async () => {
+  let calls = 0;
+  const invalidClient = new AdminApiClient("admin-secret", async () => {
+    calls += 1;
+    return jsonResponse(endedInventoryBody);
+  });
+  const invalidInputs: readonly unknown[] = [
+    {
+      as_of: "2026-09-01",
+      lifecycle_status: "discarded",
+      remaining_percent_estimate: 1.5,
+    },
+    {
+      as_of: "2026-09-01",
+      lifecycle_status: "discarded",
+      remaining_percent_estimate: 101,
+    },
+    { as_of: "2026-09-01", lifecycle_status: "discarded" },
+    {
+      as_of: "2026-09-01",
+      lifecycle_status: "finished",
+      remaining_percent_estimate: 0,
+    },
+  ];
+  for (const input of invalidInputs) {
+    await assert.rejects(
+      invalidClient.endInventoryItem("inventory-one", input as EndUseInput),
+    );
+  }
+  assert.equal(calls, 0);
+  invalidClient.destroy();
+
+  const uncertainClient = new AdminApiClient("admin-secret", async () => {
+    calls += 1;
+    throw new TypeError("Connection lost after sending");
+  });
+  await assert.rejects(
+    uncertainClient.endInventoryItem("inventory-one", endInventoryItemInputSchema.parse({
+      as_of: "2026-09-01",
+      lifecycle_status: "finished",
+    })),
+  );
+  assert.equal(calls, 1);
+  uncertainClient.destroy();
+});
+
+test("end use rejects mismatched terminal responses after one request", async () => {
+  const mismatches = [
+    { ...endedInventoryBody, inventory_item_id: "other" },
+    { ...endedInventoryBody, as_of: "2026-09-02" },
+    { ...endedInventoryBody, lifecycle_status: "finished" },
+    { ...endedInventoryBody, remaining_percent_estimate: 50 },
+  ];
+  for (const response of mismatches) {
+    let calls = 0;
+    const client = new AdminApiClient("admin-secret", async () => {
+      calls += 1;
+      return jsonResponse(response);
+    });
+    await assert.rejects(
+      client.endInventoryItem("inventory one", endInventoryItemInputSchema.parse({
+        as_of: "2026-09-01",
+        lifecycle_status: "discarded",
+        remaining_percent_estimate: 25,
+      })),
+      (error: unknown) =>
+        error instanceof AdminApiError && error.code === "INVALID_RESPONSE",
+    );
+    assert.equal(calls, 1);
+    client.destroy();
+  }
+});
 
 test(
   "default browser fetch preserves the global receiver",

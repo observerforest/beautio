@@ -1,4 +1,4 @@
-import type { InventoryListItemOutput, InventoryListOutput } from "@beautio/contracts";
+import type { CreateInventoryBatchOutput, InventoryListItemOutput, InventoryListOutput } from "@beautio/contracts";
 import { useEffect, useMemo, useState } from "react";
 import { AdminApiClient } from "../../admin-api.ts";
 import { Icon } from "../../components/Icon.tsx";
@@ -13,6 +13,8 @@ import {
   type InventoryStatusFilter,
 } from "./models/index.ts";
 import { BottleEditorDialog } from "./BottleEditorDialog.tsx";
+import { CreateInventoryDialog } from "./CreateInventoryDialog.tsx";
+import { EndUseDialog } from "./EndUseDialog.tsx";
 import {
   BrowseToolbar,
   CollectionTabs,
@@ -25,8 +27,14 @@ import { NotesEditorDialog } from "./NotesEditorDialog.tsx";
 import { ProductCard } from "./ProductCard.tsx";
 import { ProductDetailDialog } from "./ProductDetailDialog.tsx";
 import { ProductEditorDialog } from "./ProductEditorDialog.tsx";
+import { refreshCreatedInventorySnapshot } from "./refresh-created-inventory.ts";
 
-type DialogMode = "detail" | "edit-product" | "edit-bottle" | "edit-notes";
+type DialogMode =
+  | "detail"
+  | "edit-product"
+  | "edit-bottle"
+  | "edit-notes"
+  | "end-use";
 
 export interface InventoryPageProps {
   readonly client: AdminApiClient;
@@ -79,6 +87,7 @@ export function InventoryPage({
   const [animateDetailEnter, setAnimateDetailEnter] = useState(true);
   const [editorItemFingerprint, setEditorItemFingerprint] = useState<string | null>(null);
   const [dialogFeedback, setDialogFeedback] = useState("");
+  const [createOpen, setCreateOpen] = useState(false);
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
@@ -149,7 +158,7 @@ export function InventoryPage({
     onStatusMessage(t("这条库存已被新读取结果更新。为避免旧草稿覆盖新事实，编辑器已关闭，请重新打开。"));
   }, [editorSnapshotChanged, onStatusMessage, t]);
 
-  const dialogOpen = selectedItem !== null && !editorSnapshotChanged;
+  const dialogOpen = createOpen || (selectedItem !== null && !editorSnapshotChanged);
   useEffect(() => {
     onDialogOpenChange(dialogOpen);
     return () => onDialogOpenChange(false);
@@ -215,6 +224,29 @@ export function InventoryPage({
     return true;
   };
 
+  const openCreate = (): void => {
+    if (readOnly) return;
+    closeDialog();
+    setDesktopSettingsOpen(false);
+    setCreateOpen(true);
+  };
+
+  const refreshCreatedInventory = async (): Promise<boolean> => {
+    const refreshed = await refreshCreatedInventorySnapshot(onRefresh);
+    if (!refreshed) return false;
+    setQueryInput("");
+    setMobilePage("inventory");
+    setBrowseOptions({ ...initialBrowseOptions, status: "all", sort: "created-desc" });
+    return true;
+  };
+
+  const handleCreated = async (_result: CreateInventoryBatchOutput): Promise<boolean> => {
+    if (!await refreshCreatedInventory()) return false;
+    setCreateOpen(false);
+    onStatusMessage(t("库存已新增并重新读取，当前显示总库存。"));
+    return true;
+  };
+
   const clearFilters = (): void => {
     setQueryInput("");
     setBrowseOptions((current) => ({
@@ -234,6 +266,7 @@ export function InventoryPage({
     browseOptions.status !== (browseOptions.view === "active" ? "opened" : "all");
   const lock = (message?: string): void => {
     setSelectedInventoryItemId(null);
+    setCreateOpen(false);
     setDesktopSettingsOpen(false);
     onLock(message ?? t("管理页已锁定，密钥已从当前标签页内存清除。"));
   };
@@ -304,13 +337,14 @@ export function InventoryPage({
             onStatusChange={changeStatus}
             onClearFilters={clearFilters}
             onOpenDetail={openDetail}
+            onCreate={openCreate}
             onUnauthorized={lock}
           />
         )}
       </div>
 
       {mobilePage === "inventory" && !readOnly ? (
-        <button type="button" disabled title={t("添加产品建设中")} className="fixed bottom-24 right-5 z-30 flex size-12 items-center justify-center rounded-full bg-[linear-gradient(135deg,#9B7F7C,#B3A0AD)] text-white shadow-[0_4px_18px_rgba(155,127,124,0.38)] md:hidden" aria-label={t("添加产品建设中")}>
+        <button type="button" onClick={openCreate} title={t("添加库存")} className="fixed bottom-24 right-5 z-30 flex size-12 items-center justify-center rounded-full bg-[linear-gradient(135deg,#9B7F7C,#B3A0AD)] text-white shadow-[0_4px_18px_rgba(155,127,124,0.38)] md:hidden" aria-label={t("添加库存")}>
           <Icon name="plus" />
         </button>
       ) : null}
@@ -344,6 +378,20 @@ export function InventoryPage({
             onBackupRestored={handleBackupRestored}
           />
         </div>
+      ) : null}
+
+      {createOpen && !readOnly ? (
+        <CreateInventoryDialog
+          items={inventory.items}
+          client={client}
+          onCancel={(message) => {
+            setCreateOpen(false);
+            if (message !== undefined) onStatusMessage(message);
+          }}
+          onCommitted={handleCreated}
+          onRefreshInventory={refreshCreatedInventory}
+          onUnauthorized={lock}
+        />
       ) : null}
 
       {selectedItem === null || editorSnapshotChanged ? null : (
@@ -382,6 +430,7 @@ interface InventorySurfaceProps {
   readonly onStatusChange: (status: InventoryStatusFilter) => void;
   readonly onClearFilters: () => void;
   readonly onOpenDetail: (item: InventoryListItemOutput) => void;
+  readonly onCreate: () => void;
   readonly onUnauthorized: (message: string) => void;
 }
 
@@ -400,29 +449,34 @@ function InventorySurface({
   onStatusChange,
   onClearFilters,
   onOpenDetail,
+  onCreate,
   onUnauthorized,
 }: InventorySurfaceProps) {
   const { t } = useI18n();
   return (
     <main className="flex min-h-0 flex-1 flex-col md:block md:min-h-screen md:pb-12">
       <div className="hidden border-b border-[#E5D8CF] bg-white px-8 py-4 md:block">
-        <BrowseToolbar
-          query={queryInput}
-          brand={browseOptions.brand}
-          brands={projection.brandChoices}
-          category={browseOptions.category}
-          categories={projection.categoryChoices}
-          sort={browseOptions.sort}
-          onQueryChange={onQueryInput}
-          onBrandChange={(brand) => onBrowseOptions((current) => ({ ...current, brand }))}
-          onCategoryChange={(category) => onBrowseOptions((current) => ({ ...current, category }))}
-          onSortChange={(sort) => onBrowseOptions((current) => ({ ...current, sort }))}
-        />
-        {readOnly ? null : (
-          <button type="button" disabled title={t("添加产品建设中")} className="absolute right-8 top-4 hidden items-center gap-2 rounded-full bg-[linear-gradient(120deg,#9B7F7C,#B3A0AD)] px-5 py-2.5 text-sm text-white opacity-45 xl:flex">
-            <Icon name="plus" />{t("添加产品")}
-          </button>
-        )}
+        <div className="flex flex-wrap items-center gap-3">
+          <div className="min-w-0 flex-1 basis-[600px]">
+            <BrowseToolbar
+              query={queryInput}
+              brand={browseOptions.brand}
+              brands={projection.brandChoices}
+              category={browseOptions.category}
+              categories={projection.categoryChoices}
+              sort={browseOptions.sort}
+              onQueryChange={onQueryInput}
+              onBrandChange={(brand) => onBrowseOptions((current) => ({ ...current, brand }))}
+              onCategoryChange={(category) => onBrowseOptions((current) => ({ ...current, category }))}
+              onSortChange={(sort) => onBrowseOptions((current) => ({ ...current, sort }))}
+            />
+          </div>
+          {readOnly ? null : (
+            <button type="button" onClick={onCreate} className="ml-auto flex shrink-0 items-center gap-2 rounded-full bg-[linear-gradient(120deg,#9B7F7C,#B3A0AD)] px-5 py-2.5 text-sm text-white">
+              <Icon name="plus" />{t("添加库存")}
+            </button>
+          )}
+        </div>
       </div>
 
       <div className="shrink-0 bg-[#F5F3F1] px-5 pb-2 pt-3 md:hidden">
@@ -566,6 +620,22 @@ function InventoryDialog({
       />
     );
   }
+  if (mode === "end-use") {
+    if (item.lifecycle_status !== "opened") return null;
+    return (
+      <EndUseDialog
+        item={item}
+        client={client}
+        onCancel={(message) =>
+          onReturn(
+            message ?? t("已取消结束使用，没有提交修改。"),
+          )
+        }
+        onCommitted={onCommitted}
+        onUnauthorized={onUnauthorized}
+      />
+    );
+  }
   return (
     <ProductDetailDialog
       item={item}
@@ -578,6 +648,7 @@ function InventoryDialog({
       onEditProduct={() => onMode("edit-product")}
       onEditBottle={() => onMode("edit-bottle")}
       onEditNotes={() => onMode("edit-notes")}
+      onEndUse={() => onMode("end-use")}
       onUnauthorized={onUnauthorized}
     />
   );

@@ -15,6 +15,7 @@ import { canPreserveLegacyAccuracy, openedOnAccuracy, paoDeadlineAccuracy, usabi
 import { EditorDateInput, EditorFooter, editorInputClass, Field } from "./EditorPrimitives.tsx";
 import { dateWithAccuracy, displayValue, inventoryErrorMessage } from "./utils/inventory-format.ts";
 import { useI18n } from "../../i18n.tsx";
+import { inventoryPaoScope, paoDurationLabel, paoForBottleUpdate } from "./models/pao-model.ts";
 
 export interface BottleEditorDialogProps {
   readonly item: InventoryListItemOutput;
@@ -23,19 +24,6 @@ export interface BottleEditorDialogProps {
   readonly onCancel: () => void;
   readonly onCommitted: (inventoryItemId: string, message: string) => Promise<boolean>;
   readonly onUnauthorized: (message: string) => void;
-}
-
-/**
- * 解析酒瓶编辑器中的可选正整数字段，不强制转换无效草稿。
- * Parses an optional positive integer field in the bottle editor without coercing invalid drafts.
- *
- * @param value - 浏览器输入框的当前值。 / Current browser input value.
- * @returns 空字段返回 null，合法值返回正整数，无效输入返回 undefined。 / Null for an empty field, a positive integer, or undefined for invalid input.
- */
-function nullablePositiveInteger(value: string): number | null | undefined {
-  if (value.length === 0) return null;
-  const parsed = Number(value);
-  return Number.isInteger(parsed) && parsed > 0 ? parsed : undefined;
 }
 
 /**
@@ -53,7 +41,7 @@ export function BottleEditorDialog({
   onCommitted,
   onUnauthorized,
 }: BottleEditorDialogProps) {
-  const { t } = useI18n();
+  const { locale, t } = useI18n();
   const formId = useId();
   const openedDateRef = useRef<HTMLInputElement>(null);
   const accuracyRef = useRef<HTMLButtonElement>(null);
@@ -69,6 +57,7 @@ export function BottleEditorDialog({
   const [error, setError] = useState("");
   const [writeCompleted, setWriteCompleted] = useState(false);
   const legacyAllowed = canPreserveLegacyAccuracy(item, lifecycle, openedOn || null);
+  const paoScope = inventoryPaoScope(item);
   const lifecycleOptions: readonly SelectMenuOption<"unopened" | "opened">[] = [
     { value: "unopened", label: t("未开封") },
     { value: "opened", label: t("已开封") },
@@ -120,8 +109,8 @@ export function BottleEditorDialog({
         return;
       }
     }
-    const paoMonths = nullablePositiveInteger(pao);
-    if (paoMonths === undefined || (paoMonths !== null && paoMonths > 120)) {
+    const paoMonths = paoForBottleUpdate(item, pao);
+    if (paoMonths === undefined) {
       setError(t("PAO 必须是 1–120 的整数，或留空。"));
       paoRef.current?.focus();
       return;
@@ -223,10 +212,18 @@ export function BottleEditorDialog({
             <Field label={t("包装过期日")} hint={t("没有记录时留空。")}>
               <EditorDateInput value={expiresOn} onChange={(event) => setExpiresOn(event.target.value)} />
             </Field>
-            <Field label={t("PAO（月）")} hint={t("整数 1–120；没有记录时留空。")}>
-              <input ref={paoRef} type="number" min="1" max="120" step="1" inputMode="numeric" value={pao} onChange={(event) => setPao(event.target.value)} className={editorInputClass} />
-            </Field>
+            {paoScope.bottleEditable ? <Field label={t("独立库存 PAO（月）")} hint={t("未关联产品，仅影响当前瓶。") }>
+              <input ref={paoRef} inputMode="numeric" value={pao} onChange={(event) => setPao(event.target.value)} className={editorInputClass} />
+            </Field> : null}
           </div>
+          {paoScope.bottleEditable ? null : <section className="space-y-2 rounded-2xl bg-[#EEF1F4] px-4 py-3.5 text-xs leading-relaxed text-[#4A6272]">
+            <p><strong>{t("产品共享 PAO")}</strong>: {paoDurationLabel(paoScope.productMonths, locale, t)}</p>
+            <p>{t(paoScope.missingProduct ? "关联产品资料缺失；保留本瓶现有 PAO，不在这里修改。" : "PAO 属于产品共享资料，请到「编辑产品资料」修改。")}</p>
+            {paoScope.hasHistoricalDifference || paoScope.missingProduct ? <>
+              <p><strong>{t("本瓶 PAO（历史记录）")}</strong>: {paoDurationLabel(paoScope.bottleMonths, locale, t)}</p>
+              {paoScope.hasHistoricalDifference ? <p>{t("本瓶当前使用的 PAO 与产品共享资料不同，保留显示历史记录；不会从单瓶推断产品时长。")}</p> : null}
+            </> : null}
+          </section>}
           <section className="space-y-1 rounded-2xl bg-[#F5F3F1] px-4 py-3.5 text-xs leading-relaxed text-[#A8A3A0]">
             <strong className="block text-[#5A4C4A]">{t("当前只读派生值")}</strong>
             <p>{t("PAO 截止日")}: {dateWithAccuracy(item.pao_deadline, paoDeadlineAccuracy(item), t)}</p>

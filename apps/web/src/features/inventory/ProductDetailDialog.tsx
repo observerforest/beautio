@@ -15,6 +15,7 @@ import {
 } from "./models/index.ts";
 import { ImageViewer } from "./ImageViewer.tsx";
 import { useProductImage } from "./useProductImage.ts";
+import { inventoryPaoScope, paoDurationLabel } from "./models/pao-model.ts";
 
 export interface ProductDetailDialogProps {
   readonly item: InventoryListItemOutput;
@@ -27,6 +28,7 @@ export interface ProductDetailDialogProps {
   readonly onEditProduct: () => void;
   readonly onEditBottle: () => void;
   readonly onEditNotes: () => void;
+  readonly onEndUse: () => void;
   readonly onUnauthorized: (message: string) => void;
 }
 
@@ -48,6 +50,7 @@ export function ProductDetailDialog({
   onEditProduct,
   onEditBottle,
   onEditNotes,
+  onEndUse,
   onUnauthorized,
 }: ProductDetailDialogProps) {
   const { locale, t } = useI18n();
@@ -62,6 +65,7 @@ export function ProductDetailDialog({
   const terminal = item.lifecycle_status === "finished" || item.lifecycle_status === "discarded";
   const openingAccuracy = openedOnAccuracy(item);
   const deadlineAccuracy = paoDeadlineAccuracy(item);
+  const paoScope = inventoryPaoScope(item);
   const bottleLabel =
     item.product_inventory_count !== null &&
     item.product_inventory_count > 1 &&
@@ -107,13 +111,24 @@ export function ProductDetailDialog({
         {readOnly ? t("生产实时数据 · 当前为本地只读观察模式。") : t(feedback)}
       </p>
       {readOnly ? null : (
-        <div className="flex gap-2">
-          <button type="button" onClick={onEditProduct} disabled={item.product === null} title={item.product === null ? t("这条库存没有关联 Product") : undefined} className="flex-1 rounded-2xl bg-[#F5F3F1] py-3 text-sm text-[#5A4C4A] disabled:opacity-45">
-            {t("编辑产品资料")}
-          </button>
-          <button type="button" onClick={onEditBottle} disabled={terminal} title={terminal ? t("已结束库存不能修改生命周期事实") : undefined} className="flex-1 rounded-2xl bg-[linear-gradient(120deg,#9B7F7C,#B3A0AD)] py-3 text-sm font-medium text-white disabled:opacity-45">
-            {t("编辑这瓶")}
-          </button>
+        <div className="space-y-2">
+          {item.lifecycle_status === "opened" ? (
+            <button
+              type="button"
+              onClick={onEndUse}
+              className="w-full rounded-2xl border border-[#D9B7B4] bg-[#FFF9F8] py-3 text-sm font-medium text-[#9D4C57] transition-colors hover:bg-[#FBF3F2]"
+            >
+              {t("结束使用")}
+            </button>
+          ) : null}
+          <div className="flex gap-2">
+            <button type="button" onClick={onEditProduct} disabled={item.product === null} title={item.product === null ? t("这条库存没有关联 Product") : undefined} className="flex-1 rounded-2xl bg-[#F5F3F1] py-3 text-sm text-[#5A4C4A] disabled:opacity-45">
+              {t("编辑产品资料")}
+            </button>
+            <button type="button" onClick={onEditBottle} disabled={terminal} title={terminal ? t("已结束库存不能修改生命周期事实") : undefined} className="flex-1 rounded-2xl bg-[linear-gradient(120deg,#9B7F7C,#B3A0AD)] py-3 text-sm font-medium text-white disabled:opacity-45">
+              {t("编辑这瓶")}
+            </button>
+          </div>
         </div>
       )}
     </div>
@@ -132,7 +147,7 @@ export function ProductDetailDialog({
         <div className="space-y-5 px-5 py-5">
           <section className="flex items-start gap-2 rounded-2xl bg-[#F5F3F1] px-4 py-3 text-[11px] leading-relaxed text-[#7A7572]">
             <Icon name="info" className="mt-0.5 size-3.5 shrink-0" />
-            <p>{t("产品成分与共享备注属于同款 Product；自定义备注只属于当前瓶。期限和可用状态由服务端计算。")}</p>
+            <p>{t("PAO 时长、成分与共享备注属于产品；开封日期、包装过期日与自定义备注属于当前瓶。期限和可用状态由服务端计算。")}</p>
           </section>
 
           <DetailSection
@@ -146,6 +161,7 @@ export function ProductDetailDialog({
               <InfoCell label={t("品牌")} value={optionalProductValue(item.product?.brand)} className="col-span-2" />
               <InfoCell label={t("品类")} value={item.product?.category ?? t("未记录")} className="col-span-2" />
               <InfoCell label={t("规格")} value={item.product?.size_label ?? t("未记录")} className="col-span-2" />
+              <InfoCell label={t("产品共享 PAO")} value={paoDurationLabel(paoScope.productMonths, locale, t)} className="col-span-6" />
             </div>
             <LongFact label={t("成分表原文")} value={item.product?.ingredient_list_text ?? null} />
             <LongFact label={t("共享备注")} value={item.product?.shared_notes ?? null} />
@@ -164,8 +180,10 @@ export function ProductDetailDialog({
                 accessory={<AccuracyBadge accuracy={openingAccuracy} />}
               />
               <InfoCell label={t("包装过期日")} value={item.expires_on ?? t("未记录")} />
-              <InfoCell label="PAO" value={item.pao_duration_months === null ? t("未记录") : locale === "en" ? `${item.pao_duration_months} months` : `${item.pao_duration_months} 个月`} />
+              {paoScope.bottleEditable || paoScope.hasHistoricalDifference || paoScope.missingProduct ? <InfoCell label={t(paoScope.bottleEditable ? "独立库存 PAO" : "本瓶 PAO（历史记录）")} value={paoDurationLabel(paoScope.bottleMonths, locale, t)} /> : null}
+              {terminal ? <InfoCell label={t("结束时剩余量")} value={item.remaining_percent_estimate === null ? t("未知") : `${item.remaining_percent_estimate}%`} /> : null}
             </div>
+            {paoScope.hasHistoricalDifference || paoScope.missingProduct ? <p className="rounded-2xl bg-[#FBF6F5] px-4 py-3 text-[11px] leading-relaxed text-[#7A6260]">{t(paoScope.missingProduct ? "关联产品资料缺失；保留本瓶现有 PAO，不在这里修改。" : "本瓶当前使用的 PAO 与产品共享资料不同，保留显示历史记录；不会从单瓶推断产品时长。")}</p> : null}
             <div className="relative rounded-2xl bg-[#F5F3F1] px-3 py-2">
               <div className="pr-7">
                 <span className="block text-[10px] text-[#A8A3A0]">{t("自定义备注（仅这瓶）")}</span>

@@ -238,6 +238,7 @@ test("inventory browsing separates active and terminal archive states with sourc
     createItem({
       inventory_item_id: "finished",
       lifecycle_status: "finished",
+      remaining_percent_estimate: 0,
       usability_status: "usable",
       product_id: "product-finished",
       product: createProduct("product-finished", { brand: "Gamma", category: "洁面" }),
@@ -245,6 +246,7 @@ test("inventory browsing separates active and terminal archive states with sourc
     createItem({
       inventory_item_id: "discarded",
       lifecycle_status: "discarded",
+      remaining_percent_estimate: 25,
       usability_status: "expired",
       product_id: "product-discarded",
       product: createProduct("product-discarded", { brand: "Delta", category: "面膜" }),
@@ -266,6 +268,10 @@ test("inventory browsing separates active and terminal archive states with sourc
     attention: 1,
   });
   assert.deepEqual(itemIds(archive.items), ["discarded", "finished"]);
+  assert.deepEqual(
+    archive.items.map((item) => item.remaining_percent_estimate),
+    [25, 0],
+  );
   assert.deepEqual(archive.brandChoices, ["Delta", "Gamma"]);
   assert.deepEqual(archive.categoryChoices, ["洁面", "面膜"]);
 });
@@ -544,6 +550,7 @@ function createItem(
     pao_deadline: null,
     pao_deadline_accuracy: null,
     usable_until: null,
+    remaining_percent_estimate: null,
     usability_status: "unknown",
     warnings: [],
     custom_notes: null,

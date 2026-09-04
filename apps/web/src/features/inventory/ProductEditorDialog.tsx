@@ -15,6 +15,7 @@ import { EditorFooter, editorInputClass, Field } from "./EditorPrimitives.tsx";
 import { inventoryErrorMessage } from "./utils/inventory-format.ts";
 import { useProductImage } from "./useProductImage.ts";
 import { useI18n } from "../../i18n.tsx";
+import { changedProductPao, parsePaoDuration } from "./models/pao-model.ts";
 
 const INGREDIENT_LIST_TEXT_MAXIMUM = 5_000;
 const NOTES_MAXIMUM = 1_000;
@@ -47,13 +48,16 @@ export function ProductEditorDialog({
   const formId = useId();
   const nameRef = useRef<HTMLInputElement>(null);
   const aliasRef = useRef<HTMLInputElement>(null);
+  const paoRef = useRef<HTMLInputElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
   const mountedRef = useRef(true);
+  const composingRef = useRef(false);
   const [name, setName] = useState(product.name);
   const [alias, setAlias] = useState(product.alias ?? "");
   const [brand, setBrand] = useState(product.brand ?? "");
   const [category, setCategory] = useState(product.category ?? "");
   const [size, setSize] = useState(product.size_label ?? "");
+  const [pao, setPao] = useState(product.pao_duration_months === null ? "" : String(product.pao_duration_months));
   const [ingredients, setIngredients] = useState(product.ingredient_list_text ?? "");
   const [sharedNotes, setSharedNotes] = useState(product.shared_notes ?? "");
   const [selectedImage, setSelectedImage] = useState<File | null>(null);
@@ -96,7 +100,7 @@ export function ProductEditorDialog({
 
   const handleSubmit = (event: FormEvent<HTMLFormElement>): void => {
     event.preventDefault();
-    if (busy || writeCompleted) return;
+    if (busy || writeCompleted || composingRef.current) return;
     const normalizedName = name.trim();
     if (normalizedName.length === 0) {
       setError(t("产品名称不能为空。"));
@@ -112,12 +116,19 @@ export function ProductEditorDialog({
       aliasRef.current?.focus();
       return;
     }
+    const paoMonths = parsePaoDuration(pao);
+    if (paoMonths === undefined) {
+      setError(t("PAO 必须是 1–120 的整数，或留空。"));
+      paoRef.current?.focus();
+      return;
+    }
     const input: ProductFactsInput = {
       name: normalizedName,
       alias: normalizedAlias,
       brand: normalizeOptionalEditorText(brand),
       category: normalizeOptionalEditorText(category),
       size_label: normalizeOptionalEditorText(size),
+      ...changedProductPao(product.pao_duration_months, paoMonths),
       image_asset_id: clearImage ? null : currentImageAssetId,
       ingredient_list_text: normalizeOptionalEditorText(ingredients),
       shared_notes: normalizeOptionalEditorText(sharedNotes),
@@ -197,7 +208,14 @@ export function ProductEditorDialog({
         <ToastViewport><Toast message={error} onDismiss={() => setError("")} /></ToastViewport>
       )}
     >
-      <form id={formId} onSubmit={handleSubmit} className="min-w-0 w-full space-y-5 px-5 py-5" noValidate>
+      <form
+        id={formId} onSubmit={handleSubmit} className="min-w-0 w-full space-y-5 px-5 py-5" noValidate
+        onCompositionStart={() => { composingRef.current = true; }}
+        onCompositionEnd={() => { composingRef.current = false; }}
+        onKeyDown={(event) => {
+          if (event.key === "Enter" && (composingRef.current || event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229)) event.preventDefault();
+        }}
+      >
         <fieldset disabled={busy || writeCompleted} className="min-w-0 w-full space-y-5 disabled:opacity-70">
           <div className="flex flex-col items-center gap-3">
             <div className="size-32 overflow-hidden rounded-2xl bg-[#F8F5F3]">{preview}</div>
@@ -245,6 +263,10 @@ export function ProductEditorDialog({
                 <input value={size} onChange={(event) => setSize(event.target.value)} maxLength={100} className={editorInputClass} />
               </Field>
             </div>
+            <Field label={t("产品 PAO（月）")} hint={t("开封后可用时长；同款产品共享，整数 1–120，未知时留空。") }>
+              <input ref={paoRef} inputMode="numeric" value={pao} onChange={(event) => setPao(event.target.value)} className={editorInputClass} />
+            </Field>
+            <p className="rounded-2xl bg-[#EEF1F4] px-4 py-3 text-[11px] leading-relaxed text-[#4A6272]">{t("修改产品 PAO 会影响该产品所有库存瓶，并按每瓶开封日期重新计算期限；包装过期日不变。")}</p>
             <Field label={t("成分表原文")} hint={t("保留包装文字与内部换行。")} counter={textCharacterCountLabel(ingredients, INGREDIENT_LIST_TEXT_MAXIMUM)}>
               <textarea value={ingredients} onChange={(event) => setIngredients(event.target.value)} maxLength={INGREDIENT_LIST_TEXT_MAXIMUM} rows={8} className={`${editorInputClass} resize-y`} />
             </Field>

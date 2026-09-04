@@ -1,4 +1,8 @@
 import {
+  createInventoryBatchInputSchema,
+  createInventoryBatchOutputSchema,
+  endInventoryItemInputSchema,
+  endInventoryItemOutputSchema,
   inventoryItemIdSchema,
   inventoryListOutputSchema,
   restoreBeautioBackupOutputSchema,
@@ -9,6 +13,10 @@ import {
   updateProductInputSchema,
   updateProductOutputSchema,
   type InventoryListOutput,
+  type CreateInventoryBatchInput,
+  type CreateInventoryBatchOutput,
+  type EndInventoryItemInput,
+  type EndInventoryItemOutput,
   type InventoryStateOutput,
   type RestoreBeautioBackupOutput,
   type UpdateInventoryItemCustomNotesInput,
@@ -23,6 +31,8 @@ export type OpenedOnAccuracy = NonNullable<
 >;
 export type ProductFactsInput = UpdateProductInput;
 export type InventoryItemCustomNotesInput = UpdateInventoryItemCustomNotesInput;
+export type EndUseInput = EndInventoryItemInput;
+export type EndedInventoryItem = EndInventoryItemOutput;
 export type UpdatedInventoryItemCustomNotes =
   UpdateInventoryItemCustomNotesOutput["inventory_item"];
 export interface InventoryItemFactsInput {
@@ -160,6 +170,57 @@ export class AdminApiClient {
   }
 
   /**
+   * Creates one explicitly confirmed batch through the Admin interface, without retries.
+   *
+   * @param input - New Product facts and new bottles, or references to existing Products.
+   * @returns The validated server result matching this batch. A transport or response
+   * error does not prove that the write failed; callers must not automatically resend.
+   */
+  async createInventoryBatch(
+    input: CreateInventoryBatchInput,
+  ): Promise<CreateInventoryBatchOutput> {
+    const parsedInput = createInventoryBatchInputSchema.parse(input);
+    const body = await this.#request(
+      "/api/admin/create-inventory-batch",
+      jsonRequest("POST", parsedInput),
+      readJson,
+    );
+    try {
+      const result = createInventoryBatchOutputSchema.parse(body);
+      const products = new Map(result.products.map((product) => [product.batch_ref, product]));
+      const items = new Map(result.inventory_items.map((item) => [item.batch_ref, item]));
+      if (
+        result.as_of !== parsedInput.as_of ||
+        result.products.length !== parsedInput.products.length ||
+        products.size !== result.products.length ||
+        result.inventory_items.length !== parsedInput.inventory_items.length ||
+        items.size !== result.inventory_items.length ||
+        new Set(result.products.map((product) => product.product_id)).size !== result.products.length ||
+        new Set(result.inventory_items.map((item) => item.inventory_item_id)).size !== result.inventory_items.length ||
+        parsedInput.products.some((product) => {
+          const created = products.get(product.batch_ref);
+          return created === undefined ||
+            (product.pao_duration_months !== undefined &&
+              created.pao_duration_months !== product.pao_duration_months);
+        }) ||
+        parsedInput.inventory_items.some((item) => {
+          const created = items.get(item.batch_ref);
+          const productId = item.product_ref.kind === "existing"
+            ? item.product_ref.product_id
+            : products.get(item.product_ref.batch_ref)?.product_id;
+          return created === undefined || productId === undefined ||
+            created.product_id !== productId;
+        })
+      ) {
+        throw invalidResponse();
+      }
+      return result;
+    } catch {
+      throw invalidResponse();
+    }
+  }
+
+  /**
    * Downloads one complete versioned Beautio backup without parsing or reserializing it.
    *
    * @returns The response Blob and a server-supplied safe backup filename.
@@ -242,7 +303,12 @@ export class AdminApiClient {
       readJson,
     );
     try {
-      return updateProductOutputSchema.parse(body).product;
+      const product = updateProductOutputSchema.parse(body).product;
+      if (parsedInput.pao_duration_months !== undefined &&
+        product.pao_duration_months !== parsedInput.pao_duration_months) {
+        throw invalidResponse();
+      }
+      return product;
     } catch {
       throw invalidResponse();
     }
@@ -267,6 +333,46 @@ export class AdminApiClient {
     );
     try {
       updateInventoryItemFactsOutputSchema.parse(body);
+    } catch {
+      throw invalidResponse();
+    }
+  }
+
+  /**
+   * Ends use of one opened bottle without retrying an uncertain write.
+   *
+   * @param inventoryItemId - Opaque existing InventoryItem identifier.
+   * @param input - Explicit finished or discarded command and readback date.
+   * @returns Server-confirmed terminal facts after committed repository readback.
+   */
+  async endInventoryItem(
+    inventoryItemId: string,
+    input: EndUseInput,
+  ): Promise<EndedInventoryItem> {
+    const normalizedInventoryItemId = inventoryItemIdSchema.parse(
+      inventoryItemId,
+    );
+    const parsedInput = endInventoryItemInputSchema.parse(input);
+    const body = await this.#request(
+      `/api/admin/inventory-items/${encodeURIComponent(normalizedInventoryItemId)}/end-use`,
+      jsonRequest("POST", parsedInput),
+      readJson,
+    );
+    try {
+      const committed = endInventoryItemOutputSchema.parse(body);
+      const expectedRemaining =
+        parsedInput.lifecycle_status === "finished"
+          ? 0
+          : parsedInput.remaining_percent_estimate;
+      if (
+        committed.inventory_item_id !== normalizedInventoryItemId ||
+        committed.as_of !== parsedInput.as_of ||
+        committed.lifecycle_status !== parsedInput.lifecycle_status ||
+        committed.remaining_percent_estimate !== expectedRemaining
+      ) {
+        throw invalidResponse();
+      }
+      return committed;
     } catch {
       throw invalidResponse();
     }
@@ -405,7 +511,7 @@ export class AdminApiClient {
   }
 }
 
-function jsonRequest(method: "PUT", body: object): RequestInit {
+function jsonRequest(method: "PUT" | "POST", body: object): RequestInit {
   return {
     method,
     headers: {
