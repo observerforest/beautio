@@ -4,6 +4,7 @@ import type {
   InventoryBackupReplacement,
   InventoryBackupSnapshot,
   InventoryItemCustomNotesPersistenceInput,
+  InventoryCollectionReadOptions,
   ProductFactsPersistenceInput,
   ProductImagePersistenceInput,
   RecordProductOpenedPersistenceInput,
@@ -74,10 +75,15 @@ export class SqliteInventoryRepository implements BackupInventoryRepository {
   }
 
   /** @inheritdoc */
-  async findAll(): Promise<readonly InventoryItem[]> {
-    const rows = this.#database
-      .prepare(
-        `SELECT
+  async findAll(
+    options?: InventoryCollectionReadOptions,
+  ): Promise<readonly InventoryItem[]> {
+    const maximumItems =
+      options === undefined
+        ? null
+        : requirePositiveReadLimit(options.maximumItems);
+    const statement = this.#database.prepare(
+      `SELECT
           id,
           product_id,
           created_at,
@@ -91,9 +97,11 @@ export class SqliteInventoryRepository implements BackupInventoryRepository {
           remaining_percent_estimate,
           custom_notes
         FROM inventory_items
-        ORDER BY id ASC`,
-      )
-      .all() as unknown as readonly InventoryRow[];
+        ORDER BY id ASC${maximumItems === null ? "" : "\n        LIMIT ?"}`,
+    );
+    const rows = (maximumItems === null
+      ? statement.all()
+      : statement.all(maximumItems)) as unknown as readonly InventoryRow[];
 
     return rows.map(mapInventoryRow);
   }
@@ -985,6 +993,13 @@ export class SqliteInventoryRepository implements BackupInventoryRepository {
       throw new BeautioError("INTERNAL_ERROR", "database write failed");
     }
   }
+}
+
+function requirePositiveReadLimit(value: number): number {
+  if (!Number.isSafeInteger(value) || value < 1) {
+    throw new Error("maximumItems must be a positive safe integer");
+  }
+  return value;
 }
 
 function isSqliteBusyOrLocked(

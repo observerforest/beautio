@@ -94,6 +94,7 @@ const MAX_IMAGE_BYTES = 20 * 1024 * 1024;
 const MAX_IMAGE_PIXELS = 40_000_000;
 const TEMPORARY_ASSET_MILLISECONDS = 24 * 60 * 60 * 1000;
 const MAX_BACKUP_TOTAL_IMAGE_BYTES = 200 * 1024 * 1024;
+const MAXIMUM_SEARCH_CANDIDATE_ITEMS = 1_000;
 const MAX_BACKUP_SERIALIZED_BYTES = 280 * 1024 * 1024;
 
 export class InventoryApplicationService {
@@ -225,7 +226,15 @@ export class InventoryApplicationService {
     untrustedInput: unknown,
   ): Promise<SearchInventoryOutput> {
     const input = parseInput(searchInventoryInputSchema, untrustedInput);
-    const items = await this.#repository.findAll();
+    const items = await this.#repository.findAll({
+      maximumItems: MAXIMUM_SEARCH_CANDIDATE_ITEMS + 1,
+    });
+    if (items.length > MAXIMUM_SEARCH_CANDIDATE_ITEMS) {
+      throw new BeautioError(
+        "INTERNAL_ERROR",
+        "inventory search exceeds the 1000-item safety limit",
+      );
+    }
     const productsById = await loadProducts(this.#repository, items);
     const normalizedQuery = input.query?.toLowerCase() ?? null;
     const asOf =

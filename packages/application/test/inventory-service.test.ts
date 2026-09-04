@@ -16,6 +16,7 @@ import {
   type ImageAssetStorage,
   type ImageRendition,
   type ImageRenditionProvider,
+  type InventoryCollectionReadOptions,
   type InventoryRepository,
   type InventoryItemCustomNotesPersistenceInput,
   type ProductFactsPersistenceInput,
@@ -36,6 +37,8 @@ class RecordingInventoryRepository implements InventoryRepository {
   readonly updateInventoryItemCustomNotesCalls:
     InventoryItemCustomNotesPersistenceInput[] = [];
   readonly setProductDisplayImageCalls: ProductImagePersistenceInput[] = [];
+  readonly findAllMaximumItems: Array<number | null> = [];
+  findProductByIdCalls = 0;
   updateInventoryItemFactsCalls = 0;
   endInventoryItemCalls = 0;
   endInventoryItemFailure: Error | null = null;
@@ -49,11 +52,18 @@ class RecordingInventoryRepository implements InventoryRepository {
     return this.item;
   }
 
-  async findAll(): Promise<readonly InventoryItem[]> {
-    return this.item === null ? [] : [this.item];
+  async findAll(
+    options?: InventoryCollectionReadOptions,
+  ): Promise<readonly InventoryItem[]> {
+    this.findAllMaximumItems.push(options?.maximumItems ?? null);
+    const items = this.item === null ? [] : [this.item];
+    return options === undefined
+      ? items
+      : items.slice(0, options.maximumItems);
   }
 
   async findProductById(productId: string): Promise<Product | null> {
+    this.findProductByIdCalls += 1;
     return this.products.get(productId) ?? null;
   }
 
@@ -216,8 +226,13 @@ class ReadOnlyInventoryRepository extends RecordingInventoryRepository {
     return this.items.find((item) => item.id === inventoryItemId) ?? null;
   }
 
-  override async findAll(): Promise<readonly InventoryItem[]> {
-    return this.items;
+  override async findAll(
+    options?: InventoryCollectionReadOptions,
+  ): Promise<readonly InventoryItem[]> {
+    this.findAllMaximumItems.push(options?.maximumItems ?? null);
+    return options === undefined
+      ? this.items
+      : this.items.slice(0, options.maximumItems);
   }
 }
 
@@ -1000,6 +1015,52 @@ test("BD-DATA-005 search sorts complete IDs after filtering and reports paginati
   assert.equal(all.items[0]?.product_id, null);
   assert.equal(all.items[0]?.product_name, null);
   assert.equal(all.items[0]?.has_image, false);
+});
+
+test("BD-DATA-005 search reads cap plus one and rejects an oversized candidate set", async () => {
+  const product = createProduct({
+    id: "oversized-product",
+    name: "Must not be loaded",
+  });
+  const items = Array.from({ length: 1_001 }, (_, index) =>
+    createInventoryItem({
+      id: `candidate-${index.toString().padStart(4, "0")}`,
+      productId: product.id,
+      lifecycleStatus: "unopened",
+    }),
+  );
+  const repository = new ReadOnlyInventoryRepository(items, [product]);
+  const service = new InventoryApplicationService(repository);
+
+  await assert.rejects(service.searchInventory({ limit: 1 }), (error: unknown) => {
+    assert.ok(error instanceof BeautioError);
+    assert.equal(error.code, "INTERNAL_ERROR");
+    assert.equal(
+      error.message,
+      "inventory search exceeds the 1000-item safety limit",
+    );
+    return true;
+  });
+  assert.deepEqual(repository.findAllMaximumItems, [1_001]);
+  assert.equal(repository.findProductByIdCalls, 0);
+});
+
+test("BD-DATA-005 search preserves exact totals at the candidate safety limit", async () => {
+  const items = Array.from({ length: 1_000 }, (_, index) =>
+    createInventoryItem({
+      id: `bounded-${index.toString().padStart(4, "0")}`,
+      lifecycleStatus: "unopened",
+    }),
+  );
+  const repository = new ReadOnlyInventoryRepository(items);
+  const service = new InventoryApplicationService(repository);
+
+  const result = await service.searchInventory({ offset: 998, limit: 1 });
+
+  assert.deepEqual(repository.findAllMaximumItems, [1_001]);
+  assert.equal(result.total, 1_000);
+  assert.equal(result.next_offset, 999);
+  assert.equal(result.items[0]?.inventory_item_id, "bounded-0998");
 });
 
 test("BD-DATA-005 search only derives status for an explicit as_of date", async () => {

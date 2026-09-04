@@ -26,7 +26,7 @@ export const searchInventoryToolName = "search_inventory";
 export const fetchInventoryItemToolName = "fetch_inventory_item";
 
 export const searchInventoryToolDescription =
-  "Search the user's private Beautio inventory by Product name, alias, brand, category, size, ingredient text, shared notes, or one bottle's custom notes. With no query, list inventory in stable order. Results are compact summaries. To read full Product details, ingredients, or notes, pass a matched complete inventory_item_id to fetch_inventory_item; never invent an ID from a name or alias. Images never expose bytes, IDs, or legacy references. Optional as_of adds date-relative status; without it derived_status is null and the server never assumes today.";
+  "Search the user's private Beautio inventory by Product name, alias, brand, category, size, ingredient text, shared notes, or one bottle's custom notes. With no query, list inventory in stable order. Results are compact summaries, and the single-user search boundary accepts inventories of up to 1000 bottles. To read full Product details, ingredients, or notes, pass a matched complete inventory_item_id to fetch_inventory_item; never invent an ID from a name or alias. Images never expose bytes, IDs, or legacy references. Optional as_of adds date-relative status; without it derived_status is null and the server never assumes today.";
 
 export const fetchInventoryItemToolDescription =
   "Fetch one private Beautio inventory item by its opaque inventory_item_id, including the Product alias, full ingredient text and shared notes plus this bottle's custom notes. Only has_image is exposed for images. Optional as_of adds date-relative status; without it derived_status is null and the server never assumes today. This tool is read-only.";
@@ -36,7 +36,6 @@ export interface ReadOnlyMcpRouteOptions {
   readonly verifyAccessJwt: AccessJwtVerifier;
   readonly onError?: () => void;
   readonly maximumConcurrentRequests?: number;
-  readonly operationTimeoutMs?: number;
   readonly maximumResultBytes?: number;
 }
 
@@ -50,12 +49,11 @@ export interface ReadOnlyMcpRoute {
 }
 
 export interface ReadOnlyInventoryMcpServerOptions {
-  readonly operationTimeoutMs?: number;
   readonly maximumResultBytes?: number;
 }
 
 const DEFAULT_MAXIMUM_CONCURRENT_REQUESTS = 8;
-const DEFAULT_OPERATION_TIMEOUT_MS = 10_000;
+const MINIMUM_RESULT_BYTES = 512;
 const DEFAULT_MAXIMUM_RESULT_BYTES = 256 * 1024;
 
 /**
@@ -71,18 +69,17 @@ export function createReadOnlyMcpRoute(
 ): ReadOnlyMcpRoute {
   const publicOrigin = validateMcpPublicOrigin(options.publicOrigin);
   const hostname = new URL(publicOrigin).hostname;
-  const maximumConcurrentRequests = positiveInteger(
+  const maximumConcurrentRequests = boundedInteger(
     options.maximumConcurrentRequests,
+    DEFAULT_MAXIMUM_CONCURRENT_REQUESTS,
+    1,
     DEFAULT_MAXIMUM_CONCURRENT_REQUESTS,
     "maximumConcurrentRequests",
   );
-  const operationTimeoutMs = positiveInteger(
-    options.operationTimeoutMs,
-    DEFAULT_OPERATION_TIMEOUT_MS,
-    "operationTimeoutMs",
-  );
-  const maximumResultBytes = positiveInteger(
+  const maximumResultBytes = boundedInteger(
     options.maximumResultBytes,
+    DEFAULT_MAXIMUM_RESULT_BYTES,
+    MINIMUM_RESULT_BYTES,
     DEFAULT_MAXIMUM_RESULT_BYTES,
     "maximumResultBytes",
   );
@@ -92,7 +89,6 @@ export function createReadOnlyMcpRoute(
   const mcpHandler = createMcpHandler(
     () =>
       createReadOnlyInventoryMcpServer(application, {
-        operationTimeoutMs,
         maximumResultBytes,
       }),
     {
@@ -168,19 +164,17 @@ export function createReadOnlyMcpRoute(
  * Creates a fresh MCP server with exactly the two approved read tools.
  *
  * @param application - Application service owning search and fetch rules.
+ * @param options - Optional response-byte boundary for transport-level tests.
  * @returns A transport-neutral read-only MCP server.
  */
 export function createReadOnlyInventoryMcpServer(
   application: InventoryApplicationService,
   options: ReadOnlyInventoryMcpServerOptions = {},
 ): McpServer {
-  const operationTimeoutMs = positiveInteger(
-    options.operationTimeoutMs,
-    DEFAULT_OPERATION_TIMEOUT_MS,
-    "operationTimeoutMs",
-  );
-  const maximumResultBytes = positiveInteger(
+  const maximumResultBytes = boundedInteger(
     options.maximumResultBytes,
+    DEFAULT_MAXIMUM_RESULT_BYTES,
+    MINIMUM_RESULT_BYTES,
     DEFAULT_MAXIMUM_RESULT_BYTES,
     "maximumResultBytes",
   );
@@ -201,7 +195,6 @@ export function createReadOnlyInventoryMcpServer(
     async (input) =>
       execute(
         () => application.searchInventory(input),
-        operationTimeoutMs,
         maximumResultBytes,
       ),
   );
@@ -218,7 +211,6 @@ export function createReadOnlyInventoryMcpServer(
     async (input) =>
       execute(
         () => application.fetchInventory(input),
-        operationTimeoutMs,
         maximumResultBytes,
       ),
   );
@@ -253,16 +245,16 @@ function deferInputValidationToApplication(
 
 async function execute(
   operation: () => Promise<unknown>,
-  timeoutMs: number,
   maximumResultBytes: number,
 ): Promise<CallToolResult> {
   try {
-    const output = await withOperationDeadline(operation(), timeoutMs);
+    const output = await operation();
     if (!isRecord(output)) {
       throw new Error("inventory read returned a non-object result");
     }
+    const outputJson = JSON.stringify(output);
     const result: CallToolResult = {
-      content: [{ type: "text", text: JSON.stringify(output) }],
+      content: [{ type: "text", text: outputJson }],
       structuredContent: output,
     };
     if (Buffer.byteLength(JSON.stringify(result)) > maximumResultBytes) {
@@ -303,8 +295,8 @@ function safeToolError(error: unknown): ToolErrorOutput {
   }
   if (
     error.code === "INTERNAL_ERROR" &&
-    (error.message === "read-only inventory operation timed out" ||
-      error.message === "read-only inventory result is too large")
+    (error.message === "read-only inventory result is too large" ||
+      error.message === "inventory search exceeds the 1000-item safety limit")
   ) {
     return { code: error.code, message: error.message };
   }
@@ -312,35 +304,6 @@ function safeToolError(error: unknown): ToolErrorOutput {
     code: error.code,
     message: "The request could not be completed.",
   };
-}
-
-function withOperationDeadline<T>(
-  operation: Promise<T>,
-  timeoutMs: number,
-): Promise<T> {
-  return new Promise<T>((resolve, reject) => {
-    const timeout = setTimeout(
-      () =>
-        reject(
-          new BeautioError(
-            "INTERNAL_ERROR",
-            "read-only inventory operation timed out",
-          ),
-        ),
-      timeoutMs,
-    );
-    timeout.unref();
-    void operation.then(
-      (value) => {
-        clearTimeout(timeout);
-        resolve(value);
-      },
-      (error: unknown) => {
-        clearTimeout(timeout);
-        reject(error);
-      },
-    );
-  });
 }
 
 function accessAssertion(request: IncomingMessage): string {
@@ -376,14 +339,20 @@ function validateMcpPublicOrigin(value: string): string {
   return url.origin;
 }
 
-function positiveInteger(
+function boundedInteger(
   value: number | undefined,
   fallback: number,
+  minimum: number,
+  maximum: number,
   name: string,
 ): number {
   const resolved = value ?? fallback;
-  if (!Number.isInteger(resolved) || resolved < 1) {
-    throw new Error(`${name} must be a positive integer`);
+  if (
+    !Number.isSafeInteger(resolved) ||
+    resolved < minimum ||
+    resolved > maximum
+  ) {
+    throw new Error(`${name} must be an integer between ${minimum} and ${maximum}`);
   }
   return resolved;
 }

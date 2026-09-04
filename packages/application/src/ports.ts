@@ -150,6 +150,15 @@ export interface ImageRenditionProvider {
   deleteForAsset(storageKey: string): Promise<void>;
 }
 
+export interface InventoryCollectionReadOptions {
+  /**
+   * Stops the persistence adapter after returning at most this many items.
+   * Callers use a domain cap plus one to detect an oversized collection
+   * without first materializing the complete database table.
+   */
+  readonly maximumItems: number;
+}
+
 export interface InventoryRepository {
   /**
    * Finds one inventory item without creating missing data.
@@ -160,11 +169,14 @@ export interface InventoryRepository {
   findById(inventoryItemId: string): Promise<InventoryItem | null>;
 
   /**
-   * Lists every persisted inventory item in stable repository-defined order.
+   * Lists persisted inventory items in stable repository-defined order.
    *
-   * @returns All stored inventory items without creating or mutating data.
+   * @param options - Optional hard row cap applied by the persistence adapter.
+   * @returns All stored items, or at most `maximumItems` when a cap is supplied.
    */
-  findAll(): Promise<readonly InventoryItem[]>;
+  findAll(
+    options?: InventoryCollectionReadOptions,
+  ): Promise<readonly InventoryItem[]>;
 
   /**
    * Finds shared product information without creating a missing product.

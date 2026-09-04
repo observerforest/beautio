@@ -496,6 +496,47 @@ test("SQLite lists inventory in stable identifier order", async (context) => {
   repository.close();
 });
 
+test("SQLite applies a hard findAll row cap after stable ordering", async (context) => {
+  const directory = await mkdtemp(join(tmpdir(), "beautio-bounded-list-"));
+  const databasePath = join(directory, "inventory.sqlite");
+  context.after(async () => {
+    await rm(directory, { recursive: true, force: true });
+  });
+  const repository = new SqliteInventoryRepository(databasePath);
+  context.after(() => repository.close());
+  for (const id of ["inventory-z", "inventory-a", "inventory-m"]) {
+    await repository.seedInventoryItem(
+      createInventoryItem({ id, lifecycleStatus: "unopened" }),
+    );
+  }
+
+  const items = await repository.findAll({ maximumItems: 2 });
+
+  assert.deepEqual(
+    items.map((item) => item.id),
+    ["inventory-a", "inventory-m"],
+  );
+});
+
+test("SQLite rejects invalid findAll row caps", async (context) => {
+  const repository = new SqliteInventoryRepository(":memory:");
+  context.after(() => repository.close());
+
+  for (const maximumItems of [
+    0,
+    -1,
+    1.5,
+    Number.NaN,
+    Number.POSITIVE_INFINITY,
+    Number.MAX_SAFE_INTEGER + 1,
+  ]) {
+    await assert.rejects(
+      repository.findAll({ maximumItems }),
+      /maximumItems must be a positive safe integer/u,
+    );
+  }
+});
+
 test("SQLite migrates a legacy inventory database without changing its row", async (context) => {
   const directory = await mkdtemp(join(tmpdir(), "beautio-legacy-"));
   const databasePath = join(directory, "inventory.sqlite");

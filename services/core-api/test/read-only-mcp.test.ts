@@ -8,7 +8,11 @@ import {
   searchInventoryOutputSchema,
 } from "@beautio/contracts";
 import { SqliteInventoryRepository } from "@beautio/database";
-import { BeautioError, type InventoryItem } from "@beautio/domain";
+import {
+  BeautioError,
+  createInventoryItem,
+  type InventoryItem,
+} from "@beautio/domain";
 import {
   Client,
   InMemoryTransport,
@@ -316,43 +320,14 @@ test("real Streamable HTTP client reaches the two tools only after Access verifi
   );
 });
 
-test("read-only MCP operation deadline returns a bounded safe error", async (context) => {
-  class BlockingRepository extends SqliteInventoryRepository {
-    override findAll(): Promise<readonly InventoryItem[]> {
-      return new Promise(() => undefined);
-    }
-  }
-
-  const repository = new BlockingRepository(":memory:");
-  const application = new InventoryApplicationService(repository);
-  const server = createReadOnlyInventoryMcpServer(application, {
-    operationTimeoutMs: 20,
-  });
-  const client = new Client({ name: "deadline-test", version: "1.0.0" });
-  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
-  await server.connect(serverTransport);
-  await client.connect(clientTransport);
-  context.after(async () => {
-    await client.close();
-    await server.close();
-    repository.close();
-  });
-
-  const result = await client.callTool({
-    name: searchInventoryToolName,
-    arguments: {},
-  });
-  assert.equal(result.isError, true);
-  assert.deepEqual(result.structuredContent, {
-    code: "INTERNAL_ERROR",
-    message: "read-only inventory operation timed out",
-  });
-});
-
-test("read-only MCP rejects excess concurrent requests before another read starts", async (context) => {
+test("read-only MCP keeps request capacity occupied until the underlying read settles", async (context) => {
   let markSearchStarted: (() => void) | undefined;
   const searchStarted = new Promise<void>((resolve) => {
     markSearchStarted = resolve;
+  });
+  let releaseSearch: ((items: readonly InventoryItem[]) => void) | undefined;
+  const searchResult = new Promise<readonly InventoryItem[]>((resolve) => {
+    releaseSearch = resolve;
   });
   class BlockingRepository extends SqliteInventoryRepository {
     findAllCalls = 0;
@@ -360,7 +335,7 @@ test("read-only MCP rejects excess concurrent requests before another read start
     override findAll(): Promise<readonly InventoryItem[]> {
       this.findAllCalls += 1;
       markSearchStarted?.();
-      return new Promise(() => undefined);
+      return searchResult;
     }
   }
 
@@ -370,7 +345,6 @@ test("read-only MCP rejects excess concurrent requests before another read start
     publicOrigin: "https://127.0.0.1",
     verifyAccessJwt: async () => undefined,
     maximumConcurrentRequests: 1,
-    operationTimeoutMs: 50,
   });
   const httpServer = createServer(
     createCoreApiHandler(application, {
@@ -419,10 +393,94 @@ test("read-only MCP rejects excess concurrent requests before another read start
     },
   });
   assert.equal(repository.findAllCalls, 1);
-  assert.deepEqual((await blockedSearch).structuredContent, {
-    code: "INTERNAL_ERROR",
-    message: "read-only inventory operation timed out",
+  assert.ok(releaseSearch);
+  releaseSearch([]);
+  const completed = await blockedSearch;
+  assert.equal(completed.isError, undefined);
+  assert.deepEqual(completed.structuredContent, {
+    query: null,
+    offset: 0,
+    limit: 20,
+    total: 0,
+    next_offset: null,
+    items: [],
   });
+  const reusable = await client.callTool({
+    name: searchInventoryToolName,
+    arguments: {},
+  });
+  assert.equal(reusable.isError, undefined);
+  assert.equal(repository.findAllCalls, 2);
+});
+
+test("read-only MCP returns a safe error when the search candidate cap is exceeded", async (context) => {
+  class OversizedRepository extends SqliteInventoryRepository {
+    override async findAll(): Promise<readonly InventoryItem[]> {
+      return Array.from({ length: 1_001 }, (_, index) =>
+        createInventoryItem({
+          id: `oversized-${index.toString().padStart(4, "0")}`,
+          lifecycleStatus: "unopened",
+        }),
+      );
+    }
+  }
+
+  const repository = new OversizedRepository(":memory:");
+  const application = new InventoryApplicationService(repository);
+  const server = createReadOnlyInventoryMcpServer(application);
+  const client = new Client({ name: "bounded-search-test", version: "1.0.0" });
+  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+  await server.connect(serverTransport);
+  await client.connect(clientTransport);
+  context.after(async () => {
+    await client.close();
+    await server.close();
+    repository.close();
+  });
+
+  const result = await client.callTool({
+    name: searchInventoryToolName,
+    arguments: { query: "oversized-1000" },
+  });
+
+  assert.equal(result.isError, true);
+  assert.deepEqual(result.structuredContent, {
+    code: "INTERNAL_ERROR",
+    message: "inventory search exceeds the 1000-item safety limit",
+  });
+  assert.equal(JSON.stringify(result).includes("oversized-1000"), false);
+});
+
+test("read-only MCP constrains configurable result byte limits", (context) => {
+  const repository = new SqliteInventoryRepository(":memory:");
+  context.after(() => repository.close());
+  const application = new InventoryApplicationService(repository);
+
+  assert.throws(
+    () =>
+      createReadOnlyInventoryMcpServer(application, {
+        maximumResultBytes: 511,
+      }),
+    /maximumResultBytes must be an integer between 512 and 262144/u,
+  );
+  assert.throws(
+    () =>
+      createReadOnlyMcpRoute(application, {
+        publicOrigin: "https://127.0.0.1",
+        verifyAccessJwt: async () => undefined,
+        maximumResultBytes: 262_145,
+      }),
+    /maximumResultBytes must be an integer between 512 and 262144/u,
+  );
+  assert.throws(
+    () =>
+      createReadOnlyMcpRoute(application, {
+        publicOrigin: "https://127.0.0.1",
+        verifyAccessJwt: async () => undefined,
+        maximumConcurrentRequests: 9,
+      }),
+    /maximumConcurrentRequests must be an integer between 1 and 8/u,
+  );
 });
 
 test("read-only MCP rejects an oversized result before it reaches the wire", async (context) => {
