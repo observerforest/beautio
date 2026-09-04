@@ -313,6 +313,72 @@ test("health is public while Custom GPT, Codex, and Admin scopes are isolated", 
   );
 });
 
+test("encoded dynamic path hazards are rejected after authentication without reaching the application", async (context) => {
+  const fixture = await startFixture(context);
+  let updateProductCalls = 0;
+  let endInventoryItemCalls = 0;
+  let readImageAssetCalls = 0;
+  const originalUpdateProduct = fixture.application.updateProduct;
+  const originalEndInventoryItem = fixture.application.endInventoryItem;
+  const originalReadImageAsset = fixture.application.readImageAsset;
+  fixture.application.updateProduct = async (...args) => {
+    updateProductCalls += 1;
+    return originalUpdateProduct.apply(fixture.application, args);
+  };
+  fixture.application.endInventoryItem = async (...args) => {
+    endInventoryItemCalls += 1;
+    return originalEndInventoryItem.apply(fixture.application, args);
+  };
+  fixture.application.readImageAsset = async (...args) => {
+    readImageAssetCalls += 1;
+    return originalReadImageAsset.apply(fixture.application, args);
+  };
+
+  const invalidDynamicRequests = [
+    fetch(`${fixture.origin}/api/admin/products/%2F`, {
+      method: "PUT",
+      headers: { ...authorization(ADMIN_TOKEN), "content-type": "application/json" },
+      body: "{}",
+    }),
+    fetch(`${fixture.origin}/api/admin/inventory-items/%252F/end-use`, {
+      method: "POST",
+      headers: { ...authorization(ADMIN_TOKEN), "content-type": "application/json" },
+      body: "{}",
+    }),
+    fetch(`${fixture.origin}/api/image-assets/%5C/content`, {
+      headers: authorization(ADMIN_TOKEN),
+    }),
+  ];
+  for (const response of await Promise.all(invalidDynamicRequests)) {
+    assert.equal(response.status, 400);
+  }
+
+  for (const dotPath of ["%2e", "%2e%2e"]) {
+    const withoutToken = await fetch(
+      `${fixture.origin}/api/admin/products/${dotPath}`,
+      { method: "PUT" },
+    );
+    assert.equal(withoutToken.status, 401);
+
+    const authenticated = await fetch(
+      `${fixture.origin}/api/admin/products/${dotPath}`,
+      {
+        method: "PUT",
+        headers: {
+          ...authorization(ADMIN_TOKEN),
+          "content-type": "application/json",
+        },
+        body: "{}",
+      },
+    );
+    assert.equal(authenticated.status, 400);
+  }
+
+  assert.equal(updateProductCalls, 0);
+  assert.equal(endInventoryItemCalls, 0);
+  assert.equal(readImageAssetCalls, 0);
+});
+
 test("Admin creates new products and bottles with or without an uploaded image", async (context) => {
   const fixture = await startFixture(context);
   const form = new FormData();

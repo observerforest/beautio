@@ -20,6 +20,7 @@ import {
   readStreamingJson,
 } from "./body.ts";
 import { createBeautioActionsOpenApiV1 } from "./openapi.ts";
+import { routeId } from "./path-segment.ts";
 import { invalidInput, sendJson, sendNotFound } from "./responses.ts";
 import type { ReadOnlyMcpRoute } from "./read-only-mcp.ts";
 import { tryServeStaticWeb, type StaticWebRoot } from "./static-web.ts";
@@ -487,10 +488,13 @@ function isExclusiveWriteRoute(
       routeId(pathname, "/api/admin/inventory-items/", "/end-use") !== null
     );
   }
+  if (method !== "PUT") {
+    return false;
+  }
   return (
-    method === "PUT" &&
-    (pathname.startsWith("/api/admin/products/") ||
-      pathname.startsWith("/api/admin/inventory-items/"))
+    routeId(pathname, "/api/admin/products/", "") !== null ||
+    routeId(pathname, "/api/admin/inventory-items/", "/facts") !== null ||
+    routeId(pathname, "/api/admin/inventory-items/", "/custom-notes") !== null
   );
 }
 
@@ -560,28 +564,6 @@ function parseImageAssetVariant(
     );
   }
   return "card";
-}
-
-function routeId(
-  pathname: string,
-  prefix: string,
-  suffix: string,
-): string | null {
-  if (!pathname.startsWith(prefix) || !pathname.endsWith(suffix)) {
-    return null;
-  }
-  const end =
-    suffix.length === 0 ? pathname.length : pathname.length - suffix.length;
-  const encoded = pathname.slice(prefix.length, end);
-  if (encoded.length === 0 || encoded.includes("/")) {
-    return null;
-  }
-  try {
-    const decoded = decodeURIComponent(encoded);
-    return decoded.length === 0 ? null : decoded;
-  } catch {
-    return null;
-  }
 }
 
 function isReservedPath(pathname: string, prefix: string): boolean {
