@@ -44,6 +44,7 @@ const actionFileRequestSchema = z
 const BACKUP_BODY_LIMIT = 280 * 1024 * 1024;
 
 export interface ValidatedOptions {
+  readonly customGptBearerToken: string;
   readonly actionBearerToken: string;
   readonly adminBearerToken: string;
   readonly actionFileHosts: ReadonlySet<string>;
@@ -106,7 +107,7 @@ export async function routeRequest(
     request.method === "GET" &&
     url.pathname === "/openapi/beautio-actions-v1.json"
   ) {
-    requireBearer(request, options.actionBearerToken);
+    requireBearer(request, options.customGptBearerToken);
     sendJson(
       response,
       200,
@@ -115,8 +116,10 @@ export async function routeRequest(
     return;
   }
 
-  if (isReservedPath(url.pathname, "/api/actions")) {
+  if (isReservedPath(url.pathname, "/api/actions/codex")) {
     requireBearer(request, options.actionBearerToken);
+  } else if (isReservedPath(url.pathname, "/api/actions")) {
+    requireBearer(request, options.customGptBearerToken);
   } else if (isReservedPath(url.pathname, "/api")) {
     requireBearer(request, options.adminBearerToken);
   }
@@ -220,7 +223,9 @@ async function routeAuthorizedRequest(
 
   if (
     request.method === "POST" &&
-    url.pathname === "/api/actions/create-inventory-batch"
+    (url.pathname === "/api/actions/create-inventory-batch" ||
+      url.pathname === "/api/actions/codex/create-inventory-batch" ||
+      url.pathname === "/api/admin/create-inventory-batch")
   ) {
     sendJson(
       response,
@@ -254,11 +259,12 @@ async function routeAuthorizedRequest(
     request.method === "POST" &&
     url.pathname === "/api/actions/codex/record-product-opened"
   ) {
+    const body = await readJson(request, JSON_BODY_LIMIT);
     sendJson(
       response,
       200,
       await application.recordProductOpened(
-        await readJson(request, JSON_BODY_LIMIT),
+        addLegacyOpeningAccuracyWhenMissing(body),
       ),
     );
     return;
@@ -373,6 +379,23 @@ async function routeAuthorizedRequest(
     return;
   }
 
+  const endUseInventoryItemId = routeId(
+    url.pathname,
+    "/api/admin/inventory-items/",
+    "/end-use",
+  );
+  if (request.method === "POST" && endUseInventoryItemId !== null) {
+    sendJson(
+      response,
+      200,
+      await application.endInventoryItem(
+        endUseInventoryItemId,
+        await readJson(request, JSON_BODY_LIMIT),
+      ),
+    );
+    return;
+  }
+
   const customNotesInventoryItemId = routeId(
     url.pathname,
     "/api/admin/inventory-items/",
@@ -435,6 +458,18 @@ async function routeAuthorizedRequest(
   sendNotFound(response);
 }
 
+function addLegacyOpeningAccuracyWhenMissing(body: unknown): unknown {
+  if (
+    typeof body !== "object" ||
+    body === null ||
+    Array.isArray(body) ||
+    Object.hasOwn(body, "opened_on_accuracy")
+  ) {
+    return body;
+  }
+  return { ...body, opened_on_accuracy: "legacy_unknown" };
+}
+
 function isExclusiveWriteRoute(
   method: string | undefined,
   pathname: string,
@@ -443,10 +478,13 @@ function isExclusiveWriteRoute(
     return (
       pathname === "/api/actions/upload-product-images" ||
       pathname === "/api/actions/create-inventory-batch" ||
+      pathname === "/api/actions/codex/create-inventory-batch" ||
       pathname === "/api/actions/codex/upload-product-images" ||
       pathname === "/api/actions/codex/record-product-opened" ||
       pathname === "/api/actions/codex/set-product-display-image" ||
-      pathname === "/api/admin/image-assets"
+      pathname === "/api/admin/create-inventory-batch" ||
+      pathname === "/api/admin/image-assets" ||
+      routeId(pathname, "/api/admin/inventory-items/", "/end-use") !== null
     );
   }
   return (

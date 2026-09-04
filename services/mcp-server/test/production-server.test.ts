@@ -276,6 +276,7 @@ test("production MCP hides unknown remote implementation details", async () => {
       arguments: {
         inventory_item_id: "inventory-1",
         opened_on: "2026-08-20",
+        opened_on_accuracy: "exact",
       },
     });
     assert.equal(businessError.isError, true);

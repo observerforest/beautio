@@ -115,7 +115,7 @@ test("remote client calls each fixed Action route once with strict response vali
             ],
           });
         }
-        case "/api/actions/create-inventory-batch":
+        case "/api/actions/codex/create-inventory-batch":
           return jsonResponse({
             outcome: "created",
             as_of: "2026-08-20",
@@ -156,6 +156,7 @@ test("remote client calls each fixed Action route once with strict response vali
   await client.recordProductOpened({
     inventory_item_id: "inventory-1",
     opened_on: "2026-08-20",
+    opened_on_accuracy: "exact",
   });
   await client.getInventoryItem({
     inventory_item_id: "inventory-1",
@@ -186,10 +187,15 @@ test("remote client calls each fixed Action route once with strict response vali
       "/api/actions/codex/record-product-opened",
       "/api/actions/codex/get-inventory-item",
       "/api/actions/codex/upload-product-images",
-      "/api/actions/create-inventory-batch",
+      "/api/actions/codex/create-inventory-batch",
       "/api/actions/codex/set-product-display-image",
     ],
   );
+  assert.deepEqual(JSON.parse(requests[0]?.init.body as string), {
+    inventory_item_id: "inventory-1",
+    opened_on: "2026-08-20",
+    opened_on_accuracy: "exact",
+  });
 });
 
 test("remote client reports the Product alias limit before sending a write", async (context) => {
@@ -232,7 +238,7 @@ test("remote client reports the Product alias limit before sending a write", asy
   assert.equal(fetchCalls, 0);
 });
 
-test("remote client rejects inventory responses that do not match the requested identity or opening date", async (context) => {
+test("remote client rejects inventory responses that do not match the requested opening facts", async (context) => {
   const fixture = await tokenFixture(context);
   let getCalls = 0;
   const getClient = await createRemoteBeautioClient({
@@ -258,6 +264,7 @@ test("remote client rejects inventory responses that do not match the requested 
   for (const response of [
     openedOutput({ inventory_item_id: "different-inventory" }),
     openedOutput({ opened_on: "2026-08-19" }),
+    openedOutput({ opened_on_accuracy: "estimated" }),
   ]) {
     let recordCalls = 0;
     const recordClient = await createRemoteBeautioClient({
@@ -272,6 +279,7 @@ test("remote client rejects inventory responses that do not match the requested 
       recordClient.recordProductOpened({
         inventory_item_id: "inventory-1",
         opened_on: "2026-08-20",
+        opened_on_accuracy: "exact",
       }),
       hasBeautioError("INTERNAL_ERROR", "invalid response"),
     );
@@ -340,6 +348,7 @@ test("remote client rejects create responses that are not correlated to batch or
         name: "New A",
         alias: "Purple Jar",
         brand: "Beautio Lab",
+        pao_duration_months: 6,
         ingredient_list_text: "  Aqua,\nGlycerin  ",
         shared_notes: "  shared A  ",
       },
@@ -365,9 +374,24 @@ test("remote client rejects create responses that are not correlated to batch or
       },
     ],
   } as const;
-  const valid = validCreateOutput();
+  const base = validCreateOutput();
+  const valid = {
+    ...base,
+    products: base.products.map((product, index) => index === 0
+      ? { ...product, pao_duration_months: 6 }
+      : product),
+  };
   const cases: readonly { readonly name: string; readonly response: unknown }[] = [
     { name: "as_of", response: { ...valid, as_of: "2026-08-19" } },
+    {
+      name: "Product PAO is not silently ignored by an older server",
+      response: {
+        ...valid,
+        products: valid.products.map((product, index) => index === 0
+          ? { ...product, pao_duration_months: null }
+          : product),
+      },
+    },
     {
       name: "product count",
       response: { ...valid, products: valid.products.slice(0, 1) },

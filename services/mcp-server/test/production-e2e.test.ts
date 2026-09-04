@@ -32,6 +32,7 @@ import {
 import { createRemoteBeautioClient } from "../src/remote-client.ts";
 
 const ACTION_TOKEN = "production-e2e-action-token";
+const CUSTOM_GPT_TOKEN = "production-e2e-custom-gpt-token";
 const ADMIN_TOKEN = "production-e2e-admin-token";
 const TEST_PNG = Buffer.from(
   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
@@ -59,6 +60,7 @@ test("production MCP writes through Core API and Admin re-reads one remote state
   });
   const httpServer = createServer(
     createCoreApiHandler(application, {
+      customGptBearerToken: CUSTOM_GPT_TOKEN,
       actionBearerToken: ACTION_TOKEN,
       adminBearerToken: ADMIN_TOKEN,
       actionFileHosts: new Set(["files.example.test"]),
@@ -199,6 +201,7 @@ test("production MCP writes through Core API and Admin re-reads one remote state
     arguments: {
       inventory_item_id: firstInventoryItemId,
       opened_on: "2026-08-20",
+      opened_on_accuracy: "exact",
     },
   });
   assert.equal(openedResult.isError, undefined);

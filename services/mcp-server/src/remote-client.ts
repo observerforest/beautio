@@ -121,7 +121,8 @@ export class RemoteBeautioClient {
     );
     if (
       output.inventory_item_id !== input.inventory_item_id ||
-      output.opened_on !== input.opened_on
+      output.opened_on !== input.opened_on ||
+      output.opened_on_accuracy !== input.opened_on_accuracy
     ) {
       throw invalidRemoteResponse();
     }
@@ -191,7 +192,7 @@ export class RemoteBeautioClient {
   ): Promise<CreateInventoryBatchOutput> {
     const input = parseInput(createInventoryBatchInputSchema, untrustedInput);
     const output = await this.#postJson(
-      "/api/actions/create-inventory-batch",
+      "/api/actions/codex/create-inventory-batch",
       input,
       createInventoryBatchOutputSchema,
     );
@@ -576,6 +577,8 @@ function validateCreateCorrelation(
       actual.batch_ref !== expected.batch_ref ||
       actual.alias !== (expected.alias ?? null) ||
       actual.brand !== (expected.brand ?? null) ||
+      (expected.pao_duration_months !== undefined &&
+        actual.pao_duration_months !== expected.pao_duration_months) ||
       actual.ingredient_list_text !== (expected.ingredient_list_text ?? null) ||
       actual.shared_notes !== (expected.shared_notes ?? null) ||
       productIdsByBatchRef.has(actual.batch_ref) ||

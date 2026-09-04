@@ -14,6 +14,7 @@ const imageStorageRoot =
   join(repositoryRoot, ".local", "managed-images");
 
 requiredEnvironment("BEAUTIO_ACTION_BEARER_TOKEN");
+requiredEnvironment("BEAUTIO_CUSTOM_GPT_BEARER_TOKEN");
 requiredEnvironment("BEAUTIO_ADMIN_BEARER_TOKEN");
 requiredEnvironment("BEAUTIO_ACTION_FILE_HOST_ALLOWLIST");
 

@@ -9,14 +9,20 @@ import { createServer } from "node:http";
 import { createCloudflareAccessJwtVerifier } from "./access-jwt.ts";
 import { parseActionFileHostAllowlist } from "./action-download.ts";
 import { parseApiHost } from "./api-host.ts";
+import { validateHttpBearerTokens } from "./http-bearer-tokens.ts";
 import { createCoreApiHandler } from "./index.ts";
 import { createReadOnlyMcpRoute } from "./read-only-mcp.ts";
 import { parseRemoteMcpEnvironment } from "./remote-mcp-config.ts";
 
 const databasePath = requiredEnvironment("BEAUTIO_DB_PATH");
 const imageStorageRoot = requiredEnvironment("BEAUTIO_IMAGE_STORAGE_ROOT");
-const actionBearerToken = requiredEnvironment("BEAUTIO_ACTION_BEARER_TOKEN");
-const adminBearerToken = requiredEnvironment("BEAUTIO_ADMIN_BEARER_TOKEN");
+const bearerTokens = validateHttpBearerTokens({
+  customGptBearerToken: requiredEnvironment(
+    "BEAUTIO_CUSTOM_GPT_BEARER_TOKEN",
+  ),
+  actionBearerToken: requiredEnvironment("BEAUTIO_ACTION_BEARER_TOKEN"),
+  adminBearerToken: requiredEnvironment("BEAUTIO_ADMIN_BEARER_TOKEN"),
+});
 const actionFileHosts = parseActionFileHostAllowlist(
   requiredEnvironment("BEAUTIO_ACTION_FILE_HOST_ALLOWLIST"),
 );
@@ -45,8 +51,7 @@ const readOnlyMcp =
           console.error("Beautio read-only MCP request could not be completed."),
       });
 const handler = createCoreApiHandler(application, {
-  actionBearerToken,
-  adminBearerToken,
+  ...bearerTokens,
   actionFileHosts,
   ...(publicOrigin === undefined ? {} : { publicOrigin }),
   ...(webRoot === undefined ? {} : { webRoot }),

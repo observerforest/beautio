@@ -129,19 +129,20 @@ test("stdio MCP preserves old tools and completes upload-create-read-reopen", as
       assert.ok(tool.outputSchema);
     }
 
-    const legacyWrite = await client.callTool({
+    const openingWrite = await client.callTool({
       name: recordProductOpenedToolName,
       arguments: {
         inventory_item_id: "mcp-night-queen",
         opened_on: "2026-08-18",
+        opened_on_accuracy: "estimated",
       },
     });
     const opened = recordProductOpenedOutputSchema.parse(
-      legacyWrite.structuredContent,
+      openingWrite.structuredContent,
     );
     assert.equal(opened.outcome, "opened");
-    assert.equal(opened.opened_on_accuracy, "legacy_unknown");
-    assert.equal(opened.pao_deadline_accuracy, "legacy_unknown");
+    assert.equal(opened.opened_on_accuracy, "estimated");
+    assert.equal(opened.pao_deadline_accuracy, "estimated");
 
     const uploadResult = await client.callTool({
       name: uploadProductImagesToolName,

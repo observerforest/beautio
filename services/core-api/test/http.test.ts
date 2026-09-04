@@ -10,7 +10,13 @@ import {
   type ImageAssetStorage,
   type ImageInspector,
 } from "@beautio/application";
-import type { BeautioBackup } from "@beautio/contracts";
+import {
+  createInventoryBatchInputSchema,
+  createInventoryBatchOutputSchema,
+  endInventoryItemOutputSchema,
+  inventoryListOutputSchema,
+  type BeautioBackup,
+} from "@beautio/contracts";
 import { SqliteInventoryRepository } from "@beautio/database";
 import {
   BeautioError,
@@ -26,25 +32,51 @@ import sharp from "sharp";
 import { createCoreApiHandler } from "../src/index.ts";
 
 const ACTION_TOKEN = "test-action-token-not-a-secret";
+const CUSTOM_GPT_TOKEN = "test-custom-gpt-token-not-a-secret";
 const ADMIN_TOKEN = "test-admin-token-not-a-secret";
 const STATIC_SCRIPT = "console.log('beautio production web');\n";
 
-test("HTTP adapter fails closed when either token is empty or both are equal", () => {
+test("HTTP adapter requires three pairwise-distinct bearer tokens", () => {
   const repository = new SqliteInventoryRepository(":memory:");
   const application = new InventoryApplicationService(repository);
   const options = {
+    customGptBearerToken: CUSTOM_GPT_TOKEN,
     actionBearerToken: ACTION_TOKEN,
     adminBearerToken: ADMIN_TOKEN,
     actionFileHosts: new Set(["files.example.test"]),
   };
 
   assert.throws(
+    () =>
+      createCoreApiHandler(application, {
+        ...options,
+        customGptBearerToken: " ",
+      }),
+    /all Beautio HTTP bearer tokens are required/,
+  );
+  assert.throws(
     () => createCoreApiHandler(application, { ...options, actionBearerToken: "" }),
-    /both Beautio HTTP bearer tokens are required/,
+    /all Beautio HTTP bearer tokens are required/,
   );
   assert.throws(
     () => createCoreApiHandler(application, { ...options, adminBearerToken: " " }),
-    /both Beautio HTTP bearer tokens are required/,
+    /all Beautio HTTP bearer tokens are required/,
+  );
+  assert.throws(
+    () =>
+      createCoreApiHandler(application, {
+        ...options,
+        customGptBearerToken: ` ${ACTION_TOKEN} `,
+      }),
+    /must be different/,
+  );
+  assert.throws(
+    () =>
+      createCoreApiHandler(application, {
+        ...options,
+        customGptBearerToken: ` ${ADMIN_TOKEN} `,
+      }),
+    /must be different/,
   );
   assert.throws(
     () =>
@@ -77,12 +109,12 @@ test("HTTP adapter fails closed when either token is empty or both are equal", (
   repository.close();
 });
 
-test("health is public while inventory and both write scopes are isolated", async (context) => {
+test("health is public while Custom GPT, Codex, and Admin scopes are isolated", async (context) => {
   const fixture = await startFixture(context);
 
   assert.equal((await fetch(`${fixture.origin}/api/health`)).status, 200);
 
-  const actionRequests = [
+  const customGptRequests = [
     (token?: string) =>
       fetch(`${fixture.origin}/openapi/beautio-actions-v1.json`, {
         ...(token === undefined ? {} : { headers: authorization(token) }),
@@ -98,6 +130,17 @@ test("health is public while inventory and both write scopes are isolated", asyn
       }),
     (token?: string) =>
       fetch(`${fixture.origin}/api/actions/create-inventory-batch`, {
+        method: "POST",
+        headers:
+          token === undefined
+            ? { "content-type": "application/json" }
+            : { ...authorization(token), "content-type": "application/json" },
+        body: JSON.stringify(emptyBatch()),
+      }),
+  ];
+  const codexRequests = [
+    (token?: string) =>
+      fetch(`${fixture.origin}/api/actions/codex/create-inventory-batch`, {
         method: "POST",
         headers:
           token === undefined
@@ -144,6 +187,15 @@ test("health is public while inventory and both write scopes are isolated", asyn
         ...(token === undefined ? {} : { headers: authorization(token) }),
       }),
     (token?: string) =>
+      fetch(`${fixture.origin}/api/admin/create-inventory-batch`, {
+        method: "POST",
+        headers:
+          token === undefined
+            ? { "content-type": "application/json" }
+            : { ...authorization(token), "content-type": "application/json" },
+        body: JSON.stringify(emptyBatch()),
+      }),
+    (token?: string) =>
       fetch(`${fixture.origin}/api/admin/image-assets`, {
         method: "POST",
         ...(token === undefined ? {} : { headers: authorization(token) }),
@@ -180,6 +232,18 @@ test("health is public while inventory and both write scopes are isolated", asyn
         body: JSON.stringify({}),
       }),
     (token?: string) =>
+      fetch(`${fixture.origin}/api/admin/inventory-items/missing/end-use`, {
+        method: "POST",
+        headers:
+          token === undefined
+            ? { "content-type": "application/json" }
+            : { ...authorization(token), "content-type": "application/json" },
+        body: JSON.stringify({
+          as_of: "2026-09-01",
+          lifecycle_status: "finished",
+        }),
+      }),
+    (token?: string) =>
       fetch(`${fixture.origin}/api/admin/inventory-items/missing/custom-notes`, {
         method: "PUT",
         headers:
@@ -198,20 +262,292 @@ test("health is public while inventory and both write scopes are isolated", asyn
       }),
   ];
 
-  for (const request of actionRequests) {
+  for (const request of customGptRequests) {
     assert.equal((await request()).status, 401);
+    assert.equal((await request(ACTION_TOKEN)).status, 401);
     assert.equal((await request(ADMIN_TOKEN)).status, 401);
     assert.equal((await request("wrong-token")).status, 401);
+    assert.notEqual((await request(CUSTOM_GPT_TOKEN)).status, 401);
+  }
+  for (const request of codexRequests) {
+    assert.equal((await request()).status, 401);
+    assert.equal((await request(CUSTOM_GPT_TOKEN)).status, 401);
+    assert.equal((await request(ADMIN_TOKEN)).status, 401);
+    assert.equal((await request("wrong-token")).status, 401);
+    assert.notEqual((await request(ACTION_TOKEN)).status, 401);
   }
   for (const request of adminRequests) {
     assert.equal((await request()).status, 401);
+    assert.equal((await request(CUSTOM_GPT_TOKEN)).status, 401);
     assert.equal((await request(ACTION_TOKEN)).status, 401);
     assert.equal((await request("wrong-token")).status, 401);
+    assert.notEqual((await request(ADMIN_TOKEN)).status, 401);
   }
+
+  const codexUnknown = `${fixture.origin}/api/actions/codex/unknown`;
+  assert.equal(
+    (await fetch(codexUnknown, { headers: authorization(CUSTOM_GPT_TOKEN) })).status,
+    401,
+  );
+  assert.notEqual(
+    (await fetch(codexUnknown, { headers: authorization(ACTION_TOKEN) })).status,
+    401,
+  );
+  const codexical = `${fixture.origin}/api/actions/codexical`;
+  assert.equal(
+    (await fetch(codexical, { headers: authorization(ACTION_TOKEN) })).status,
+    401,
+  );
+  assert.notEqual(
+    (await fetch(codexical, { headers: authorization(CUSTOM_GPT_TOKEN) })).status,
+    401,
+  );
+  const encodedCodex = `${fixture.origin}/api/actions/%63odex/unknown`;
+  assert.equal(
+    (await fetch(encodedCodex, { headers: authorization(ACTION_TOKEN) })).status,
+    401,
+  );
   assert.deepEqual(
     await fixture.application.listInventory({ as_of: "2026-08-19" }),
     { as_of: "2026-08-19", items: [] },
   );
+});
+
+test("Admin creates new products and bottles with or without an uploaded image", async (context) => {
+  const fixture = await startFixture(context);
+  const form = new FormData();
+  form.set("image", new Blob([fixture.imageBytes], { type: "image/png" }), "sample.png");
+  const uploadResponse = await fetch(`${fixture.origin}/api/admin/image-assets`, {
+    method: "POST",
+    headers: authorization(ADMIN_TOKEN),
+    body: form,
+  });
+  assert.equal(uploadResponse.status, 200);
+  const uploaded = (await uploadResponse.json()) as {
+    readonly asset: { readonly image_asset_id: string };
+  };
+
+  for (const imageAssetId of [null, uploaded.asset.image_asset_id]) {
+    const response = await postJson(
+      `${fixture.origin}/api/admin/create-inventory-batch`,
+      {
+        as_of: "2026-08-19",
+        products: [
+          {
+            batch_ref: "sample_product",
+            name: "Sample serum",
+            alias: "Sample",
+            brand: "Example Lab",
+            category: "Serum",
+            size_label: "30 ml",
+            image_asset_id: imageAssetId,
+            ingredient_list_text: "Aqua, Glycerin",
+            shared_notes: "Sample shared note",
+          },
+        ],
+        inventory_items: [
+          {
+            batch_ref: "opened_bottle",
+            product_ref: { kind: "new", batch_ref: "sample_product" },
+            lifecycle_status: "opened",
+            opened_on: "2026-08-01",
+            opened_on_accuracy: "estimated",
+            expires_on: "2027-08-01",
+            pao_duration_months: 6,
+            custom_notes: "Opened bottle note",
+          },
+          {
+            batch_ref: "unopened_bottle",
+            product_ref: { kind: "new", batch_ref: "sample_product" },
+            lifecycle_status: "unopened",
+            custom_notes: "Spare bottle note",
+          },
+        ],
+      },
+      ADMIN_TOKEN,
+    );
+    assert.equal(response.status, 200);
+    const created = createInventoryBatchOutputSchema.parse(await response.json());
+    assert.equal(created.outcome, "created");
+    assert.equal(created.products.length, 1);
+    const product = created.products[0];
+    assert.ok(product);
+    assert.equal(product.name, "Sample serum");
+    assert.equal(product.alias, "Sample");
+    assert.equal(product.brand, "Example Lab");
+    assert.equal(product.image_asset_id, imageAssetId);
+    assert.equal(product.ingredient_list_text, "Aqua, Glycerin");
+    assert.equal(product.shared_notes, "Sample shared note");
+    assert.equal(created.inventory_items.length, 2);
+    assert.equal(new Set(created.inventory_items.map((item) => item.inventory_item_id)).size, 2);
+    assert.ok(created.inventory_items.every((item) => item.product_id === product.product_id));
+    assert.equal(created.inventory_items[0]?.opened_on, "2026-08-01");
+    assert.equal(created.inventory_items[0]?.pao_deadline_accuracy, "estimated");
+    assert.equal(created.inventory_items[0]?.custom_notes, "Opened bottle note");
+    assert.equal(created.inventory_items[1]?.opened_on, null);
+    assert.equal(created.inventory_items[1]?.custom_notes, "Spare bottle note");
+  }
+
+  const inventoryResponse = await fetch(`${fixture.origin}/api/inventory?as_of=2026-08-19`, {
+    headers: authorization(ADMIN_TOKEN),
+  });
+  assert.equal(inventoryResponse.status, 200);
+  const inventory = (await inventoryResponse.json()) as {
+    readonly items: readonly {
+      readonly product: { readonly image_asset_id: string | null };
+    }[];
+  };
+  assert.equal(inventory.items.length, 4);
+  assert.equal(inventory.items.filter((item) => item.product.image_asset_id === null).length, 2);
+  assert.equal(
+    inventory.items.filter((item) => item.product.image_asset_id === uploaded.asset.image_asset_id).length,
+    2,
+  );
+  const imageResponse = await fetch(
+    `${fixture.origin}/api/image-assets/${encodeURIComponent(uploaded.asset.image_asset_id)}/content`,
+    { headers: authorization(ADMIN_TOKEN) },
+  );
+  assert.equal(imageResponse.status, 200);
+  assert.deepEqual(
+    new Uint8Array(await imageResponse.arrayBuffer()),
+    new Uint8Array(fixture.imageBytes),
+  );
+});
+
+test("Admin adds bottles to an existing product without changing its shared facts or other bottles", async (context) => {
+  const fixture = await startFixture(context);
+  const original = await fixture.application.createInventoryBatch({
+    as_of: "2026-08-19",
+    products: [
+      {
+        batch_ref: "sample_product",
+        name: "Sample cream",
+        alias: "Sample",
+        brand: "Example Lab",
+        category: "Cream",
+        size_label: "50 ml",
+        ingredient_list_text: "Aqua, Glycerin",
+        shared_notes: "Keep shared note",
+      },
+    ],
+    inventory_items: [
+      {
+        batch_ref: "original_bottle",
+        product_ref: { kind: "new", batch_ref: "sample_product" },
+        lifecycle_status: "unopened",
+        custom_notes: "Keep original bottle note",
+      },
+    ],
+  });
+  const productId = original.products[0]?.product_id;
+  assert.ok(productId);
+  const before = await fixture.repository.readBackupSnapshot();
+
+  const response = await postJson(
+    `${fixture.origin}/api/admin/create-inventory-batch`,
+    {
+      as_of: "2026-08-19",
+      products: [],
+      inventory_items: [
+        {
+          batch_ref: "additional_bottle",
+          product_ref: { kind: "existing", product_id: productId },
+          lifecycle_status: "unopened",
+          expires_on: "2028-08-01",
+          custom_notes: "Additional bottle note",
+        },
+      ],
+    },
+    ADMIN_TOKEN,
+  );
+  assert.equal(response.status, 200);
+  const created = createInventoryBatchOutputSchema.parse(await response.json());
+  assert.deepEqual(created.products, []);
+  assert.equal(created.inventory_items.length, 1);
+  assert.equal(created.inventory_items[0]?.product_id, productId);
+  assert.equal(created.inventory_items[0]?.custom_notes, "Additional bottle note");
+  const after = await fixture.repository.readBackupSnapshot();
+  assert.deepEqual(after.products, before.products);
+  assert.equal(after.inventoryItems.length, 2);
+  assert.deepEqual(
+    after.inventoryItems.filter((item) => item.id === original.inventory_items[0]?.inventory_item_id),
+    before.inventoryItems,
+  );
+});
+
+test("Admin rejects invalid creation batches without persisting partial products or bottles", async (context) => {
+  const fixture = await startFixture(context);
+  const valid = createInventoryBatchInputSchema.parse({
+    as_of: "2026-08-19",
+    products: [{ batch_ref: "sample_product", name: "Sample serum" }],
+    inventory_items: [
+      {
+        batch_ref: "sample_bottle",
+        product_ref: { kind: "new", batch_ref: "sample_product" },
+        lifecycle_status: "unopened",
+      },
+    ],
+  });
+  const before = await fixture.repository.readBackupSnapshot();
+  const invalidRequests = [
+    { body: { ...valid, unexpected: true }, status: 400, code: "INVALID_INPUT" },
+    {
+      body: { ...valid, products: [{ ...valid.products[0], unexpected: true }] },
+      status: 400,
+      code: "INVALID_INPUT",
+    },
+    {
+      body: {
+        ...valid,
+        inventory_items: [
+          ...valid.inventory_items,
+          {
+            batch_ref: "invalid_bottle",
+            product_ref: { kind: "existing", product_id: "missing-product", name: "Must not update shared facts" },
+            lifecycle_status: "unopened",
+          },
+        ],
+      },
+      status: 400,
+      code: "INVALID_INPUT",
+    },
+    {
+      body: { ...valid, inventory_items: [{ ...valid.inventory_items[0], opened_on: "2026-08-01" }] },
+      status: 400,
+      code: "INVALID_INPUT",
+    },
+    {
+      body: {
+        ...valid,
+        inventory_items: [
+          ...valid.inventory_items,
+          {
+            batch_ref: "missing_product_bottle",
+            product_ref: { kind: "existing", product_id: "missing-product" },
+            lifecycle_status: "unopened",
+          },
+        ],
+      },
+      status: 404,
+      code: "PRODUCT_NOT_FOUND",
+    },
+    {
+      body: { ...valid, products: [{ ...valid.products[0], image_asset_id: "missing-image" }] },
+      status: 404,
+      code: "IMAGE_ASSET_NOT_FOUND",
+    },
+  ];
+  for (const invalid of invalidRequests) {
+    const response = await postJson(
+      `${fixture.origin}/api/admin/create-inventory-batch`,
+      invalid.body,
+      ADMIN_TOKEN,
+    );
+    assert.equal(response.status, invalid.status);
+    const body = (await response.json()) as { readonly error: { readonly code: string } };
+    assert.equal(body.error.code, invalid.code);
+    assert.deepEqual(await fixture.repository.readBackupSnapshot(), before);
+  }
 });
 
 test("Admin backup round-trip restores products, bottles, notes, and original images", async (context) => {
@@ -356,7 +692,7 @@ test("Admin backup round-trip restores products, bottles, notes, and original im
   );
 });
 
-test("restore excludes concurrent Admin and Action writes until replacement completes", async (context) => {
+test("restore excludes concurrent Admin, Custom GPT, and Codex writes until replacement completes", async (context) => {
   let blockInspection = false;
   let releaseInspection!: () => void;
   let markInspectionStarted!: () => void;
@@ -412,7 +748,9 @@ test("restore excludes concurrent Admin and Action writes until replacement comp
   );
   await inspectionStarted;
   let adminSettled = false;
-  let actionSettled = false;
+  let adminCreateSettled = false;
+  let customGptWriteSettled = false;
+  let codexWriteSettled = false;
   const adminWrite = putJson(
     `${fixture.origin}/api/admin/products/${encodeURIComponent(productId)}`,
     {
@@ -429,11 +767,28 @@ test("restore excludes concurrent Admin and Action writes until replacement comp
   ).finally(() => {
     adminSettled = true;
   });
-  const actionWrite = postJson(
+  const adminCreate = postJson(
+    `${fixture.origin}/api/admin/create-inventory-batch`,
+    {
+      as_of: "2026-08-19",
+      products: [{ batch_ref: "queued_admin_product", name: "Queued Admin product" }],
+      inventory_items: [
+        {
+          batch_ref: "queued_admin_bottle",
+          product_ref: { kind: "new", batch_ref: "queued_admin_product" },
+          lifecycle_status: "unopened",
+        },
+      ],
+    },
+    ADMIN_TOKEN,
+  ).finally(() => {
+    adminCreateSettled = true;
+  });
+  const customGptWrite = postJson(
     `${fixture.origin}/api/actions/create-inventory-batch`,
     {
       as_of: "2026-08-19",
-      products: [{ batch_ref: "queued_product", name: "Queued Action product" }],
+      products: [{ batch_ref: "queued_product", name: "Queued GPT product" }],
       inventory_items: [
         {
           batch_ref: "queued_bottle",
@@ -442,18 +797,39 @@ test("restore excludes concurrent Admin and Action writes until replacement comp
         },
       ],
     },
+    CUSTOM_GPT_TOKEN,
+  ).finally(() => {
+    customGptWriteSettled = true;
+  });
+  const codexWrite = postJson(
+    `${fixture.origin}/api/actions/codex/create-inventory-batch`,
+    {
+      as_of: "2026-08-19",
+      products: [{ batch_ref: "queued_codex_product", name: "Queued Codex product" }],
+      inventory_items: [
+        {
+          batch_ref: "queued_codex_bottle",
+          product_ref: { kind: "new", batch_ref: "queued_codex_product" },
+          lifecycle_status: "unopened",
+        },
+      ],
+    },
     ACTION_TOKEN,
   ).finally(() => {
-    actionSettled = true;
+    codexWriteSettled = true;
   });
   await new Promise((resolve) => setTimeout(resolve, 20));
   assert.equal(adminSettled, false);
-  assert.equal(actionSettled, false);
+  assert.equal(adminCreateSettled, false);
+  assert.equal(customGptWriteSettled, false);
+  assert.equal(codexWriteSettled, false);
 
   releaseInspection();
   assert.equal((await restore).status, 200);
   assert.equal((await adminWrite).status, 200);
-  assert.equal((await actionWrite).status, 200);
+  assert.equal((await adminCreate).status, 200);
+  assert.equal((await customGptWrite).status, 200);
+  assert.equal((await codexWrite).status, 200);
   const inventory = (await (
     await fetch(`${fixture.origin}/api/inventory?as_of=2026-08-19`, {
       headers: authorization(ADMIN_TOKEN),
@@ -465,7 +841,12 @@ test("restore excludes concurrent Admin and Action writes until replacement comp
   };
   assert.deepEqual(
     inventory.items.map((item) => item.product?.name).sort(),
-    ["Admin write after restore", "Queued Action product"],
+    [
+      "Admin write after restore",
+      "Queued Admin product",
+      "Queued Codex product",
+      "Queued GPT product",
+    ],
   );
 });
 
@@ -483,7 +864,7 @@ test("Action upload and batch creation share persisted state with Admin read and
         },
       ],
     },
-    ACTION_TOKEN,
+    CUSTOM_GPT_TOKEN,
   );
   assert.equal(uploadResponse.status, 200);
   const uploadBody = (await uploadResponse.json()) as {
@@ -542,7 +923,7 @@ test("Action upload and batch creation share persisted state with Admin read and
         },
       ],
     },
-    ACTION_TOKEN,
+    CUSTOM_GPT_TOKEN,
   );
   assert.equal(batchResponse.status, 200);
   const batch = (await batchResponse.json()) as {
@@ -756,6 +1137,210 @@ test("Action upload and batch creation share persisted state with Admin read and
   );
 });
 
+test("Admin end-use route persists terminal snapshots and rejects every no-write path", async (context) => {
+  const fixture = await startFixture(context);
+  const openedIds = [
+    "end-finished",
+    "end-discarded",
+    "end-discarded-unknown",
+    "end-invalid",
+  ] as const;
+  for (const id of openedIds) {
+    await fixture.repository.seedInventoryItem(
+      createInventoryItem({
+        id,
+        lifecycleStatus: "opened",
+        openedOn: "2026-08-01",
+        openedOnAccuracy: "exact",
+        customNotes: `note-${id}`,
+      }),
+    );
+  }
+  await fixture.repository.seedInventoryItem(
+    createInventoryItem({
+      id: "end-unopened",
+      lifecycleStatus: "unopened",
+    }),
+  );
+
+  const finishedResponse = await postJson(
+    `${fixture.origin}/api/admin/inventory-items/end-finished/end-use`,
+    { as_of: "2026-09-01", lifecycle_status: "finished" },
+    ADMIN_TOKEN,
+  );
+  assert.equal(finishedResponse.status, 200);
+  const finished = endInventoryItemOutputSchema.parse(
+    await finishedResponse.json(),
+  );
+  assert.equal(finished.product_id, null);
+  assert.equal(finished.lifecycle_status, "finished");
+  assert.equal(finished.remaining_percent_estimate, 0);
+  assert.equal(finished.custom_notes, "note-end-finished");
+
+  const discardedResponse = await postJson(
+    `${fixture.origin}/api/admin/inventory-items/end-discarded/end-use`,
+    {
+      as_of: "2026-09-01",
+      lifecycle_status: "discarded",
+      remaining_percent_estimate: 35,
+    },
+    ADMIN_TOKEN,
+  );
+  assert.equal(discardedResponse.status, 200);
+  const discarded = endInventoryItemOutputSchema.parse(
+    await discardedResponse.json(),
+  );
+  assert.equal(discarded.lifecycle_status, "discarded");
+  assert.equal(discarded.remaining_percent_estimate, 35);
+
+  const discardedUnknownResponse = await postJson(
+    `${fixture.origin}/api/admin/inventory-items/end-discarded-unknown/end-use`,
+    {
+      as_of: "2026-09-01",
+      lifecycle_status: "discarded",
+      remaining_percent_estimate: null,
+    },
+    ADMIN_TOKEN,
+  );
+  assert.equal(discardedUnknownResponse.status, 200);
+  assert.equal(
+    endInventoryItemOutputSchema.parse(await discardedUnknownResponse.json())
+      .remaining_percent_estimate,
+    null,
+  );
+
+  const listedResponse = await fetch(
+    `${fixture.origin}/api/inventory?as_of=2026-09-01`,
+    { headers: authorization(ADMIN_TOKEN) },
+  );
+  assert.equal(listedResponse.status, 200);
+  const listed = inventoryListOutputSchema.parse(await listedResponse.json());
+  const terminalById = new Map(
+    listed.items.map((item) => [item.inventory_item_id, item]),
+  );
+  assert.equal(terminalById.get("end-finished")?.lifecycle_status, "finished");
+  assert.equal(
+    terminalById.get("end-finished")?.remaining_percent_estimate,
+    0,
+  );
+  assert.equal(
+    terminalById.get("end-discarded")?.lifecycle_status,
+    "discarded",
+  );
+  assert.equal(
+    terminalById.get("end-discarded")?.remaining_percent_estimate,
+    35,
+  );
+
+  const invalidBefore = await fixture.repository.findById("end-invalid");
+  assert.ok(invalidBefore);
+  for (const body of [
+    {
+      as_of: "2026-09-01",
+      lifecycle_status: "discarded",
+      remaining_percent_estimate: -1,
+    },
+    {
+      as_of: "2026-09-01",
+      lifecycle_status: "discarded",
+      remaining_percent_estimate: 101,
+    },
+    {
+      as_of: "2026-09-01",
+      lifecycle_status: "discarded",
+      remaining_percent_estimate: 12.5,
+    },
+    { as_of: "2026-09-01", lifecycle_status: "discarded" },
+    {
+      as_of: "2026-09-01",
+      lifecycle_status: "finished",
+      remaining_percent_estimate: 0,
+    },
+  ]) {
+    const invalid = await postJson(
+      `${fixture.origin}/api/admin/inventory-items/end-invalid/end-use`,
+      body,
+      ADMIN_TOKEN,
+    );
+    assert.equal(invalid.status, 400);
+    assert.equal(
+      ((await invalid.json()) as { readonly error: { readonly code: string } })
+        .error.code,
+      "INVALID_INPUT",
+    );
+  }
+  assert.deepEqual(
+    await fixture.repository.findById("end-invalid"),
+    invalidBefore,
+  );
+
+  const unopenedBefore = await fixture.repository.findById("end-unopened");
+  const unopened = await postJson(
+    `${fixture.origin}/api/admin/inventory-items/end-unopened/end-use`,
+    { as_of: "2026-09-01", lifecycle_status: "finished" },
+    ADMIN_TOKEN,
+  );
+  assert.equal(unopened.status, 400);
+  assert.deepEqual(
+    await fixture.repository.findById("end-unopened"),
+    unopenedBefore,
+  );
+
+  const finishedBeforeRepeat = await fixture.repository.findById(
+    "end-finished",
+  );
+  assert.ok(finishedBeforeRepeat);
+  const repeatedFinished = await postJson(
+    `${fixture.origin}/api/admin/inventory-items/end-finished/end-use`,
+    {
+      as_of: "2026-09-01",
+      lifecycle_status: "discarded",
+      remaining_percent_estimate: 20,
+    },
+    ADMIN_TOKEN,
+  );
+  assert.equal(repeatedFinished.status, 409);
+  assert.equal(
+    (
+      (await repeatedFinished.json()) as {
+        readonly error: { readonly code: string };
+      }
+    ).error.code,
+    "INVENTORY_ITEM_TERMINAL",
+  );
+  assert.deepEqual(
+    await fixture.repository.findById("end-finished"),
+    finishedBeforeRepeat,
+  );
+
+  const discardedBeforeRepeat = await fixture.repository.findById(
+    "end-discarded",
+  );
+  assert.ok(discardedBeforeRepeat);
+  const repeatedDiscarded = await postJson(
+    `${fixture.origin}/api/admin/inventory-items/end-discarded/end-use`,
+    { as_of: "2026-09-01", lifecycle_status: "finished" },
+    ADMIN_TOKEN,
+  );
+  assert.equal(repeatedDiscarded.status, 409);
+  assert.deepEqual(
+    await fixture.repository.findById("end-discarded"),
+    discardedBeforeRepeat,
+  );
+
+  const missing = await postJson(
+    `${fixture.origin}/api/admin/inventory-items/missing-end-use/end-use`,
+    { as_of: "2026-09-01", lifecycle_status: "finished" },
+    ADMIN_TOKEN,
+  );
+  assert.equal(missing.status, 404);
+  assert.equal(
+    ((await missing.json()) as { readonly error: { readonly code: string } })
+      .error.code,
+    "INVENTORY_ITEM_NOT_FOUND",
+  );
+});
+
 test("Admin custom-notes route is strict, isolated, and preserves every lifecycle fact", async (context) => {
   const fixture = await startFixture(context);
   const lifecycles: readonly LifecycleStatus[] = [
@@ -887,7 +1472,7 @@ test("Admin multipart upload uses the same image use case", async (context) => {
 test("Codex Action bridge persists uploads, reads, writes, and shared Product images remotely", async (context) => {
   const fixture = await startFixture(context);
   const batchResponse = await postJson(
-    `${fixture.origin}/api/actions/create-inventory-batch`,
+    `${fixture.origin}/api/actions/codex/create-inventory-batch`,
     {
       as_of: "2026-08-19",
       products: [
@@ -964,6 +1549,7 @@ test("Codex Action bridge persists uploads, reads, writes, and shared Product im
       brand: "Beautio Lab",
       category: "serum",
       size_label: "30 ml",
+      pao_duration_months: null,
       image_asset_id: upload.assets[0].image_asset_id,
       image_ref: null,
       ingredient_list_text: null,
@@ -972,6 +1558,18 @@ test("Codex Action bridge persists uploads, reads, writes, and shared Product im
   });
 
   const firstInventoryItemId = batch.inventory_items[0].inventory_item_id;
+  for (const opened_on_accuracy of [null, "legacy-guess"] as const) {
+    const invalidOpeningResponse = await postJson(
+      `${fixture.origin}/api/actions/codex/record-product-opened`,
+      {
+        inventory_item_id: firstInventoryItemId,
+        opened_on: "2026-08-19",
+        opened_on_accuracy,
+      },
+      ACTION_TOKEN,
+    );
+    assert.equal(invalidOpeningResponse.status, 400);
+  }
   const openedResponse = await postJson(
     `${fixture.origin}/api/actions/codex/record-product-opened`,
     {
@@ -981,9 +1579,28 @@ test("Codex Action bridge persists uploads, reads, writes, and shared Product im
     ACTION_TOKEN,
   );
   assert.equal(openedResponse.status, 200);
+  const openedBody = (await openedResponse.json()) as {
+    readonly outcome: string;
+    readonly opened_on_accuracy: string;
+  };
+  assert.equal(openedBody.outcome, "opened");
+  assert.equal(openedBody.opened_on_accuracy, "legacy_unknown");
+
+  const explicitLegacyResponse = await postJson(
+    `${fixture.origin}/api/actions/codex/record-product-opened`,
+    {
+      inventory_item_id: batch.inventory_items[1].inventory_item_id,
+      opened_on: "2026-08-18",
+      opened_on_accuracy: "legacy_unknown",
+    },
+    ACTION_TOKEN,
+  );
+  assert.equal(explicitLegacyResponse.status, 200);
   assert.equal(
-    ((await openedResponse.json()) as { readonly outcome: string }).outcome,
-    "opened",
+    ((await explicitLegacyResponse.json()) as {
+      readonly opened_on_accuracy: string;
+    }).opened_on_accuracy,
+    "legacy_unknown",
   );
 
   const getResponse = await postJson(
@@ -1200,7 +1817,7 @@ test("Action upload deadline covers shared image inspection before persistence",
         },
       ],
     },
-    ACTION_TOKEN,
+    CUSTOM_GPT_TOKEN,
   );
   assert.equal(response.status, 502);
   assert.deepEqual(await response.json(), {
@@ -1253,7 +1870,7 @@ test("Action timeout keeps the write gate until delayed storage settles and comp
         },
       ],
     },
-    ACTION_TOKEN,
+    CUSTOM_GPT_TOKEN,
   ).finally(() => {
     uploadSettled = true;
   });
@@ -1273,7 +1890,7 @@ test("Action timeout keeps the write gate until delayed storage settles and comp
         },
       ],
     },
-    ACTION_TOKEN,
+    CUSTOM_GPT_TOKEN,
   ).finally(() => {
     queuedWriteSettled = true;
   });
@@ -1293,7 +1910,7 @@ test("Action timeout keeps the write gate until delayed storage settles and comp
         },
       ],
     },
-    ACTION_TOKEN,
+    CUSTOM_GPT_TOKEN,
   );
 
   await new Promise((resolve) => setTimeout(resolve, 35));
@@ -1357,7 +1974,7 @@ test("backup restore body timeout aborts the request and releases the exclusive 
         },
       ],
     },
-    ACTION_TOKEN,
+    CUSTOM_GPT_TOKEN,
   );
   assert.equal(nextWrite.status, 200);
 });
@@ -1384,7 +2001,7 @@ test("a slow backup upload does not hold the exclusive write gate", async (conte
           },
         ],
       },
-      ACTION_TOKEN,
+      CUSTOM_GPT_TOKEN,
     ),
     new Promise<never>((_resolve, reject) =>
       setTimeout(
@@ -1465,7 +2082,7 @@ test("backup restore deadline aborts blocked image inspection before replacement
         },
       ],
     },
-    ACTION_TOKEN,
+    CUSTOM_GPT_TOKEN,
   );
   assert.equal(nextWrite.status, 200);
   const inventory = await fixture.application.listInventory({ as_of: "2026-08-19" });
@@ -1542,6 +2159,57 @@ test("backup deadline does not hide a non-abort failure that settles later", asy
   });
 });
 
+test("shared Product PAO is inherited and updates per-bottle deadlines through Admin HTTP", async (context) => {
+  const fixture = await startFixture(context);
+  const createdResponse = await postJson(`${fixture.origin}/api/admin/create-inventory-batch`, {
+    as_of: "2026-03-01",
+    products: [{ batch_ref: "shared_pao", name: "Shared PAO test", pao_duration_months: 6 }],
+    inventory_items: ["2026-01-01", "2026-02-01"].map((openedOn, index) => ({
+      batch_ref: `bottle_${index}`,
+      product_ref: { kind: "new", batch_ref: "shared_pao" },
+      lifecycle_status: "opened",
+      opened_on: openedOn,
+      opened_on_accuracy: "exact",
+      expires_on: "2026-11-01",
+    })),
+  }, ADMIN_TOKEN);
+  assert.equal(createdResponse.status, 200);
+  const created = createInventoryBatchOutputSchema.parse(await createdResponse.json());
+  const product = created.products[0];
+  assert.ok(product);
+  assert.equal(product.pao_duration_months, 6);
+  assert.deepEqual(created.inventory_items.map((item) => item.pao_deadline), ["2026-07-01", "2026-08-01"]);
+
+  const edited = await putJson(`${fixture.origin}/api/admin/products/${product.product_id}`, {
+    name: product.name, category: null, size_label: null,
+    image_asset_id: null, ingredient_list_text: null, shared_notes: null,
+    pao_duration_months: 12,
+  }, ADMIN_TOKEN);
+  assert.equal(edited.status, 200);
+  const readback = await fixture.application.listInventory({ as_of: "2026-03-01" });
+  assert.deepEqual(readback.items.map((item) => item.pao_duration_months), [12, 12]);
+  assert.deepEqual(readback.items.map((item) => item.pao_deadline).sort(), ["2027-01-01", "2027-02-01"]);
+  assert.ok(readback.items.every((item) => item.usable_until === "2026-11-01"));
+  assert.ok(readback.items.every((item) => item.product?.pao_duration_months === 12));
+
+  const existingBottle = {
+    batch_ref: "added_bottle", product_ref: { kind: "existing", product_id: product.product_id },
+    lifecycle_status: "unopened",
+  };
+  const inherited = await postJson(`${fixture.origin}/api/actions/create-inventory-batch`, {
+    as_of: "2026-03-01", products: [], inventory_items: [existingBottle],
+  }, CUSTOM_GPT_TOKEN);
+  assert.equal(inherited.status, 200);
+  assert.equal(createInventoryBatchOutputSchema.parse(await inherited.json()).inventory_items[0]?.pao_duration_months, 12);
+
+  const conflicting = await postJson(`${fixture.origin}/api/actions/create-inventory-batch`, {
+    as_of: "2026-03-01", products: [], inventory_items: [{ ...existingBottle, pao_duration_months: 6 }],
+  }, CUSTOM_GPT_TOKEN);
+  assert.equal(conflicting.status, 400);
+  assert.match(JSON.stringify(await conflicting.json()), /PAO|pao/u);
+  assert.equal((await fixture.application.listInventory({ as_of: "2026-03-01" })).items.length, 3);
+});
+
 test("HTTP maps strict batch errors and serves versioned Actions OpenAPI", async (context) => {
   const fixture = await startFixture(context);
   const jsonp = await fetch(
@@ -1563,7 +2231,7 @@ test("HTTP maps strict batch errors and serves versioned Actions OpenAPI", async
   const invalid = await postJson(
     `${fixture.origin}/api/actions/create-inventory-batch`,
     { ...emptyBatch(), unexpected: true },
-    ACTION_TOKEN,
+    CUSTOM_GPT_TOKEN,
   );
   assert.equal(invalid.status, 400);
   assert.deepEqual(await invalid.json(), {
@@ -1592,7 +2260,7 @@ test("HTTP maps strict batch errors and serves versioned Actions OpenAPI", async
         },
       ],
     },
-    ACTION_TOKEN,
+    CUSTOM_GPT_TOKEN,
   );
   assert.equal(oversizedAlias.status, 400);
   assert.deepEqual(await oversizedAlias.json(), {
@@ -1607,7 +2275,7 @@ test("HTTP maps strict batch errors and serves versioned Actions OpenAPI", async
   );
 
   const openapi = await fetch(`${fixture.origin}/openapi/beautio-actions-v1.json`, {
-    headers: authorization(ACTION_TOKEN),
+    headers: authorization(CUSTOM_GPT_TOKEN),
   });
   assert.equal(openapi.status, 200);
   const openapiBody = (await openapi.json()) as {
@@ -1647,7 +2315,7 @@ test("maximum legal confirmed text batch stays within the existing one MiB JSON 
     {
       method: "POST",
       headers: {
-        ...authorization(ACTION_TOKEN),
+        ...authorization(CUSTOM_GPT_TOKEN),
         "content-type": "application/json",
       },
       body: requestBody,
@@ -1718,7 +2386,7 @@ test("optional production web root stays same-origin without shadowing API or Op
   );
   const openapi = await fetch(
     `${fixture.origin}/openapi/beautio-actions-v1.json`,
-    { headers: authorization(ACTION_TOKEN) },
+    { headers: authorization(CUSTOM_GPT_TOKEN) },
   );
   const openapiBody = (await openapi.json()) as {
     readonly servers: readonly [{ readonly url: string }];
@@ -1803,6 +2471,7 @@ async function startFixture(
   });
   const server = createServer(
     createCoreApiHandler(application, {
+      customGptBearerToken: CUSTOM_GPT_TOKEN,
       actionBearerToken: ACTION_TOKEN,
       adminBearerToken: ADMIN_TOKEN,
       actionFileHosts: new Set(["files.example.test"]),

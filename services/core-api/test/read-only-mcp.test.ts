@@ -23,6 +23,7 @@ import {
 } from "../src/read-only-mcp.ts";
 
 const ACTION_TOKEN = "remote-mcp-test-action-token";
+const CUSTOM_GPT_TOKEN = "remote-mcp-test-custom-gpt-token";
 const ADMIN_TOKEN = "remote-mcp-test-admin-token";
 const ACCESS_ASSERTION = "signed-access-assertion-placeholder";
 
@@ -172,6 +173,7 @@ test("real Streamable HTTP client reaches the two tools only after Access verifi
   });
   const httpServer = createServer(
     createCoreApiHandler(fixture.application, {
+      customGptBearerToken: CUSTOM_GPT_TOKEN,
       actionBearerToken: ACTION_TOKEN,
       adminBearerToken: ADMIN_TOKEN,
       actionFileHosts: new Set(["files.example.test"]),
@@ -192,19 +194,21 @@ test("real Streamable HTTP client reaches the two tools only after Access verifi
     body: "{}",
   });
   assert.equal(unauthenticated.status, 401);
-  assert.equal(
-    (
-      await fetch(`${localOrigin}/mcp`, {
-        method: "POST",
-        headers: {
-          authorization: `Bearer ${ACTION_TOKEN}`,
-          "content-type": "application/json",
-        },
-        body: "{}",
-      })
-    ).status,
-    401,
-  );
+  for (const bearerToken of [CUSTOM_GPT_TOKEN, ACTION_TOKEN, ADMIN_TOKEN]) {
+    assert.equal(
+      (
+        await fetch(`${localOrigin}/mcp`, {
+          method: "POST",
+          headers: {
+            authorization: `Bearer ${bearerToken}`,
+            "content-type": "application/json",
+          },
+          body: "{}",
+        })
+      ).status,
+      401,
+    );
+  }
   assert.equal(
     (
       await fetch(`${localOrigin}/mcp`, {
@@ -370,6 +374,7 @@ test("read-only MCP rejects excess concurrent requests before another read start
   });
   const httpServer = createServer(
     createCoreApiHandler(application, {
+      customGptBearerToken: CUSTOM_GPT_TOKEN,
       actionBearerToken: ACTION_TOKEN,
       adminBearerToken: ADMIN_TOKEN,
       actionFileHosts: new Set(["files.example.test"]),
@@ -450,6 +455,7 @@ test("core API keeps the MCP path absent when the feature is disabled", async (c
   const fixture = await createInventoryFixture(context);
   const server = createServer(
     createCoreApiHandler(fixture.application, {
+      customGptBearerToken: CUSTOM_GPT_TOKEN,
       actionBearerToken: ACTION_TOKEN,
       adminBearerToken: ADMIN_TOKEN,
       actionFileHosts: new Set(["files.example.test"]),

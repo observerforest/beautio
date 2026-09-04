@@ -41,10 +41,11 @@ Every production entry point converges on the server's single `InventoryApplicat
 
 ## Local management page
 
-Use Node.js 24 and pnpm 11. The HTTP process fails closed unless two different bearer keys and an Action file host allowlist are configured. For local UI work, clearly fictional host configuration is enough if the Action upload route is not called:
+Use Node.js 24 and pnpm 11. The HTTP process fails closed unless three different bearer keys and an Action file host allowlist are configured. The Custom GPT key authenticates GPT Actions, the existing Action key is reserved for the production Codex bridge, and the Admin key authenticates the management surface. For local UI work, clearly fictional host configuration is enough if the Action upload route is not called:
 
 ```sh
 export BEAUTIO_ACTION_BEARER_TOKEN="$(openssl rand -hex 32)"
+export BEAUTIO_CUSTOM_GPT_BEARER_TOKEN="$(openssl rand -hex 32)"
 export BEAUTIO_ADMIN_BEARER_TOKEN="$(openssl rand -hex 32)"
 export BEAUTIO_ACTION_FILE_HOST_ALLOWLIST="files.example.invalid"
 pnpm install
@@ -125,7 +126,9 @@ with `BEAUTIO_PROD_OBSERVE_LOCAL_TOKEN` when that local trust assumption is not
 appropriate. `BEAUTIO_PROD_OBSERVE_CREDENTIALS` selects another private file,
 and `BEAUTIO_PROD_OBSERVE_PORT` selects another loopback port.
 
-The page keeps one card per physical bottle. Product name, category, size, one display image, confirmed packaging ingredient text, and shared notes are shared by every bottle linked to that Product. Product edits therefore appear on every related card. Each bottle has separate custom notes. Inventory fact edits accept only direct lifecycle facts; PAO deadline, final usable-until date, status, and warnings are recalculated by the shared core and re-read after saving. Custom notes use a separate narrow route and remain editable for terminal history.
+The page keeps one card per physical bottle. Product name, category, size, PAO duration, one display image, confirmed packaging ingredient text, and shared notes are shared by every bottle linked to that Product. Product edits therefore appear on every related card. Each bottle has separate opening dates, packaging expiry and custom notes. Inventory fact edits accept only direct lifecycle facts; PAO deadline, final usable-until date, status, and warnings are recalculated by the shared core and re-read after saving. Custom notes use a separate narrow route and remain editable for terminal history.
+
+Record `pao_duration_months` once on the Product. Adding bottles inherits known Product PAO on the server; a conflicting non-null legacy bottle PAO is rejected. Unknown PAO stays unknown and can be completed through the Product editor. An explicit Product PAO edit atomically updates every linked bottle's effective duration and recalculates its deadlines using its own opening date and packaging expiry, including archived history. Omitting PAO from a Product update preserves it and does not rewrite bottle facts. The bottle field remains as a compatibility snapshot, not a second shared setting. On first migration, Product PAO is backfilled only when existing non-null bottle durations agree; conflicting values and existing bottle history are preserved. New backups include Product PAO, while older version-one backups without it remain readable.
 
 Opening dates preserve `exact`, `estimated`, or legacy-without-evidence semantics. An estimated opening and its derived PAO deadline remain visibly estimated until corrected. Terminal `finished` and `discarded` history cannot be rewritten through the active-inventory editor.
 
@@ -144,6 +147,7 @@ pnpm build
 export BEAUTIO_DB_PATH="/var/lib/beautio/beautio.sqlite"
 export BEAUTIO_IMAGE_STORAGE_ROOT="/var/lib/beautio/managed-images"
 export BEAUTIO_ACTION_BEARER_TOKEN="$(openssl rand -hex 32)"
+export BEAUTIO_CUSTOM_GPT_BEARER_TOKEN="$(openssl rand -hex 32)"
 export BEAUTIO_ADMIN_BEARER_TOKEN="$(openssl rand -hex 32)"
 export BEAUTIO_ACTION_FILE_HOST_ALLOWLIST="oaiusercontent.com"
 export BEAUTIO_WEB_ROOT="$PWD/apps/web/dist"
@@ -184,7 +188,7 @@ them up together before startup migrations or upgrades.
 The shared core exposes two write operations:
 
 - `upload_product_images` validates JPEG, PNG, or static WebP content and creates private temporary assets. One call accepts 1–10 images, at most 20 MiB each and 50 MiB total, with a 40-megapixel decoded limit.
-- `create_inventory_batch` atomically creates confirmed Product rows and one InventoryItem per bottle, or adds bottles to an existing Product. A new Product may include confirmed `ingredient_list_text` and Product-wide `shared_notes`; every new bottle may independently include `custom_notes`. Optional unknown facts remain `null`; derived fields are never accepted as input. If note ownership is unclear, the caller must ask before writing.
+- `create_inventory_batch` atomically creates confirmed Product rows and one InventoryItem per bottle, or adds bottles to an existing Product. A new Product may include confirmed `pao_duration_months`, `ingredient_list_text` and Product-wide `shared_notes`; every new bottle may independently include `custom_notes`. Existing Product PAO is inherited without asking again. Optional unknown facts remain `null`; derived fields are never accepted as input. If note ownership is unclear, the caller must ask before writing.
 
 Unlinked temporary images expire after 24 hours. The Core API and local-dev stdio services run cleanup at startup and at least hourly; the production stdio thin client owns no storage to clean. Linked images are retained; replacing or clearing a Product image restarts the old asset's 24-hour unlinked window.
 
@@ -274,7 +278,7 @@ its SQLite or image directory with production.
 
 ### GPT Actions HTTP
 
-The versioned schema (currently API version 1.1) is available to the Action bearer key from a configured
+The versioned schema (currently API version 1.1) is available to the Custom GPT bearer key from a configured
 server at:
 
 ```text
@@ -288,7 +292,7 @@ POST /api/actions/upload-product-images
 POST /api/actions/create-inventory-batch
 ```
 
-Both require the Action bearer key and are marked consequential. Action file downloads require HTTPS and a configured trusted source: normal allowlist entries are exact, while the explicit `oaiusercontent.com` root also accepts only its dot-boundary subdomains. Public DNS results are required on every redirect, with at most three redirects, 15 seconds per file, and 40 seconds for the complete upload. Short-lived upstream file IDs and URLs are not persisted.
+Both require the Custom GPT bearer key and are marked consequential. Action file downloads require HTTPS and a configured trusted source: normal allowlist entries are exact, while the explicit `oaiusercontent.com` root also accepts only its dot-boundary subdomains. Public DNS results are required on every redirect, with at most three redirects, 15 seconds per file, and 40 seconds for the complete upload. Short-lived upstream file IDs and URLs are not persisted.
 
 For a public deployment, `BEAUTIO_PUBLIC_ORIGIN` adds the exact HTTPS server URL
 that Custom GPT should call. With the variable omitted, the schema keeps its
@@ -298,15 +302,16 @@ This repository verifies the local Action contract with simulated upstream file 
 
 ## Admin HTTP surface
 
-Only health is public. The OpenAPI document, its two GPT Action writes, and the
-fixed Codex automation bridge require the Action bearer key. Inventory,
-management edits, browser image upload, and private-image reads require the
-separate Admin bearer key:
+Only health is public. The OpenAPI document and its two GPT Action writes require
+the Custom GPT bearer key. The fixed Codex automation bridge uses the existing
+Action bearer key. Inventory, management edits, browser image upload, and
+private-image reads require the separate Admin bearer key:
 
 ```text
 GET  /api/health
 GET  /api/inventory?as_of=YYYY-MM-DD
 POST /api/admin/image-assets
+POST /api/admin/create-inventory-batch
 PUT  /api/admin/products/:product_id
 PUT  /api/admin/inventory-items/:inventory_item_id/facts
 PUT  /api/admin/inventory-items/:inventory_item_id/custom-notes
@@ -314,17 +319,33 @@ GET  /api/image-assets/:image_asset_id/content
 GET  /api/image-assets/:image_asset_id/content?variant=card
 ```
 
-The Codex-adapter routes are fixed transport adapters in the same Action-key
+The Codex-adapter routes are fixed transport adapters in the Codex Action-key
 scope; they are intentionally not listed in the GPT OpenAPI:
 
 ```text
 POST /api/actions/codex/record-product-opened
 POST /api/actions/codex/get-inventory-item
 POST /api/actions/codex/upload-product-images
+POST /api/actions/codex/create-inventory-batch
 POST /api/actions/codex/set-product-display-image
 ```
 
-The Action and Admin keys cannot be exchanged. Missing, empty, equal, incorrect, or out-of-scope keys fail without database or filesystem side effects.
+The management page can create a new Product with 1–100 bottles or add bottles to
+an existing Product. The Admin create route uses the same batch contract and
+transaction as the Action route; adding bottles never updates shared Product facts.
+An optional display image is uploaded first and linked by the confirmed create request.
+Create requests are not idempotent: batch references only correlate one request.
+After a connection failure or an unrecognizable success response, check inventory
+before creating again; the page does not automatically retry the write.
+This feature requires deploying the matching Core API as well as the web build.
+The Product PAO field also extends API responses: older clients with strict
+response validation need the matching client update, including the stdio MCP
+adapter. Older write payloads and older backup files are supported, but that does
+not imply that an older strict client can read a newer response. This release
+adds a Codex-only create URL and separates the Custom GPT and Codex authentication
+scopes; update both clients and deployment configuration together.
+
+The Custom GPT, Codex Action, and Admin keys cannot be exchanged. Missing, empty, equal, incorrect, or out-of-scope keys fail without database or filesystem side effects.
 
 ## Local-only seed import
 

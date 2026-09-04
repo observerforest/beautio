@@ -6,8 +6,8 @@ import {
   type ActionFileReference,
   type DownloadedActionImage,
 } from "./action-download.ts";
-import { tokensEqual } from "./bearer.ts";
 import { actionTimedOut } from "./body.ts";
+import { validateHttpBearerTokens } from "./http-bearer-tokens.ts";
 import { sendError } from "./responses.ts";
 import { ExclusiveOperationGate } from "./exclusive-operation-gate.ts";
 import {
@@ -22,6 +22,7 @@ const ACTION_UPLOAD_TIMEOUT_MS = 40_000;
 const BACKUP_OPERATION_TIMEOUT_MS = 120_000;
 
 export interface CoreApiHandlerOptions {
+  readonly customGptBearerToken: string;
   readonly actionBearerToken: string;
   readonly adminBearerToken: string;
   readonly actionFileHosts: ReadonlySet<string>;
@@ -41,7 +42,7 @@ export interface CoreApiHandlerOptions {
  * Creates the authenticated HTTP adapter around the shared application service.
  *
  * @param application - Shared use cases also called by stdio MCP.
- * @param options - Separate Action/Admin keys and approved Action file hosts.
+ * @param options - Separate Custom GPT, Codex Action, and Admin keys plus approved Action file hosts.
  * @returns A Node request listener exposing health, Actions, and management routes.
  */
 export function createCoreApiHandler(
@@ -75,20 +76,12 @@ export function createCoreApiHandler(
 }
 
 function validateOptions(options: CoreApiHandlerOptions): ValidatedOptions {
-  const actionBearerToken = options.actionBearerToken.trim();
-  const adminBearerToken = options.adminBearerToken.trim();
-  if (actionBearerToken.length === 0 || adminBearerToken.length === 0) {
-    throw new Error("both Beautio HTTP bearer tokens are required");
-  }
-  if (tokensEqual(actionBearerToken, adminBearerToken)) {
-    throw new Error("Beautio HTTP bearer tokens must be different");
-  }
+  const bearerTokens = validateHttpBearerTokens(options);
   if (options.actionFileHosts.size === 0) {
     throw new Error("at least one Action file host is required");
   }
   return {
-    actionBearerToken,
-    adminBearerToken,
+    ...bearerTokens,
     actionFileHosts: new Set(options.actionFileHosts),
     actionDownloader:
       options.actionDownloader ??

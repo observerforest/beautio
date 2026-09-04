@@ -74,7 +74,7 @@ export const beautioActionsOpenApiV1 = {
   openapi: "3.1.0",
   info: {
     title: "Beautio confirmed inventory actions",
-    version: "1.3.0",
+    version: "1.4.0",
     description:
       "Private actions for uploading user-confirmed product images and atomically creating confirmed inventory with an optional confirmed Product alias and brand, ingredient text, shared Product notes, and per-bottle custom notes. Draft recognition never writes by itself.",
   },
@@ -134,7 +134,7 @@ export const beautioActionsOpenApiV1 = {
         operationId: "create_inventory_batch",
         summary: "Create a confirmed inventory batch",
         description:
-          "Atomically creates Products and one InventoryItem per bottle. alias and shared_notes are shared Product fields; custom_notes belongs to one bottle. Use only a user-provided or confirmed alias; never guess. Ask before calling if note scope is unclear. Never retry when a write result is unknown.",
+          "Atomically creates Products and one bottle per InventoryItem. alias, PAO and notes are shared Product facts; custom_notes is per bottle. Existing Product PAO is inherited. Use confirmed facts; ask before calling if note scope is unclear. Never retry when a write result is unknown.",
         "x-openai-isConsequential": true,
         security: [{ bearerAuth: [] }],
         requestBody: {
@@ -161,7 +161,7 @@ export const beautioActionsOpenApiV1 = {
       bearerAuth: {
         type: "http",
         scheme: "bearer",
-        description: "Use the private Beautio Action key.",
+        description: "Use the private Beautio Custom GPT key.",
       },
     },
   },
@@ -233,6 +233,11 @@ function createBatchInputSchema(): Record<string, unknown> {
             },
             category: nullableText(100),
             size_label: nullableText(100),
+            pao_duration_months: {
+              ...nullableInteger(1, 120),
+              description:
+                "Confirmed shared period-after-opening duration in months, recorded once for this Product. Each bottle's own opening date determines its deadline. Leave unknown values null; never guess.",
+            },
             image_asset_id: nullableString(),
             ingredient_list_text: nullableConfirmedText(
               5000,
@@ -281,7 +286,11 @@ function createBatchInputSchema(): Record<string, unknown> {
             opened_on: nullableDate(),
             opened_on_accuracy: nullableEnum(["exact", "estimated"]),
             expires_on: nullableDate(),
-            pao_duration_months: nullableInteger(1, 120),
+            pao_duration_months: {
+              ...nullableInteger(1, 120),
+              description:
+                "Legacy compatibility field. Prefer Product PAO and omit this field. A known Product PAO is inherited; a conflicting non-null bottle value is rejected. This field never silently changes an existing Product's shared PAO.",
+            },
             custom_notes: nullableConfirmedText(
               1000,
               "Optional notes for only this physical inventory bottle. Do not place Product-wide notes here; ask the user before calling when the intended scope is unclear.",
@@ -314,6 +323,7 @@ function createBatchOutputSchema(): Record<string, unknown> {
             "brand",
             "category",
             "size_label",
+            "pao_duration_months",
             "image_asset_id",
             "image_ref",
             "ingredient_list_text",
@@ -327,6 +337,7 @@ function createBatchOutputSchema(): Record<string, unknown> {
             brand: nullableString(),
             category: nullableString(),
             size_label: nullableString(),
+            pao_duration_months: nullableInteger(1, 120),
             image_asset_id: nullableString(),
             image_ref: { type: "null" },
             ingredient_list_text: nullableString(5000),

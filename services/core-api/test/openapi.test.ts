@@ -6,7 +6,7 @@ import {
 } from "../src/openapi.ts";
 
 test("Action OpenAPI exposes only the two consequential business writes", () => {
-  assert.equal(beautioActionsOpenApiV1.info.version, "1.3.0");
+  assert.equal(beautioActionsOpenApiV1.info.version, "1.4.0");
   assert.deepEqual(Object.keys(beautioActionsOpenApiV1.paths), [
     "/api/actions/upload-product-images",
     "/api/actions/create-inventory-batch",
@@ -49,6 +49,11 @@ test("Action batch schema distinguishes shared Product text from per-bottle note
     5000,
   );
   assert.equal(product.properties.shared_notes.anyOf[0]?.maxLength, 1000);
+  assert.equal(product.properties.pao_duration_months.anyOf[0]?.minimum, 1);
+  assert.equal(product.properties.pao_duration_months.anyOf[0]?.maximum, 120);
+  assert.match(product.properties.pao_duration_months.description, /shared.*duration/i);
+  assert.match(inventoryItem.properties.pao_duration_months.description, /inherited/i);
+  assert.match(inventoryItem.properties.pao_duration_months.description, /conflicting.*rejected/i);
   assert.match(
     product.properties.ingredient_list_text.description,
     /shared Product/i,
@@ -69,12 +74,18 @@ test("Action batch schema distinguishes shared Product text from per-bottle note
   assert.ok(outputProduct.required.includes("alias"));
   assert.ok(outputProduct.required.includes("brand"));
   assert.ok(outputProduct.required.includes("shared_notes"));
+  assert.ok(outputProduct.required.includes("pao_duration_months"));
   assert.ok(outputInventoryItem.required.includes("custom_notes"));
 });
 
 interface TextPropertySchemaView {
   readonly description: string;
   readonly anyOf: readonly [{ readonly maxLength: number }, unknown];
+}
+
+interface PaoPropertySchemaView {
+  readonly description: string;
+  readonly anyOf: readonly [{ readonly minimum: number; readonly maximum: number }, unknown];
 }
 
 interface BatchInputSchemaView {
@@ -93,6 +104,7 @@ interface BatchInputSchemaView {
           };
           readonly ingredient_list_text: TextPropertySchemaView;
           readonly shared_notes: TextPropertySchemaView;
+          readonly pao_duration_months: PaoPropertySchemaView;
         };
       };
     };
@@ -101,6 +113,7 @@ interface BatchInputSchemaView {
         readonly additionalProperties: false;
         readonly properties: {
           readonly custom_notes: TextPropertySchemaView;
+          readonly pao_duration_months: PaoPropertySchemaView;
         };
       };
     };

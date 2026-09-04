@@ -20,16 +20,16 @@ export const uploadProductImagesToolName = "upload_product_images";
 export const createInventoryBatchToolName = "create_inventory_batch";
 
 export const recordProductOpenedDescription =
-  "Record that an existing non-terminal inventory item was opened on an explicit YYYY-MM-DD date. This changes persisted lifecycle facts, calculates PAO and usable-until dates in the core domain, is idempotent only for the same item and date, rejects conflicting dates and terminal items, and never guesses dates, time zones, or missing inventory.";
+  "Record that an existing non-terminal inventory item was opened on an explicit YYYY-MM-DD date with explicit exact or estimated date accuracy. This changes persisted lifecycle facts, calculates PAO and usable-until dates in the core domain, is idempotent only for the same item, date, and accuracy, rejects conflicting facts and terminal items, and never guesses dates, time zones, accuracy, or missing inventory.";
 
 export const getInventoryItemDescription =
-  "Read one existing inventory item by ID, including its Product alias, shared Product ingredient text and shared notes plus this bottle's custom notes, and derive usability for an explicit YYYY-MM-DD as_of date. This tool is read-only, never creates inventory, and never guesses a date or time zone.";
+  "Read one existing inventory item by ID, including its Product alias, shared Product ingredient text, PAO duration and shared notes plus this bottle's custom notes, and derive usability for an explicit YYYY-MM-DD as_of date. This tool is read-only, never creates inventory, and never guesses a date or time zone.";
 
 export const uploadProductImagesDescription =
   "Only after the user confirms the selected Product display images, upload 1-10 supported local files as private temporary Beautio assets. This write has side effects, keeps unlinked assets for 24 hours, rejects the whole upload if any image fails, never accepts receipts or unselected scans by default, and must not be silently retried when the result is unknown.";
 
 export const createInventoryBatchDescription =
-  "Only after the user confirms the structured draft, atomically create Products and one InventoryItem per physical bottle, or reference an existing Product ID. Product alias, brand, ingredient_list_text, and shared_notes are shared by every bottle linked to that new Product; custom_notes belongs only to one physical bottle. alias may contain a user-provided nickname or a commonly used online name the user has confirmed. Use null for a missing or uncertain alias or brand rather than guessing. If the intended note scope is unclear, ask the user before calling. This write has side effects, rejects the whole batch when any item or image link is invalid, never guesses missing facts or derived dates, and must not be silently retried when the result is unknown.";
+  "Only after the user confirms the structured draft, atomically create Products and one InventoryItem per physical bottle, or reference an existing Product ID. Product alias, brand, pao_duration_months, ingredient_list_text, and shared_notes are shared Product facts; custom_notes and opening dates belong to each bottle. Record confirmed PAO once on a new Product. Existing Products supply known PAO automatically: omit the legacy bottle PAO rather than asking again, and do not guess when Product PAO is unknown. A conflicting bottle PAO is rejected, not used to overwrite an existing Product. alias may contain a user-provided nickname or a commonly used online name the user has confirmed. Use null for missing or uncertain facts. If the intended note scope is unclear, ask the user before calling. This write has side effects, rejects the whole batch when any item or image link is invalid, and must not be silently retried when the result is unknown.";
 
 export interface BeautioMcpServerOptions {
   readonly uploadRoot: string;

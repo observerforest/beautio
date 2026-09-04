@@ -8,6 +8,7 @@ const LOCAL_HOST = "127.0.0.1";
 const LOCAL_PORT = 8787;
 const DEFAULT_ADMIN_TOKEN = "111";
 const DEFAULT_ACTION_TOKEN = "local-action-token-not-production";
+const DEFAULT_CUSTOM_GPT_TOKEN = "local-custom-gpt-token-not-production";
 
 if (Number(process.versions.node.split(".")[0]) !== 24) {
   throw new Error(
@@ -29,9 +30,16 @@ const adminToken =
   optionalEnvironment("BEAUTIO_LOCAL_ADMIN_TOKEN") ?? DEFAULT_ADMIN_TOKEN;
 const actionToken =
   optionalEnvironment("BEAUTIO_LOCAL_ACTION_TOKEN") ?? DEFAULT_ACTION_TOKEN;
+const customGptToken =
+  optionalEnvironment("BEAUTIO_LOCAL_CUSTOM_GPT_TOKEN") ??
+  DEFAULT_CUSTOM_GPT_TOKEN;
 
-if (adminToken === actionToken) {
-  throw new Error("Local Admin and Action tokens must be different");
+if (
+  adminToken === actionToken ||
+  adminToken === customGptToken ||
+  actionToken === customGptToken
+) {
+  throw new Error("Local Admin, Action, and Custom GPT tokens must be different");
 }
 
 await assertPortAvailable(LOCAL_HOST, LOCAL_PORT);
@@ -56,6 +64,7 @@ Object.assign(serverEnvironment, {
   BEAUTIO_DB_PATH: databasePath,
   BEAUTIO_IMAGE_STORAGE_ROOT: imageStorageRoot,
   BEAUTIO_WEB_ROOT: webRoot,
+  BEAUTIO_CUSTOM_GPT_BEARER_TOKEN: customGptToken,
   BEAUTIO_ACTION_BEARER_TOKEN: actionToken,
   BEAUTIO_ADMIN_BEARER_TOKEN: adminToken,
   BEAUTIO_ACTION_FILE_HOST_ALLOWLIST: "files.example.invalid",
