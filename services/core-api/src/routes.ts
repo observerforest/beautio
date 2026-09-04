@@ -223,12 +223,13 @@ async function routeAuthorizedRequest(
           options.actionFileHosts,
           signal,
         );
-        return downloaded;
+        return application.prepareProductImages(downloaded, { signal });
       },
-      (downloaded, operationSignal) =>
-        application.uploadProductImages(downloaded, {
+      (prepared, operationSignal) =>
+        application.commitPreparedProductImages(prepared, {
           signal: operationSignal,
         }),
+      (prepared) => application.discardPreparedProductImages(prepared),
     );
     sendJson(response, 200, output);
     return;
@@ -274,10 +275,16 @@ async function routeAuthorizedRequest(
       options,
       dependencies,
       signal,
-      (operationSignal) =>
-        readCodexImageMultipart(request, operationSignal),
-      (images, operationSignal) =>
-        application.uploadProductImages(images, { signal: operationSignal }),
+      async (operationSignal) =>
+        application.prepareProductImages(
+          await readCodexImageMultipart(request, operationSignal),
+          { signal: operationSignal },
+        ),
+      (prepared, operationSignal) =>
+        application.commitPreparedProductImages(prepared, {
+          signal: operationSignal,
+        }),
+      (prepared) => application.discardPreparedProductImages(prepared),
     );
     sendJson(response, 200, output);
     return;
@@ -387,7 +394,7 @@ async function routeAuthorizedRequest(
     url.pathname === "/api/admin/image-assets"
   ) {
     const signal = requireRequestSignal(requestSignal);
-    const prepared = await prepareOrdinaryWrite(
+    const bodyPrepared = await prepareOrdinaryWrite(
       request,
       response,
       options,
@@ -396,14 +403,23 @@ async function routeAuthorizedRequest(
       (preparationSignal) =>
         readSingleImageMultipart(request, preparationSignal),
     );
+    const prepared = await continuePreparedWrite(
+      bodyPrepared,
+      signal,
+      (bytes, semanticSignal) =>
+        application.prepareProductImages(
+          [{ source_ref: "admin_image", bytes }],
+          { signal: semanticSignal },
+        ),
+    );
     const uploaded = await commitPreparedWrite(
       prepared,
       dependencies,
       signal,
-      (bytes) =>
-        application.uploadProductImages([
-          { source_ref: "admin_image", bytes },
-        ]),
+      (semanticPrepared) =>
+        application.commitPreparedProductImages(semanticPrepared, { signal }),
+      (semanticPrepared) =>
+        application.discardPreparedProductImages(semanticPrepared),
     );
     const asset = uploaded.assets[0];
     if (asset === undefined) {
@@ -620,6 +636,7 @@ async function commitPreparedWrite<T, R>(
   dependencies: RouteRequestDependencies,
   requestSignal: AbortSignal,
   commit: (value: T) => Promise<R>,
+  discard?: (value: T) => void,
 ): Promise<R> {
   try {
     return await dependencies.withExclusiveOperation(
@@ -627,7 +644,25 @@ async function commitPreparedWrite<T, R>(
       requestSignal,
     );
   } finally {
+    try {
+      discard?.(prepared.value);
+    } finally {
+      prepared.permit.release();
+    }
+  }
+}
+
+async function continuePreparedWrite<T, R>(
+  prepared: PreparedWrite<T>,
+  requestSignal: AbortSignal,
+  continuation: (value: T, signal: AbortSignal) => Promise<R>,
+): Promise<PreparedWrite<R>> {
+  try {
+    const value = await continuation(prepared.value, requestSignal);
+    return { value, permit: prepared.permit };
+  } catch (error) {
     prepared.permit.release();
+    throw error;
   }
 }
 
@@ -639,6 +674,7 @@ async function runActionPreparedWrite<T, R>(
   requestSignal: AbortSignal,
   prepare: (signal: AbortSignal) => Promise<T>,
   commit: (value: T, signal: AbortSignal) => Promise<R>,
+  discard?: (value: T) => void,
 ): Promise<R> {
   return dependencies.withActionUploadDeadline(
     options.actionUploadTimeoutMs,
@@ -646,11 +682,13 @@ async function runActionPreparedWrite<T, R>(
     async (operationSignal) => {
       let permit: WritePreparationPermit | undefined;
       let preparationComplete = false;
+      let preparedValue: { readonly value: T } | undefined;
       try {
         permit = await dependencies.acquireWritePreparation(operationSignal);
-        const value = await prepare(operationSignal);
+        preparedValue = { value: await prepare(operationSignal) };
         throwIfRequestAborted(operationSignal);
         preparationComplete = true;
+        const value = preparedValue.value;
         return await dependencies.withExclusiveOperation(
           () => commit(value, operationSignal),
           operationSignal,
@@ -661,7 +699,13 @@ async function runActionPreparedWrite<T, R>(
         }
         throw error;
       } finally {
-        permit?.release();
+        try {
+          if (preparedValue !== undefined) {
+            discard?.(preparedValue.value);
+          }
+        } finally {
+          permit?.release();
+        }
       }
     },
   );

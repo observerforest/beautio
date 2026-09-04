@@ -12,6 +12,7 @@ import {
 } from "@beautio/domain";
 import {
   InventoryApplicationService,
+  type ImageInspection,
   type ImageAssetStorage,
   type ImageRendition,
   type ImageRenditionProvider,
@@ -19,6 +20,7 @@ import {
   type InventoryItemCustomNotesPersistenceInput,
   type ProductFactsPersistenceInput,
   type ProductImagePersistenceInput,
+  type PreparedProductImageUpload,
   type RecordProductOpenedPersistenceInput,
   type RecordProductOpenedPersistenceResult,
 } from "../src/index.ts";
@@ -168,15 +170,19 @@ class RecordingInventoryRepository implements InventoryRepository {
     return this.item;
   }
 
-  async stageImageAssets(): Promise<void> {
+  async stageImageAssets(_assets: readonly ImageAsset[]): Promise<void> {
     throw new Error("not used by this test repository");
   }
 
-  async activateStagedImageAssets(): Promise<void> {
+  async activateStagedImageAssets(
+    _imageAssetIds: readonly string[],
+  ): Promise<void> {
     throw new Error("not used by this test repository");
   }
 
-  async markImageAssetsForCleanup(): Promise<void> {
+  async markImageAssetsForCleanup(
+    _imageAssetIds: readonly string[],
+  ): Promise<void> {
     throw new Error("not used by this test repository");
   }
 
@@ -293,6 +299,57 @@ class RecordingImageRenditions implements ImageRenditionProvider {
       throw new Error("test rendition deletion failure");
     }
     this.#events.push(`rendition:${storageKey}`);
+  }
+}
+
+class UploadInventoryRepository extends RecordingInventoryRepository {
+  readonly staged: ImageAsset[][] = [];
+  readonly activated: string[][] = [];
+  readonly markedForCleanup: string[][] = [];
+  stageFailure: Error | null = null;
+  activationFailure: Error | null = null;
+
+  constructor() {
+    super(null);
+  }
+
+  override async stageImageAssets(assets: readonly ImageAsset[]): Promise<void> {
+    this.staged.push([...assets]);
+    if (this.stageFailure !== null) {
+      throw this.stageFailure;
+    }
+  }
+
+  override async activateStagedImageAssets(
+    imageAssetIds: readonly string[],
+  ): Promise<void> {
+    this.activated.push([...imageAssetIds]);
+    if (this.activationFailure !== null) {
+      throw this.activationFailure;
+    }
+  }
+
+  override async markImageAssetsForCleanup(
+    imageAssetIds: readonly string[],
+  ): Promise<void> {
+    this.markedForCleanup.push([...imageAssetIds]);
+  }
+}
+
+class UploadImageStorage implements ImageAssetStorage {
+  readonly puts: Array<{ readonly storageKey: string; readonly bytes: Uint8Array }> = [];
+  readonly deletes: string[] = [];
+
+  async put(storageKey: string, bytes: Uint8Array): Promise<void> {
+    this.puts.push({ storageKey, bytes: Uint8Array.from(bytes) });
+  }
+
+  async get(): Promise<Uint8Array> {
+    throw new Error("not used by image upload tests");
+  }
+
+  async delete(storageKey: string): Promise<void> {
+    this.deletes.push(storageKey);
   }
 }
 
@@ -1411,6 +1468,594 @@ test("BD-DATA-004 oversized Product text leaves existing shared facts unchanged"
   assert.deepEqual(await repository.findProductById(product.id), product);
 });
 
+test("image preparation performs no write-side work before semantic validation completes", async () => {
+  const repository = new UploadInventoryRepository();
+  const storage = new UploadImageStorage();
+  const inspectionStarted = deferred<void>();
+  const inspectionRelease = deferred<void>();
+  let inspectionCalls = 0;
+  let clockCalls = 0;
+  let idCalls = 0;
+  const service = new InventoryApplicationService(repository, {
+    imageStorage: storage,
+    imageInspector: {
+      inspect: async (): Promise<ImageInspection> => {
+        inspectionCalls += 1;
+        if (inspectionCalls === 1) {
+          inspectionStarted.resolve();
+          await inspectionRelease.promise;
+        }
+        return inspectionCalls === 3
+          ? validInspection({ animated: true })
+          : validInspection();
+      },
+    },
+    clock: () => {
+      clockCalls += 1;
+      return new Date("2026-09-04T02:00:00.000Z");
+    },
+    idGenerator: () => {
+      idCalls += 1;
+      return `generated-${idCalls}`;
+    },
+  });
+
+  const preparing = service.prepareProductImages([
+    { source_ref: "first", bytes: new Uint8Array([1]) },
+  ]);
+  await inspectionStarted.promise;
+
+  assert.equal(clockCalls, 0);
+  assert.equal(idCalls, 0);
+  assert.equal(repository.staged.length, 0);
+  assert.equal(repository.activated.length, 0);
+  assert.equal(repository.markedForCleanup.length, 0);
+  assert.equal(storage.puts.length, 0);
+  assert.equal(storage.deletes.length, 0);
+
+  inspectionRelease.resolve();
+  service.discardPreparedProductImages(await preparing);
+
+  await assert.rejects(
+    service.prepareProductImages([
+      { source_ref: "valid-first", bytes: new Uint8Array([2]) },
+      { source_ref: "invalid-second", bytes: new Uint8Array([3]) },
+    ]),
+    hasBeautioCode("UNSUPPORTED_MEDIA_TYPE"),
+  );
+  assert.equal(clockCalls, 0);
+  assert.equal(idCalls, 0);
+  assert.equal(repository.staged.length, 0);
+  assert.equal(repository.activated.length, 0);
+  assert.equal(repository.markedForCleanup.length, 0);
+  assert.equal(storage.puts.length, 0);
+  assert.equal(storage.deletes.length, 0);
+});
+
+test("prepared uploads isolate caller bytes, inspector bytes, and inspection metadata", async () => {
+  const repository = new UploadInventoryRepository();
+  const storage = new UploadImageStorage();
+  const firstInspectionStarted = deferred<void>();
+  const firstInspectionRelease = deferred<void>();
+  const reportedInspection: {
+    mediaType: ImageInspection["mediaType"];
+    width: number;
+    height: number;
+    animated: boolean;
+  } = {
+    mediaType: "image/png",
+    width: 2,
+    height: 2,
+    animated: false,
+  };
+  let inspectionCalls = 0;
+  let nextId = 0;
+  const service = new InventoryApplicationService(repository, {
+    imageStorage: storage,
+    imageInspector: {
+      inspect: async (bytes): Promise<ImageInspection> => {
+        inspectionCalls += 1;
+        bytes.fill(99);
+        if (inspectionCalls === 1) {
+          firstInspectionStarted.resolve();
+          await firstInspectionRelease.promise;
+        }
+        return reportedInspection;
+      },
+    },
+    clock: () => new Date("2026-09-04T03:00:00.000Z"),
+    idGenerator: (kind) => `${kind}-${++nextId}`,
+  });
+  const first = new Uint8Array([1, 2, 3]);
+  const second = new Uint8Array([4, 5, 6]);
+  const expectedFirst = Uint8Array.from(first);
+  const expectedSecond = Uint8Array.from(second);
+
+  const preparing = service.prepareProductImages([
+    { source_ref: "first", bytes: first },
+    { source_ref: "second", bytes: second },
+  ]);
+  await firstInspectionStarted.promise;
+  first.fill(7);
+  second.fill(8);
+  firstInspectionRelease.resolve();
+  const prepared = await preparing;
+
+  reportedInspection.mediaType = "image/jpeg";
+  reportedInspection.width = 50_000;
+  reportedInspection.height = 50_000;
+  reportedInspection.animated = true;
+  const result = await service.commitPreparedProductImages(prepared);
+
+  assert.deepEqual(
+    storage.puts.map((put) => put.bytes),
+    [expectedFirst, expectedSecond],
+  );
+  assert.deepEqual(
+    repository.staged[0]?.map((asset) => asset.mediaType),
+    ["image/png", "image/png"],
+  );
+  assert.deepEqual(
+    result.assets.map((asset) => asset.media_type),
+    ["image/png", "image/png"],
+  );
+});
+
+test("prepared upload handles are opaque, same-service, and atomically single-use", async () => {
+  const repository = new UploadInventoryRepository();
+  const storage = new UploadImageStorage();
+  let nextId = 0;
+  const service = new InventoryApplicationService(repository, {
+    imageStorage: storage,
+    imageInspector: unusedImageInspector,
+    clock: () => new Date("2026-09-04T04:00:00.000Z"),
+    idGenerator: (kind) => `${kind}-${++nextId}`,
+  });
+  const prepared = await service.prepareProductImages([
+    { source_ref: "single", bytes: new Uint8Array([1, 2, 3]) },
+  ]);
+
+  const concurrent = await Promise.allSettled([
+    service.commitPreparedProductImages(prepared),
+    service.commitPreparedProductImages(prepared),
+  ]);
+  assert.equal(
+    concurrent.filter((result) => result.status === "fulfilled").length,
+    1,
+  );
+  const rejected = concurrent.find((result) => result.status === "rejected");
+  assert.equal(rejected?.status, "rejected");
+  assert.ok(rejected?.status === "rejected");
+  assert.ok(rejected.reason instanceof BeautioError);
+  assert.equal(rejected.reason.code, "INTERNAL_ERROR");
+  assert.equal(repository.staged.length, 1);
+  assert.equal(repository.activated.length, 1);
+  assert.equal(storage.puts.length, 1);
+  await assert.rejects(
+    service.commitPreparedProductImages(prepared),
+    hasBeautioCode("INTERNAL_ERROR"),
+  );
+
+  const ownerRepository = new UploadInventoryRepository();
+  const ownerStorage = new UploadImageStorage();
+  let ownerId = 0;
+  const owner = new InventoryApplicationService(ownerRepository, {
+    imageStorage: ownerStorage,
+    imageInspector: unusedImageInspector,
+    clock: () => new Date("2026-09-04T05:00:00.000Z"),
+    idGenerator: (kind) => `owner-${kind}-${++ownerId}`,
+  });
+  const foreign = new InventoryApplicationService(
+    new UploadInventoryRepository(),
+    {
+      imageStorage: new UploadImageStorage(),
+      imageInspector: unusedImageInspector,
+    },
+  );
+  const ownerHandle = await owner.prepareProductImages([
+    { source_ref: "owned", bytes: new Uint8Array([4]) },
+  ]);
+
+  await assert.rejects(
+    foreign.commitPreparedProductImages(ownerHandle),
+    hasBeautioCode("INTERNAL_ERROR"),
+  );
+  await assert.rejects(
+    owner.commitPreparedProductImages({} as PreparedProductImageUpload),
+    hasBeautioCode("INTERNAL_ERROR"),
+  );
+  await owner.commitPreparedProductImages(ownerHandle);
+  assert.equal(ownerRepository.staged.length, 1);
+  assert.equal(ownerStorage.puts.length, 1);
+});
+
+test("an abort before commit burns the handle without starting write-side work", async () => {
+  const repository = new UploadInventoryRepository();
+  const storage = new UploadImageStorage();
+  let clockCalls = 0;
+  let idCalls = 0;
+  const service = new InventoryApplicationService(repository, {
+    imageStorage: storage,
+    imageInspector: unusedImageInspector,
+    clock: () => {
+      clockCalls += 1;
+      return new Date("2026-09-04T06:00:00.000Z");
+    },
+    idGenerator: () => {
+      idCalls += 1;
+      return `id-${idCalls}`;
+    },
+  });
+  const prepared = await service.prepareProductImages([
+    { source_ref: "aborted", bytes: new Uint8Array([1]) },
+  ]);
+  const abort = new AbortController();
+  abort.abort();
+
+  await assert.rejects(
+    service.commitPreparedProductImages(prepared, { signal: abort.signal }),
+    hasBeautioCode("UPLOAD_FAILED"),
+  );
+  assert.equal(clockCalls, 0);
+  assert.equal(idCalls, 0);
+  assert.equal(repository.staged.length, 0);
+  assert.equal(repository.activated.length, 0);
+  assert.equal(repository.markedForCleanup.length, 0);
+  assert.equal(storage.puts.length, 0);
+  await assert.rejects(
+    service.commitPreparedProductImages(prepared),
+    hasBeautioCode("INTERNAL_ERROR"),
+  );
+});
+
+test("clock and ID failures each burn a prepared upload handle", async () => {
+  const clockRepository = new UploadInventoryRepository();
+  const clockService = new InventoryApplicationService(clockRepository, {
+    imageStorage: new UploadImageStorage(),
+    imageInspector: unusedImageInspector,
+    clock: () => new Date(Number.NaN),
+  });
+  const clockHandle = await clockService.prepareProductImages([
+    { source_ref: "clock", bytes: new Uint8Array([1]) },
+  ]);
+  await assert.rejects(
+    clockService.commitPreparedProductImages(clockHandle),
+    hasBeautioCode("INTERNAL_ERROR"),
+  );
+  await assert.rejects(
+    clockService.commitPreparedProductImages(clockHandle),
+    hasBeautioCode("INTERNAL_ERROR"),
+  );
+  assert.equal(clockRepository.staged.length, 0);
+
+  const idRepository = new UploadInventoryRepository();
+  const idService = new InventoryApplicationService(idRepository, {
+    imageStorage: new UploadImageStorage(),
+    imageInspector: unusedImageInspector,
+    clock: () => new Date("2026-09-04T07:00:00.000Z"),
+    idGenerator: () => "   ",
+  });
+  const idHandle = await idService.prepareProductImages([
+    { source_ref: "id", bytes: new Uint8Array([2]) },
+  ]);
+  await assert.rejects(
+    idService.commitPreparedProductImages(idHandle),
+    hasBeautioCode("INTERNAL_ERROR"),
+  );
+  await assert.rejects(
+    idService.commitPreparedProductImages(idHandle),
+    hasBeautioCode("INTERNAL_ERROR"),
+  );
+  assert.equal(idRepository.staged.length, 0);
+});
+
+test("upload timestamps and expiry are derived at commit time", async () => {
+  const repository = new UploadInventoryRepository();
+  let clockCalls = 0;
+  let now = new Date("2026-09-04T08:00:00.000Z");
+  let nextId = 0;
+  const service = new InventoryApplicationService(repository, {
+    imageStorage: new UploadImageStorage(),
+    imageInspector: unusedImageInspector,
+    clock: () => {
+      clockCalls += 1;
+      return new Date(now);
+    },
+    idGenerator: (kind) => `${kind}-${++nextId}`,
+  });
+
+  const prepared = await service.prepareProductImages([
+    { source_ref: "commit-time", bytes: new Uint8Array([1]) },
+  ]);
+  assert.equal(clockCalls, 0);
+  now = new Date("2026-09-05T09:10:11.000Z");
+
+  const result = await service.commitPreparedProductImages(prepared);
+
+  assert.equal(clockCalls, 1);
+  assert.equal(repository.staged[0]?.[0]?.createdAt, now.toISOString());
+  assert.equal(
+    repository.staged[0]?.[0]?.expiresAt,
+    "2026-09-06T09:10:11.000Z",
+  );
+  assert.equal(result.assets[0]?.expires_at, "2026-09-06T09:10:11.000Z");
+});
+
+test("live prepared bytes are capped at 100 MiB and released by discard and commit", async () => {
+  const repository = new UploadInventoryRepository();
+  const storage = discardingImageStorage();
+  let inspectionCalls = 0;
+  let nextId = 0;
+  const service = new InventoryApplicationService(repository, {
+    imageStorage: storage,
+    imageInspector: {
+      inspect: async () => {
+        inspectionCalls += 1;
+        return validInspection();
+      },
+    },
+    clock: () => new Date("2026-09-04T10:00:00.000Z"),
+    idGenerator: (kind) => `${kind}-${++nextId}`,
+  });
+  const twentyMiB = new Uint8Array(20 * 1024 * 1024);
+  const tenMiB = new Uint8Array(10 * 1024 * 1024);
+  const first = await service.prepareProductImages(
+    fiftyMiBUpload("first", twentyMiB, tenMiB),
+  );
+  const second = await service.prepareProductImages(
+    fiftyMiBUpload("second", twentyMiB, tenMiB),
+  );
+  assert.equal(inspectionCalls, 6);
+
+  await assert.rejects(
+    service.prepareProductImages([
+      { source_ref: "over-budget", bytes: new Uint8Array([1]) },
+    ]),
+    hasBeautioCode("BATCH_CONFLICT"),
+  );
+  assert.equal(inspectionCalls, 6);
+
+  service.discardPreparedProductImages(first);
+  const afterDiscard = await service.prepareProductImages([
+    { source_ref: "after-discard", bytes: new Uint8Array([1]) },
+  ]);
+
+  await assert.rejects(
+    service.prepareProductImages(
+      fiftyMiBUpload("before-commit", twentyMiB, tenMiB),
+    ),
+    hasBeautioCode("BATCH_CONFLICT"),
+  );
+
+  await service.commitPreparedProductImages(second);
+  const afterCommit = await service.prepareProductImages(
+    fiftyMiBUpload("after-commit", twentyMiB, tenMiB),
+  );
+  service.discardPreparedProductImages(afterDiscard);
+  service.discardPreparedProductImages(afterCommit);
+});
+
+test("queued abort and semantic failure restore reserved preparation bytes", async () => {
+  const twentyMiB = new Uint8Array(20 * 1024 * 1024);
+  const tenMiB = new Uint8Array(10 * 1024 * 1024);
+  const activeInspectionStarted = deferred<void>();
+  const activeInspectionRelease = deferred<void>();
+  let inspectionCalls = 0;
+  const service = new InventoryApplicationService(
+    new UploadInventoryRepository(),
+    {
+      imageStorage: discardingImageStorage(),
+      imageInspector: {
+        inspect: async () => {
+          inspectionCalls += 1;
+          if (inspectionCalls === 1) {
+            activeInspectionStarted.resolve();
+            await activeInspectionRelease.promise;
+          }
+          return validInspection();
+        },
+      },
+    },
+  );
+  const active = service.prepareProductImages(
+    fiftyMiBUpload("active", twentyMiB, tenMiB),
+  );
+  await activeInspectionStarted.promise;
+  const queuedAbort = new AbortController();
+  const queued = service.prepareProductImages(
+    fiftyMiBUpload("queued", twentyMiB, tenMiB),
+    { signal: queuedAbort.signal },
+  );
+  queuedAbort.abort();
+  await assert.rejects(queued, hasBeautioCode("UPLOAD_FAILED"));
+
+  const replacement = service.prepareProductImages([
+    { source_ref: "replacement", bytes: new Uint8Array([1]) },
+  ]);
+  assert.equal(inspectionCalls, 1);
+  activeInspectionRelease.resolve();
+  const activeHandle = await active;
+  const replacementHandle = await replacement;
+  service.discardPreparedProductImages(activeHandle);
+  service.discardPreparedProductImages(replacementHandle);
+
+  let failureInspectionCalls = 0;
+  const failureService = new InventoryApplicationService(
+    new UploadInventoryRepository(),
+    {
+      imageStorage: discardingImageStorage(),
+      imageInspector: {
+        inspect: async () => {
+          failureInspectionCalls += 1;
+          if (failureInspectionCalls === 4) {
+            return validInspection({ animated: true });
+          }
+          return validInspection();
+        },
+      },
+    },
+  );
+  const baseline = await failureService.prepareProductImages(
+    fiftyMiBUpload("baseline", twentyMiB, tenMiB),
+  );
+  await assert.rejects(
+    failureService.prepareProductImages(
+      fiftyMiBUpload("failed", twentyMiB, tenMiB),
+    ),
+    hasBeautioCode("UNSUPPORTED_MEDIA_TYPE"),
+  );
+  const afterFailure = await failureService.prepareProductImages([
+    { source_ref: "after-failure", bytes: new Uint8Array([1]) },
+  ]);
+  failureService.discardPreparedProductImages(baseline);
+  failureService.discardPreparedProductImages(afterFailure);
+});
+
+test("at most 17 prepared handles can remain live", async () => {
+  let inspectionCalls = 0;
+  const service = new InventoryApplicationService(
+    new UploadInventoryRepository(),
+    {
+      imageStorage: discardingImageStorage(),
+      imageInspector: {
+        inspect: async () => {
+          inspectionCalls += 1;
+          return validInspection();
+        },
+      },
+    },
+  );
+  const handles: PreparedProductImageUpload[] = [];
+  for (let index = 0; index < 17; index += 1) {
+    handles.push(
+      await service.prepareProductImages([
+        { source_ref: `live-${index}`, bytes: new Uint8Array([index]) },
+      ]),
+    );
+  }
+  await assert.rejects(
+    service.prepareProductImages([
+      { source_ref: "eighteenth", bytes: new Uint8Array([18]) },
+    ]),
+    hasBeautioCode("BATCH_CONFLICT"),
+  );
+  assert.equal(inspectionCalls, 17);
+
+  service.discardPreparedProductImages(handles.shift()!);
+  const replacement = await service.prepareProductImages([
+    { source_ref: "replacement", bytes: new Uint8Array([19]) },
+  ]);
+  assert.equal(inspectionCalls, 18);
+  for (const handle of handles) {
+    service.discardPreparedProductImages(handle);
+  }
+  service.discardPreparedProductImages(replacement);
+});
+
+test("stage, storage, and activation failures restore the weighted preparation budget", async () => {
+  const twentyMiB = new Uint8Array(20 * 1024 * 1024);
+  const tenMiB = new Uint8Array(10 * 1024 * 1024);
+  const failureKinds = ["stage", "storage", "activation"] as const;
+
+  for (const failureKind of failureKinds) {
+    const repository = new UploadInventoryRepository();
+    if (failureKind === "stage") {
+      repository.stageFailure = new Error("forced stage failure");
+    }
+    if (failureKind === "activation") {
+      repository.activationFailure = new Error("forced activation failure");
+    }
+    const storage: ImageAssetStorage = {
+      async put(): Promise<void> {
+        if (failureKind === "storage") {
+          throw new Error("forced storage failure");
+        }
+      },
+      async get(): Promise<Uint8Array> {
+        throw new Error("not used by failure capacity tests");
+      },
+      async delete(): Promise<void> {},
+    };
+    let nextId = 0;
+    const service = new InventoryApplicationService(repository, {
+      imageStorage: storage,
+      imageInspector: unusedImageInspector,
+      clock: () => new Date("2026-09-04T11:00:00.000Z"),
+      idGenerator: (kind) => `${failureKind}-${kind}-${++nextId}`,
+    });
+    const baseline = await service.prepareProductImages(
+      fiftyMiBUpload(`${failureKind}-baseline`, twentyMiB, tenMiB),
+    );
+    const failing = await service.prepareProductImages(
+      fiftyMiBUpload(`${failureKind}-failing`, twentyMiB, tenMiB),
+    );
+
+    await assert.rejects(
+      service.commitPreparedProductImages(failing),
+      hasBeautioCode("UPLOAD_FAILED"),
+    );
+    const replacement = await service.prepareProductImages(
+      fiftyMiBUpload(`${failureKind}-replacement`, twentyMiB, tenMiB),
+    );
+    service.discardPreparedProductImages(baseline);
+    service.discardPreparedProductImages(replacement);
+  }
+});
+
+test("weighted bytes remain reserved until failed-upload compensation really settles", async () => {
+  const twentyMiB = new Uint8Array(20 * 1024 * 1024);
+  const tenMiB = new Uint8Array(10 * 1024 * 1024);
+  const repository = new UploadInventoryRepository();
+  const compensationStarted = deferred<void>();
+  const compensationRelease = deferred<void>();
+  const originalMarkForCleanup = repository.markImageAssetsForCleanup;
+  repository.markImageAssetsForCleanup = async (...args): Promise<void> => {
+    compensationStarted.resolve();
+    await compensationRelease.promise;
+    return originalMarkForCleanup.apply(repository, args);
+  };
+  const service = new InventoryApplicationService(repository, {
+    imageStorage: {
+      async put(): Promise<void> {
+        throw new Error("forced storage failure");
+      },
+      async get(): Promise<Uint8Array> {
+        throw new Error("not used by compensation capacity test");
+      },
+      async delete(): Promise<void> {},
+    },
+    imageInspector: unusedImageInspector,
+    clock: () => new Date("2026-09-04T12:00:00.000Z"),
+  });
+  const baseline = await service.prepareProductImages(
+    fiftyMiBUpload("compensation-baseline", twentyMiB, tenMiB),
+  );
+  const failing = await service.prepareProductImages(
+    fiftyMiBUpload("compensation-failing", twentyMiB, tenMiB),
+  );
+  let commitSettled = false;
+  const commit = service.commitPreparedProductImages(failing).finally(() => {
+    commitSettled = true;
+  });
+  await compensationStarted.promise;
+
+  assert.equal(commitSettled, false);
+  await assert.rejects(
+    service.prepareProductImages([
+      { source_ref: "before-compensation-settles", bytes: new Uint8Array([1]) },
+    ]),
+    hasBeautioCode("BATCH_CONFLICT"),
+  );
+
+  compensationRelease.resolve();
+  await assert.rejects(commit, hasBeautioCode("UPLOAD_FAILED"));
+  const replacement = await service.prepareProductImages(
+    fiftyMiBUpload("after-compensation", twentyMiB, tenMiB),
+  );
+  service.discardPreparedProductImages(baseline);
+  service.discardPreparedProductImages(replacement);
+});
+
 test("setting a Product display image validates, timestamps, delegates, and returns shared facts", async () => {
   const product = createProduct({
     id: "product-shared",
@@ -1597,6 +2242,56 @@ const unusedImageInspector = {
     animated: false,
   }),
 };
+
+interface Deferred<T> {
+  readonly promise: Promise<T>;
+  readonly resolve: (value: T) => void;
+  readonly reject: (reason?: unknown) => void;
+}
+
+function deferred<T>(): Deferred<T> {
+  let resolve!: (value: T) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((promiseResolve, promiseReject) => {
+    resolve = promiseResolve;
+    reject = promiseReject;
+  });
+  return { promise, resolve, reject };
+}
+
+function validInspection(
+  overrides: Partial<ImageInspection> = {},
+): ImageInspection {
+  return {
+    mediaType: "image/png",
+    width: 1,
+    height: 1,
+    animated: false,
+    ...overrides,
+  };
+}
+
+function fiftyMiBUpload(
+  prefix: string,
+  twentyMiB: Uint8Array,
+  tenMiB: Uint8Array,
+): readonly { readonly source_ref: string; readonly bytes: Uint8Array }[] {
+  return [
+    { source_ref: `${prefix}-first`, bytes: twentyMiB },
+    { source_ref: `${prefix}-second`, bytes: twentyMiB },
+    { source_ref: `${prefix}-third`, bytes: tenMiB },
+  ];
+}
+
+function discardingImageStorage(): ImageAssetStorage {
+  return {
+    async put(): Promise<void> {},
+    async get(): Promise<Uint8Array> {
+      throw new Error("not used by image upload capacity tests");
+    },
+    async delete(): Promise<void> {},
+  };
+}
 
 function imageAsset(input: {
   readonly status: ImageAsset["status"];

@@ -36,7 +36,6 @@ import {
   createProduct,
   deriveInventorySnapshot,
   endInventoryItem as endInventoryItemTransition,
-  imageMediaTypes,
   parseIsoDate,
   type ImageAsset,
   type InventoryItem,
@@ -46,17 +45,13 @@ import { createHash, randomUUID } from "node:crypto";
 import type {
   BackupInventoryRepository,
   GeneratedIdKind,
-  ImageInspection,
   ImageAssetStorage,
-  ImageInspector,
   ImageRenditionProvider,
   InventoryRepository,
 } from "./ports.ts";
 import {
-  abortableInspection,
   assertUploadNotAborted,
   ensureUniqueRefs,
-  parseImageUploads,
   parseInput,
   parseRequiredId,
   validateEditedOpeningAccuracy,
@@ -86,13 +81,16 @@ import {
   toProductOutput,
 } from "./output-mappers.ts";
 import {
+  ImageUploadPreparationCoordinator,
+  type PreparedProductImageUpload,
+} from "./prepared-product-image-upload.ts";
+import {
   loadProducts,
   requireInventoryItem,
   requireProduct,
 } from "./repository-queries.ts";
 
 const MAX_IMAGE_BYTES = 20 * 1024 * 1024;
-const MAX_UPLOAD_BYTES = 50 * 1024 * 1024;
 const MAX_IMAGE_PIXELS = 40_000_000;
 const TEMPORARY_ASSET_MILLISECONDS = 24 * 60 * 60 * 1000;
 const MAX_BACKUP_TOTAL_IMAGE_BYTES = 200 * 1024 * 1024;
@@ -103,8 +101,10 @@ export class InventoryApplicationService {
   readonly #idGenerator: (kind: GeneratedIdKind) => string;
   readonly #clock: () => Date;
   readonly #imageStorage: ImageAssetStorage | undefined;
-  readonly #imageInspector: ImageInspector | undefined;
   readonly #imageRenditions: ImageRenditionProvider | undefined;
+  readonly #imageUploadPreparation:
+    | ImageUploadPreparationCoordinator
+    | undefined;
 
   /**
    * Creates the shared application boundary used by MCP and HTTP adapters.
@@ -120,8 +120,11 @@ export class InventoryApplicationService {
     this.#idGenerator = options.idGenerator ?? (() => randomUUID());
     this.#clock = options.clock ?? (() => new Date());
     this.#imageStorage = options.imageStorage;
-    this.#imageInspector = options.imageInspector;
     this.#imageRenditions = options.imageRenditions;
+    this.#imageUploadPreparation =
+      options.imageInspector === undefined
+        ? undefined
+        : new ImageUploadPreparationCoordinator(options.imageInspector);
   }
 
   /**
@@ -639,148 +642,129 @@ export class InventoryApplicationService {
   }
 
   /**
-   * Validates and stores one confirmed group of Product display images.
-   *
-   * Metadata is staged before byte writes, so a failed compensation remains
-   * discoverable by the normal pending-cleanup scanner.
+   * Takes owned byte snapshots and completes semantic validation without writing.
    *
    * @param untrustedImages - Adapter-neutral source references and complete bytes.
+   * @param options - Optional cancellation observed around real decoder work.
+   * @returns A same-instance, single-use handle that must be committed or discarded.
+   */
+  async prepareProductImages(
+    untrustedImages: readonly ImageUploadInput[] | unknown,
+    options: ImageUploadOperationOptions = {},
+  ): Promise<PreparedProductImageUpload> {
+    return this.requireImageCapabilities().preparation.prepare(
+      untrustedImages,
+      options,
+    );
+  }
+
+  /**
+   * Stores a semantically validated image batch and consumes its capability once.
+   *
+   * Metadata is staged before byte writes, so a failed compensation remains
+   * discoverable by the normal pending-cleanup scanner. The live-byte reservation
+   * is held until persistence and any compensation have actually settled.
+   *
+   * @param prepared - Same-instance handle returned by `prepareProductImages`.
    * @param options - Optional adapter deadline signal for bounded HTTP uploads.
+   * @returns Stable asset identifiers in input order after all files are active.
+   */
+  async commitPreparedProductImages(
+    prepared: PreparedProductImageUpload,
+    options: ImageUploadOperationOptions = {},
+  ): Promise<UploadProductImagesOutput> {
+    const { storage, preparation } = this.requireImageCapabilities();
+    const consumed = preparation.consume(prepared);
+    try {
+      assertUploadNotAborted(options.signal);
+      const now = this.#clock();
+      assertValidClock(now);
+      const createdAt = now.toISOString();
+      const expiresAt = new Date(
+        now.getTime() + TEMPORARY_ASSET_MILLISECONDS,
+      ).toISOString();
+      const assets = consumed.entries.map((entry): ImageAsset => ({
+        id: this.generateId("image_asset"),
+        storageKey: this.generateId("storage_key"),
+        mediaType: entry.mediaType,
+        byteSize: entry.bytes.byteLength,
+        status: "staging",
+        productId: null,
+        expiresAt,
+        createdAt,
+      }));
+
+      try {
+        await this.#repository.stageImageAssets(assets);
+      } catch (error) {
+        if (error instanceof BeautioError) {
+          throw error;
+        }
+        throw new BeautioError(
+          "UPLOAD_FAILED",
+          "image upload could not be staged",
+        );
+      }
+      try {
+        assertUploadNotAborted(options.signal);
+        for (const [index, asset] of assets.entries()) {
+          await storage.put(
+            asset.storageKey,
+            requireArrayItem(consumed.entries, index).bytes,
+            options.signal,
+          );
+          assertUploadNotAborted(options.signal);
+        }
+        assertUploadNotAborted(options.signal);
+        await this.#repository.activateStagedImageAssets(
+          assets.map((asset) => asset.id),
+        );
+        assertUploadNotAborted(options.signal);
+      } catch (error) {
+        await this.compensateFailedUpload(assets, storage);
+        if (error instanceof BeautioError) {
+          throw error;
+        }
+        throw new BeautioError("UPLOAD_FAILED", "image upload failed");
+      }
+
+      return {
+        assets: assets.map((asset, index) => ({
+          source_ref: requireArrayItem(consumed.entries, index).sourceRef,
+          image_asset_id: asset.id,
+          media_type: asset.mediaType,
+          byte_size: asset.byteSize,
+          expires_at: asset.expiresAt,
+        })),
+      };
+    } finally {
+      consumed.release();
+    }
+  }
+
+  /**
+   * Releases an uncommitted prepared batch; repeated same-instance release is safe.
+   *
+   * @param prepared - Handle returned by this service instance.
+   * @returns Nothing after its live byte reservation is released.
+   */
+  discardPreparedProductImages(prepared: PreparedProductImageUpload): void {
+    this.requireImageCapabilities().preparation.discard(prepared);
+  }
+
+  /**
+   * Validates and stores one confirmed group of Product display images.
+   *
+   * @param untrustedImages - Adapter-neutral source references and complete bytes.
+   * @param options - Optional cancellation covering preparation and persistence.
    * @returns Stable asset identifiers in input order after all files are active.
    */
   async uploadProductImages(
     untrustedImages: readonly ImageUploadInput[] | unknown,
     options: ImageUploadOperationOptions = {},
   ): Promise<UploadProductImagesOutput> {
-    assertUploadNotAborted(options.signal);
-    const images = parseImageUploads(untrustedImages);
-    const { storage, inspector } = this.requireImageCapabilities();
-    const inspections: ImageInspection[] = [];
-    let totalBytes = 0;
-
-    for (const image of images) {
-      totalBytes += image.bytes.byteLength;
-      if (image.bytes.byteLength === 0) {
-        throw new BeautioError(
-          "UNSUPPORTED_MEDIA_TYPE",
-          "image content cannot be empty",
-        );
-      }
-      if (image.bytes.byteLength > MAX_IMAGE_BYTES) {
-        throw new BeautioError(
-          "UPLOAD_TOO_LARGE",
-          "an image exceeds the 20 MiB limit",
-        );
-      }
-      if (totalBytes > MAX_UPLOAD_BYTES) {
-        throw new BeautioError(
-          "UPLOAD_TOO_LARGE",
-          "the upload exceeds the 50 MiB total limit",
-        );
-      }
-
-      let inspection;
-      try {
-        inspection = await abortableInspection(
-          inspector.inspect(image.bytes),
-          options.signal,
-        );
-      } catch (error) {
-        if (error instanceof BeautioError) {
-          throw error;
-        }
-        throw new BeautioError(
-          "UNSUPPORTED_MEDIA_TYPE",
-          "image content could not be decoded",
-        );
-      }
-      if (
-        !imageMediaTypes.includes(inspection.mediaType) ||
-        inspection.animated
-      ) {
-        throw new BeautioError(
-          "UNSUPPORTED_MEDIA_TYPE",
-          "only JPEG, PNG, and static WebP images are supported",
-        );
-      }
-      if (
-        !Number.isInteger(inspection.width) ||
-        !Number.isInteger(inspection.height) ||
-        inspection.width < 1 ||
-        inspection.height < 1
-      ) {
-        throw new BeautioError(
-          "UNSUPPORTED_MEDIA_TYPE",
-          "image dimensions could not be decoded",
-        );
-      }
-      if (inspection.width * inspection.height > MAX_IMAGE_PIXELS) {
-        throw new BeautioError(
-          "UPLOAD_TOO_LARGE",
-          "an image exceeds the 40 megapixel limit",
-        );
-      }
-      inspections.push(inspection);
-      assertUploadNotAborted(options.signal);
-    }
-
-    const now = this.#clock();
-    assertValidClock(now);
-    const createdAt = now.toISOString();
-    const expiresAt = new Date(
-      now.getTime() + TEMPORARY_ASSET_MILLISECONDS,
-    ).toISOString();
-    const assets = images.map((image, index): ImageAsset => ({
-      id: this.generateId("image_asset"),
-      storageKey: this.generateId("storage_key"),
-      mediaType: requireArrayItem(inspections, index).mediaType,
-      byteSize: image.bytes.byteLength,
-      status: "staging",
-      productId: null,
-      expiresAt,
-      createdAt,
-    }));
-
-    try {
-      await this.#repository.stageImageAssets(assets);
-    } catch (error) {
-      if (error instanceof BeautioError) {
-        throw error;
-      }
-      throw new BeautioError("UPLOAD_FAILED", "image upload could not be staged");
-    }
-    try {
-      assertUploadNotAborted(options.signal);
-      for (const [index, asset] of assets.entries()) {
-        await storage.put(
-          asset.storageKey,
-          requireArrayItem(images, index).bytes,
-          options.signal,
-        );
-        assertUploadNotAborted(options.signal);
-      }
-      assertUploadNotAborted(options.signal);
-      await this.#repository.activateStagedImageAssets(
-        assets.map((asset) => asset.id),
-      );
-      assertUploadNotAborted(options.signal);
-    } catch (error) {
-      await this.compensateFailedUpload(assets, storage);
-      if (error instanceof BeautioError) {
-        throw error;
-      }
-      throw new BeautioError("UPLOAD_FAILED", "image upload failed");
-    }
-
-    return {
-      assets: assets.map((asset, index) => ({
-        source_ref: requireArrayItem(images, index).source_ref,
-        image_asset_id: asset.id,
-        media_type: asset.mediaType,
-        byte_size: asset.byteSize,
-        expires_at: asset.expiresAt,
-      })),
-    };
+    const prepared = await this.prepareProductImages(untrustedImages, options);
+    return this.commitPreparedProductImages(prepared, options);
   }
 
   /**
@@ -1094,7 +1078,7 @@ export class InventoryApplicationService {
   ): Promise<RestoreBeautioBackupOutput> {
     assertBackupNotAborted(options.signal);
     const { backup } = prepared;
-    const { storage, inspector } = this.requireImageCapabilities();
+    const { storage, preparation } = this.requireImageCapabilities();
     const productIds = uniqueIds(
       backup.products.map((product) => product.product_id),
       "product",
@@ -1235,11 +1219,11 @@ export class InventoryApplicationService {
             `backup image ${entry.image.image_asset_id} failed integrity validation`,
           );
         }
-        let inspection: ImageInspection;
+        let inspection;
         try {
-          inspection = await abortableInspection(
-            inspector.inspect(bytes),
-            options.signal,
+          inspection = await preparation.inspectBackupSnapshot(
+            bytes,
+            options.signal === undefined ? {} : { signal: options.signal },
           );
         } catch (error) {
           if (options.signal?.aborted === true) {
@@ -1395,15 +1379,21 @@ export class InventoryApplicationService {
 
   private requireImageCapabilities(): {
     readonly storage: ImageAssetStorage;
-    readonly inspector: ImageInspector;
+    readonly preparation: ImageUploadPreparationCoordinator;
   } {
-    if (this.#imageStorage === undefined || this.#imageInspector === undefined) {
+    if (
+      this.#imageStorage === undefined ||
+      this.#imageUploadPreparation === undefined
+    ) {
       throw new BeautioError(
         "INTERNAL_ERROR",
         "image capabilities are not configured",
       );
     }
-    return { storage: this.#imageStorage, inspector: this.#imageInspector };
+    return {
+      storage: this.#imageStorage,
+      preparation: this.#imageUploadPreparation,
+    };
   }
 
   private requireBackupRepository(): BackupInventoryRepository {

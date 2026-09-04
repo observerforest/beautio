@@ -1875,42 +1875,263 @@ test("Codex multipart upload enforces field, count, byte, and all-or-nothing bou
   );
 });
 
-test("Action upload deadline covers shared image inspection before persistence", async (context) => {
-  const neverCompletes: ImageInspector = {
-    async inspect() {
-      return await new Promise(() => undefined);
+test("Action deadline waits for signal-ignoring inspection to settle without blocking ordinary writes", async (context) => {
+  let markInspectionStarted!: () => void;
+  let releaseInspection!: () => void;
+  const inspectionStarted = new Promise<void>((resolve) => {
+    markInspectionStarted = resolve;
+  });
+  const inspectionRelease = new Promise<void>((resolve) => {
+    releaseInspection = resolve;
+  });
+  const ignoringSignalInspector: ImageInspector = {
+    async inspect(bytes) {
+      markInspectionStarted();
+      await inspectionRelease;
+      return sharpImageInspector.inspect(bytes);
     },
   };
   const fixture = await startFixture(context, {
-    actionUploadTimeoutMs: 5,
-    imageInspector: neverCompletes,
+    actionUploadTimeoutMs: 20,
+    imageInspector: ignoringSignalInspector,
   });
+  context.after(() => releaseInspection());
+  let commitCalls = 0;
+  const originalCommit = fixture.application.commitPreparedProductImages;
+  fixture.application.commitPreparedProductImages = async (...args) => {
+    commitCalls += 1;
+    return originalCommit.apply(fixture.application, args);
+  };
 
-  const response = await postJson(
+  let uploadSettled = false;
+  const response = postJson(
     `${fixture.origin}/api/actions/upload-product-images`,
-    {
-      openaiFileIdRefs: [
-        {
-          name: "confirmed.png",
-          id: "file_deadline",
-          mime_type: "image/png",
-          download_link: "https://files.example.test/short-lived",
-        },
-      ],
-    },
+    actionUploadBody("file_deadline"),
+    CUSTOM_GPT_TOKEN,
+  ).finally(() => {
+    uploadSettled = true;
+  });
+  await inspectionStarted;
+
+  const ordinaryWrite = postJson(
+    `${fixture.origin}/api/actions/create-inventory-batch`,
+    inventoryBatchFor("during_semantic_inspection", "During semantic inspection"),
     CUSTOM_GPT_TOKEN,
   );
-  assert.equal(response.status, 502);
-  assert.deepEqual(await response.json(), {
-    error: {
-      code: "UPLOAD_FAILED",
-      message: "Action image upload timed out",
+  assert.equal(
+    await Promise.race([
+      ordinaryWrite.then(() => "ordinary" as const),
+      response.then(() => "upload" as const),
+    ]),
+    "ordinary",
+  );
+  assert.equal((await ordinaryWrite).status, 200);
+
+  await new Promise((resolve) => setTimeout(resolve, 35));
+  assert.equal(uploadSettled, false);
+  assert.equal(commitCalls, 0);
+
+  releaseInspection();
+  const timedOut = await response;
+  assert.equal(timedOut.status, 502);
+  assert.deepEqual(await timedOut.json(), actionTimeoutBody());
+  assert.equal(commitCalls, 0);
+  assert.equal(await fixture.repository.findImageAssetById("image_asset-3"), null);
+});
+
+test("Admin body deadline is cleared before semantic image inspection begins", async (context) => {
+  let markInspectionStarted!: () => void;
+  let releaseInspection!: () => void;
+  const inspectionStarted = new Promise<void>((resolve) => {
+    markInspectionStarted = resolve;
+  });
+  const inspectionRelease = new Promise<void>((resolve) => {
+    releaseInspection = resolve;
+  });
+  const fixture = await startFixture(context, {
+    writeBodyTimeoutMs: 20,
+    imageInspector: {
+      async inspect(bytes) {
+        markInspectionStarted();
+        await inspectionRelease;
+        return sharpImageInspector.inspect(bytes);
+      },
     },
   });
-  assert.deepEqual(
-    await fixture.application.listInventory({ as_of: "2026-08-19" }),
-    { as_of: "2026-08-19", items: [] },
+  context.after(() => releaseInspection());
+  const form = new FormData();
+  form.set(
+    "image",
+    new Blob([fixture.imageBytes], { type: "image/png" }),
+    "semantic-delay.png",
   );
+  let responseSettled = false;
+  const response = fetch(`${fixture.origin}/api/admin/image-assets`, {
+    method: "POST",
+    headers: authorization(ADMIN_TOKEN),
+    body: form,
+  }).finally(() => {
+    responseSettled = true;
+  });
+  await inspectionStarted;
+  await new Promise((resolve) => setTimeout(resolve, 35));
+  assert.equal(responseSettled, false);
+
+  releaseInspection();
+  const completed = await response;
+  assert.equal(completed.status, 200);
+  assert.notDeepEqual(await completed.json(), {
+    error: { code: "INVALID_INPUT", message: "request body timed out" },
+  });
+});
+
+test("all HTTP image entry points prepare semantics before requesting exclusive commit", async (context) => {
+  const fixture = await startFixture(context);
+  const options = directRouteOptions({
+    actionDownloader: async (references) =>
+      references.map((reference) => ({
+        source_ref: reference.id,
+        bytes: fixture.imageBytes,
+      })),
+  });
+  const multipartRequest = (
+    origin: string,
+    path: string,
+    token: string,
+    field: string,
+  ): Promise<Response> => {
+    const form = new FormData();
+    form.set(
+      field,
+      new Blob([fixture.imageBytes], { type: "image/png" }),
+      "prepared.png",
+    );
+    return fetch(`${origin}${path}`, {
+      method: "POST",
+      headers: authorization(token),
+      body: form,
+    });
+  };
+
+  await assertImageUploadPreparesBeforeExclusive(
+    fixture.application,
+    options,
+    (origin) =>
+      postJson(
+        `${origin}/api/actions/upload-product-images`,
+        actionUploadBody("semantic_custom_gpt"),
+        CUSTOM_GPT_TOKEN,
+      ),
+  );
+  await assertImageUploadPreparesBeforeExclusive(
+    fixture.application,
+    options,
+    (origin) =>
+      multipartRequest(
+        origin,
+        "/api/actions/codex/upload-product-images",
+        ACTION_TOKEN,
+        "semantic_codex",
+      ),
+  );
+  await assertImageUploadPreparesBeforeExclusive(
+    fixture.application,
+    options,
+    (origin) =>
+      multipartRequest(
+        origin,
+        "/api/admin/image-assets",
+        ADMIN_TOKEN,
+        "image",
+      ),
+  );
+});
+
+test("real 40 megapixel image inspection is serialized across concurrent HTTP preparations", async (context) => {
+  const fortyMegapixelBytes = await sharp({
+    create: {
+      width: 8_000,
+      height: 5_000,
+      channels: 3,
+      background: "#f4eee9",
+    },
+  })
+    .png({ compressionLevel: 9 })
+    .toBuffer();
+  assert.ok(fortyMegapixelBytes.byteLength < 20 * 1024 * 1024);
+
+  let activeInspections = 0;
+  let maximumActiveInspections = 0;
+  let completedInspections = 0;
+  let markTwoDownloadsStarted!: () => void;
+  let releaseDownloads!: () => void;
+  const twoDownloadsStarted = new Promise<void>((resolve) => {
+    markTwoDownloadsStarted = resolve;
+  });
+  const downloadsRelease = new Promise<void>((resolve) => {
+    releaseDownloads = resolve;
+  });
+  let downloadStarts = 0;
+  const fixture = await startFixture(context, {
+    actionUploadTimeoutMs: 20_000,
+    imageInspector: {
+      async inspect(bytes) {
+        activeInspections += 1;
+        maximumActiveInspections = Math.max(
+          maximumActiveInspections,
+          activeInspections,
+        );
+        try {
+          const inspected = await sharpImageInspector.inspect(bytes);
+          completedInspections += 1;
+          return inspected;
+        } finally {
+          activeInspections -= 1;
+        }
+      },
+    },
+    actionDownloader: async (references) => {
+      downloadStarts += 1;
+      if (downloadStarts === 2) {
+        markTwoDownloadsStarted();
+      }
+      await downloadsRelease;
+      return references.map((reference) => ({
+        source_ref: reference.id,
+        bytes: fortyMegapixelBytes,
+      }));
+    },
+  });
+  context.after(() => releaseDownloads());
+
+  const uploads = [0, 1].map((index) =>
+    postJson(
+      `${fixture.origin}/api/actions/upload-product-images`,
+      actionUploadBody(`forty_megapixel_${index}`),
+      CUSTOM_GPT_TOKEN,
+    ),
+  );
+  await waitForMarker(twoDownloadsStarted, "two large downloads did not start");
+  releaseDownloads();
+  const responses = await Promise.all(uploads);
+  const imageAssetIds: string[] = [];
+  for (const response of responses) {
+    assert.equal(response.status, 200);
+    const body = (await response.json()) as {
+      readonly assets: readonly [{ readonly image_asset_id: string }];
+    };
+    imageAssetIds.push(body.assets[0].image_asset_id);
+  }
+  assert.equal(completedInspections, 2);
+  assert.equal(maximumActiveInspections, 1);
+  assert.equal(activeInspections, 0);
+
+  await fixture.repository.markImageAssetsForCleanup(imageAssetIds);
+  const cleanup = await fixture.application.cleanupExpiredImageAssets();
+  assert.equal(cleanup.deleted, 2);
+  for (const imageAssetId of imageAssetIds) {
+    assert.equal(await fixture.repository.findImageAssetById(imageAssetId), null);
+  }
 });
 
 test("Action timeout keeps the write gate until delayed storage settles and compensates", async (context) => {
@@ -2011,6 +2232,140 @@ test("Action timeout keeps the write gate until delayed storage settles and comp
   );
 });
 
+test("upload compensation retains the exclusive gate until cleanup settles", async (context) => {
+  const fixture = await startFixture(context, {
+    imageStorageFactory: (directory) => {
+      const underlying = new FileImageAssetStorage(directory);
+      return {
+        async put() {
+          throw new BeautioError(
+            "UPLOAD_FAILED",
+            "forced storage failure before compensation",
+          );
+        },
+        get: (storageKey, signal) => underlying.get(storageKey, signal),
+        delete: (storageKey) => underlying.delete(storageKey),
+      };
+    },
+  });
+  let markCompensationStarted!: () => void;
+  let releaseCompensation!: () => void;
+  const compensationStarted = new Promise<void>((resolve) => {
+    markCompensationStarted = resolve;
+  });
+  const compensationRelease = new Promise<void>((resolve) => {
+    releaseCompensation = resolve;
+  });
+  const originalMarkForCleanup = fixture.repository.markImageAssetsForCleanup;
+  fixture.repository.markImageAssetsForCleanup = async (...args) => {
+    markCompensationStarted();
+    await compensationRelease;
+    return originalMarkForCleanup.apply(fixture.repository, args);
+  };
+
+  let exclusiveTail = Promise.resolve();
+  let exclusiveRequests = 0;
+  let markQueuedWriteRequestedExclusive!: () => void;
+  const queuedWriteRequestedExclusive = new Promise<void>((resolve) => {
+    markQueuedWriteRequestedExclusive = resolve;
+  });
+  const dependencies = directRouteDependencies({
+    withExclusiveOperation: async (operation) => {
+      exclusiveRequests += 1;
+      if (exclusiveRequests === 2) {
+        markQueuedWriteRequestedExclusive();
+      }
+      let releaseTurn!: () => void;
+      const previous = exclusiveTail;
+      exclusiveTail = new Promise<void>((resolve) => {
+        releaseTurn = resolve;
+      });
+      await previous;
+      try {
+        return await operation();
+      } finally {
+        releaseTurn();
+      }
+    },
+  });
+  const options = directRouteOptions({
+    actionDownloader: async (references) =>
+      references.map((reference) => ({
+        source_ref: reference.id,
+        bytes: fixture.imageBytes,
+      })),
+  });
+  let createCalls = 0;
+  const originalCreate = fixture.application.createInventoryBatch;
+  fixture.application.createInventoryBatch = async (...args) => {
+    createCalls += 1;
+    return originalCreate.apply(fixture.application, args);
+  };
+
+  try {
+    await withDirectRouteServer(
+      fixture.application,
+      dependencies,
+      async (origin) => {
+        let uploadSettled = false;
+        const upload = postJson(
+          `${origin}/api/actions/upload-product-images`,
+          actionUploadBody("compensation_barrier"),
+          CUSTOM_GPT_TOKEN,
+        ).finally(() => {
+          uploadSettled = true;
+        });
+        await waitForMarker(
+          compensationStarted,
+          "failed upload did not enter compensation",
+        );
+
+        let queuedWriteSettled = false;
+        const queuedWrite = postJson(
+          `${origin}/api/actions/create-inventory-batch`,
+          inventoryBatchFor(
+            "after_compensation",
+            "After upload compensation",
+          ),
+          CUSTOM_GPT_TOKEN,
+        ).finally(() => {
+          queuedWriteSettled = true;
+        });
+        try {
+          await waitForMarker(
+            queuedWriteRequestedExclusive,
+            "ordinary write did not request the exclusive gate",
+          );
+          assert.equal(uploadSettled, false);
+          assert.equal(queuedWriteSettled, false);
+          assert.equal(createCalls, 0);
+
+          releaseCompensation();
+          const failedUpload = await upload;
+          assert.equal(failedUpload.status, 502);
+          assert.deepEqual(await failedUpload.json(), {
+            error: {
+              code: "UPLOAD_FAILED",
+              message: "forced storage failure before compensation",
+            },
+          });
+          assert.equal((await queuedWrite).status, 200);
+          assert.equal(createCalls, 1);
+        } finally {
+          releaseCompensation();
+          await Promise.allSettled([upload, queuedWrite]);
+        }
+      },
+      undefined,
+      options,
+    );
+  } finally {
+    releaseCompensation();
+    fixture.repository.markImageAssetsForCleanup = originalMarkForCleanup;
+    fixture.application.createInventoryBatch = originalCreate;
+  }
+});
+
 test("Codex multipart deadline drains a slow request without reaching persistence", async (context) => {
   const fixture = await startFixture(context, { actionUploadTimeoutMs: 5 });
   const response = await postSlowMultipart(
@@ -2093,8 +2448,8 @@ test("slow Admin and Codex multipart preparation cannot block ordinary writes", 
     actionUploadTimeoutMs: 40,
   });
   let uploadCalls = 0;
-  const originalUpload = fixture.application.uploadProductImages;
-  fixture.application.uploadProductImages = async (...args) => {
+  const originalUpload = fixture.application.commitPreparedProductImages;
+  fixture.application.commitPreparedProductImages = async (...args) => {
     uploadCalls += 1;
     return originalUpload.apply(fixture.application, args);
   };
@@ -2279,8 +2634,8 @@ test("timed-out Action preparation keeps both permits until signal-ignoring down
   });
   imageBytes = fixture.imageBytes;
   let mutationCalls = 0;
-  const originalUpload = fixture.application.uploadProductImages;
-  fixture.application.uploadProductImages = async (...args) => {
+  const originalUpload = fixture.application.commitPreparedProductImages;
+  fixture.application.commitPreparedProductImages = async (...args) => {
     mutationCalls += 1;
     return originalUpload.apply(fixture.application, args);
   };
@@ -2358,8 +2713,8 @@ test("timed-out Codex multipart parsing keeps both permits until formData settle
   }
   globalThis.Request = BlockingFormDataRequest;
   const fixture = await startFixture(context, { actionUploadTimeoutMs: 30 });
-  const originalUpload = fixture.application.uploadProductImages;
-  fixture.application.uploadProductImages = async (...args) => {
+  const originalUpload = fixture.application.commitPreparedProductImages;
+  fixture.application.commitPreparedProductImages = async (...args) => {
     mutationCalls += 1;
     return originalUpload.apply(fixture.application, args);
   };
@@ -2643,10 +2998,10 @@ test("ordinary mutation routes finish preparation before entering their exclusiv
   fixture.application.setProductDisplayImage = originalSetImage;
 
   calls = 0;
-  const originalUpload = fixture.application.uploadProductImages;
-  fixture.application.uploadProductImages = async (...args) => {
+  const originalCommitUpload = fixture.application.commitPreparedProductImages;
+  fixture.application.commitPreparedProductImages = async (...args) => {
     calls += 1;
-    return originalUpload.apply(fixture.application, args);
+    return originalCommitUpload.apply(fixture.application, args);
   };
   await assertRequestWaitsForExclusive(
     fixture.application,
@@ -2665,7 +3020,7 @@ test("ordinary mutation routes finish preparation before entering their exclusiv
     },
     () => calls,
   );
-  fixture.application.uploadProductImages = originalUpload;
+  fixture.application.commitPreparedProductImages = originalCommitUpload;
 
   calls = 0;
   const originalUpdateFacts = fixture.application.updateInventoryItemFacts;
@@ -2799,22 +3154,42 @@ test("a slow backup upload does not hold the exclusive write gate", async (conte
   });
 });
 
-test("backup restore deadline aborts blocked image inspection before replacement", async (context) => {
-  let blockInspection = false;
+test("timed-out backup inspection releases restore while retaining the shared inspector slot", async (context) => {
+  let blockNextInspection = false;
+  let inspectionCalls = 0;
+  let markBlockedInspectionStarted!: () => void;
+  let releaseBlockedInspection!: () => void;
+  let markNextUploadInspectionStarted!: () => void;
+  const blockedInspectionStarted = new Promise<void>((resolve) => {
+    markBlockedInspectionStarted = resolve;
+  });
+  const blockedInspectionRelease = new Promise<void>((resolve) => {
+    releaseBlockedInspection = resolve;
+  });
+  const nextUploadInspectionStarted = new Promise<void>((resolve) => {
+    markNextUploadInspectionStarted = resolve;
+  });
   const fixture = await startFixture(context, {
     backupOperationTimeoutMs: 20,
     imageInspector: {
       async inspect(bytes) {
-        if (blockInspection) {
-          return await new Promise(() => undefined);
+        inspectionCalls += 1;
+        if (blockNextInspection) {
+          blockNextInspection = false;
+          markBlockedInspectionStarted();
+          await blockedInspectionRelease;
+        } else if (inspectionCalls === 3) {
+          markNextUploadInspectionStarted();
         }
         return sharpImageInspector.inspect(bytes);
       },
     },
   });
+  context.after(() => releaseBlockedInspection());
   const uploaded = await fixture.application.uploadProductImages([
     { source_ref: "deadline_restore", bytes: fixture.imageBytes },
   ]);
+  assert.equal(inspectionCalls, 1);
   await fixture.application.createInventoryBatch({
     as_of: "2026-08-19",
     products: [
@@ -2838,16 +3213,22 @@ test("backup restore deadline aborts blocked image inspection before replacement
     })
   ).json()) as BeautioBackup;
 
-  blockInspection = true;
-  const timedOut = await putJson(
+  blockNextInspection = true;
+  const restore = putJson(
     `${fixture.origin}/api/admin/backup`,
     backup,
     ADMIN_TOKEN,
   );
+  await waitForMarker(
+    blockedInspectionStarted,
+    "backup image inspection did not start",
+  );
+  const timedOut = await restore;
   assert.equal(timedOut.status, 502);
   assert.deepEqual(await timedOut.json(), {
     error: { code: "UPLOAD_FAILED", message: "backup operation timed out" },
   });
+  assert.equal(inspectionCalls, 2);
 
   const nextWrite = await postJson(
     `${fixture.origin}/api/actions/create-inventory-batch`,
@@ -2865,6 +3246,42 @@ test("backup restore deadline aborts blocked image inspection before replacement
     CUSTOM_GPT_TOKEN,
   );
   assert.equal(nextWrite.status, 200);
+
+  let markUploadPreparationStarted!: () => void;
+  const uploadPreparationStarted = new Promise<void>((resolve) => {
+    markUploadPreparationStarted = resolve;
+  });
+  const originalPrepare = fixture.application.prepareProductImages;
+  fixture.application.prepareProductImages = (...args) => {
+    const preparation = originalPrepare.apply(fixture.application, args);
+    markUploadPreparationStarted();
+    return preparation;
+  };
+  let nextUploadSettled = false;
+  const nextUpload = postJson(
+    `${fixture.origin}/api/actions/upload-product-images`,
+    actionUploadBody("after_timed_out_restore"),
+    CUSTOM_GPT_TOKEN,
+  ).finally(() => {
+    nextUploadSettled = true;
+  });
+  await waitForMarker(
+    uploadPreparationStarted,
+    "new image upload did not enter semantic preparation",
+  );
+  assert.equal(inspectionCalls, 2);
+  assert.equal(nextUploadSettled, false);
+
+  releaseBlockedInspection();
+  await waitForMarker(
+    nextUploadInspectionStarted,
+    "new image upload did not acquire the released inspector slot",
+  );
+  assert.equal(inspectionCalls, 3);
+  const nextUploadResponse = await nextUpload;
+  assert.equal(nextUploadResponse.status, 200);
+  fixture.application.prepareProductImages = originalPrepare;
+
   const inventory = await fixture.application.listInventory({ as_of: "2026-08-19" });
   assert.deepEqual(
     inventory.items.map((item) => item.product?.name).sort(),
@@ -3413,7 +3830,9 @@ function closeServer(server: Server): Promise<void> {
   });
 }
 
-function directRouteOptions(): ValidatedOptions {
+function directRouteOptions(
+  overrides: Partial<ValidatedOptions> = {},
+): ValidatedOptions {
   return {
     customGptBearerToken: CUSTOM_GPT_TOKEN,
     actionBearerToken: ACTION_TOKEN,
@@ -3426,6 +3845,7 @@ function directRouteOptions(): ValidatedOptions {
     publicOrigin: undefined,
     staticWebRoot: null,
     readOnlyMcp: null,
+    ...overrides,
   };
 }
 
@@ -3450,12 +3870,13 @@ async function withDirectRouteServer<T>(
   dependencies: RouteRequestDependencies,
   run: (origin: string) => Promise<T>,
   observeRequest?: (request: IncomingMessage) => void,
+  options: ValidatedOptions = directRouteOptions(),
 ): Promise<T> {
   const server = createServer((request, response) => {
     observeRequest?.(request);
     void routeRequest(
       application,
-      directRouteOptions(),
+      options,
       request,
       response,
       dependencies,
@@ -3509,6 +3930,101 @@ async function assertRequestWaitsForExclusive(
     assert.equal((await response).status, 200);
     assert.equal(calls(), 1);
   });
+}
+
+async function assertImageUploadPreparesBeforeExclusive(
+  application: InventoryApplicationService,
+  options: ValidatedOptions,
+  makeRequest: (origin: string) => Promise<Response>,
+): Promise<void> {
+  let markPrepareStarted!: () => void;
+  let releasePrepare!: () => void;
+  const prepareStarted = new Promise<void>((resolve) => {
+    markPrepareStarted = resolve;
+  });
+  const prepareRelease = new Promise<void>((resolve) => {
+    releasePrepare = resolve;
+  });
+  let markExclusiveEntered!: () => void;
+  let releaseExclusive!: () => void;
+  const exclusiveEntered = new Promise<void>((resolve) => {
+    markExclusiveEntered = resolve;
+  });
+  const exclusiveRelease = new Promise<void>((resolve) => {
+    releaseExclusive = resolve;
+  });
+  let insideExclusive = false;
+  let exclusiveWasEntered = false;
+  let prepareCalls = 0;
+  let prepareCompleted = false;
+  let commitCalls = 0;
+  let commitOutsideExclusive = false;
+  const originalPrepare = application.prepareProductImages;
+  const originalCommit = application.commitPreparedProductImages;
+  application.prepareProductImages = async (...args) => {
+    prepareCalls += 1;
+    markPrepareStarted();
+    await prepareRelease;
+    const prepared = await originalPrepare.apply(application, args);
+    prepareCompleted = true;
+    return prepared;
+  };
+  application.commitPreparedProductImages = async (...args) => {
+    commitCalls += 1;
+    if (!insideExclusive) {
+      commitOutsideExclusive = true;
+    }
+    return originalCommit.apply(application, args);
+  };
+  const dependencies = directRouteDependencies({
+    withExclusiveOperation: async (operation) => {
+      exclusiveWasEntered = true;
+      markExclusiveEntered();
+      await exclusiveRelease;
+      insideExclusive = true;
+      try {
+        return await operation();
+      } finally {
+        insideExclusive = false;
+      }
+    },
+  });
+
+  try {
+    await withDirectRouteServer(
+      application,
+      dependencies,
+      async (origin) => {
+        let responseSettled = false;
+        const response = makeRequest(origin).finally(() => {
+          responseSettled = true;
+        });
+        await prepareStarted;
+        assert.equal(responseSettled, false);
+        assert.equal(prepareCalls, 1);
+        assert.equal(prepareCompleted, false);
+        assert.equal(exclusiveWasEntered, false);
+        assert.equal(commitCalls, 0);
+        releasePrepare();
+        await exclusiveEntered;
+        assert.equal(responseSettled, false);
+        assert.equal(prepareCalls, 1);
+        assert.equal(prepareCompleted, true);
+        assert.equal(commitCalls, 0);
+        releaseExclusive();
+        assert.equal((await response).status, 200);
+        assert.equal(commitCalls, 1);
+        assert.equal(commitOutsideExclusive, false);
+      },
+      undefined,
+      options,
+    );
+  } finally {
+    releasePrepare();
+    releaseExclusive();
+    application.prepareProductImages = originalPrepare;
+    application.commitPreparedProductImages = originalCommit;
+  }
 }
 
 interface PartialHttpResult {
