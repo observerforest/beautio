@@ -2,6 +2,16 @@
 
 Beautio is a low-friction, inventory-first personal beauty management system. Its core keeps inventory and lifecycle facts independent from any single AI provider, and exposes the same rules through MCP, GPT Actions, and a human management page.
 
+## Project status, licensing, and privacy
+
+Beautio is under active development. It is not a finished or stable product; its interfaces, data model, and deployment guidance may change without notice.
+
+The source is public for transparency, but no open-source license is granted at this time. Unless a future `LICENSE` file states otherwise, all rights are reserved. GitHub's Terms of Service still permit viewing and forking through GitHub, but publication should not be read as permission to use, modify, redistribute, or deploy the code.
+
+Beautio works with personal inventory, images, notes, and usage and lifecycle data. Any user-facing release is intended to make the data path understandable: what is collected or generated, where it is stored, which external service receives which data, why it is used, how long it is retained, and how it can be corrected, exported, or deleted. Uploads and persistent writes should follow explicit user confirmation, and integrations should receive only the data needed for the requested action.
+
+This is a development statement, not a complete privacy policy or a claim that every planned control is already implemented. Current behavior and deployment boundaries are documented below and must be reviewed before operating Beautio with real personal data.
+
 ## Product boundaries
 
 - Prefer products already in inventory.
