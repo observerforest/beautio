@@ -1,6 +1,12 @@
 import assert from "node:assert/strict";
 import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
-import { createServer, request as makeHttpRequest, type Server } from "node:http";
+import {
+  createServer,
+  request as makeHttpRequest,
+  type IncomingHttpHeaders,
+  type IncomingMessage,
+  type Server,
+} from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -29,7 +35,16 @@ import {
   sharpImageInspector,
 } from "@beautio/image-storage";
 import sharp from "sharp";
-import { createCoreApiHandler } from "../src/index.ts";
+import {
+  createCoreApiHandler,
+  type CoreApiHandlerOptions,
+} from "../src/index.ts";
+import { sendError } from "../src/responses.ts";
+import {
+  routeRequest,
+  type RouteRequestDependencies,
+  type ValidatedOptions,
+} from "../src/routes.ts";
 
 const ACTION_TOKEN = "test-action-token-not-a-secret";
 const CUSTOM_GPT_TOKEN = "test-custom-gpt-token-not-a-secret";
@@ -2015,6 +2030,705 @@ test("Codex multipart deadline drains a slow request without reaching persistenc
   );
 });
 
+test("a timed-out ordinary JSON body never takes the exclusive gate and closes its socket", async (context) => {
+  const fixture = await startFixture(context, { writeBodyTimeoutMs: 20 });
+  let createCalls = 0;
+  const originalCreate = fixture.application.createInventoryBatch;
+  fixture.application.createInventoryBatch = async (...args) => {
+    createCalls += 1;
+    return originalCreate.apply(fixture.application, args);
+  };
+
+  const slow = startPartialHttpRequest(
+    `${fixture.origin}/api/actions/create-inventory-batch`,
+    "POST",
+    CUSTOM_GPT_TOKEN,
+    "application/json",
+    '{"as_of":"2026-08-19","products":[',
+  );
+  await slow.started;
+
+  const valid = postJson(
+    `${fixture.origin}/api/actions/create-inventory-batch`,
+    inventoryBatchFor("ordinary_during_slow", "Ordinary during slow body"),
+    CUSTOM_GPT_TOKEN,
+  );
+  assert.equal(
+    await Promise.race([
+      valid.then(() => "valid" as const),
+      slow.response.then(() => "slow" as const),
+    ]),
+    "valid",
+  );
+  assert.equal((await valid).status, 200);
+
+  const timedOut = await slow.response;
+  assert.equal(timedOut.status, 400);
+  assert.equal(timedOut.headers.connection, "close");
+  assert.deepEqual(timedOut.body, {
+    error: { code: "INVALID_INPUT", message: "request body timed out" },
+  });
+  await slow.socketClosed;
+  assert.equal(createCalls, 1);
+
+  const afterTimeout = await postJson(
+    `${fixture.origin}/api/actions/create-inventory-batch`,
+    inventoryBatchFor("ordinary_after_timeout", "Ordinary after timeout"),
+    CUSTOM_GPT_TOKEN,
+  );
+  assert.equal(afterTimeout.status, 200);
+  assert.equal(createCalls, 2);
+  const inventory = await fixture.application.listInventory({
+    as_of: "2026-08-19",
+  });
+  assert.deepEqual(
+    inventory.items.map((item) => item.product?.name).sort(),
+    ["Ordinary after timeout", "Ordinary during slow body"],
+  );
+});
+
+test("slow Admin and Codex multipart preparation cannot block ordinary writes", async (context) => {
+  const fixture = await startFixture(context, {
+    writeBodyTimeoutMs: 20,
+    actionUploadTimeoutMs: 40,
+  });
+  let uploadCalls = 0;
+  const originalUpload = fixture.application.uploadProductImages;
+  fixture.application.uploadProductImages = async (...args) => {
+    uploadCalls += 1;
+    return originalUpload.apply(fixture.application, args);
+  };
+
+  const slowAdmin = startPartialHttpRequest(
+    `${fixture.origin}/api/admin/image-assets`,
+    "POST",
+    ADMIN_TOKEN,
+    "multipart/form-data; boundary=slow-admin-boundary",
+    "--slow-admin-boundary\r\nContent-Disposition: form-data; name=\"image\"; filename=\"partial.png\"\r\nContent-Type: image/png\r\n\r\npartial",
+  );
+  await slowAdmin.started;
+  const duringAdmin = postJson(
+    `${fixture.origin}/api/actions/create-inventory-batch`,
+    inventoryBatchFor("during_admin_multipart", "During Admin multipart"),
+    CUSTOM_GPT_TOKEN,
+  );
+  assert.equal(
+    await Promise.race([
+      duringAdmin.then(() => "valid" as const),
+      slowAdmin.response.then(() => "slow" as const),
+    ]),
+    "valid",
+  );
+  assert.equal((await duringAdmin).status, 200);
+  const adminTimeout = await slowAdmin.response;
+  assert.equal(adminTimeout.status, 400);
+  assert.equal(adminTimeout.headers.connection, "close");
+  assert.deepEqual(adminTimeout.body, {
+    error: { code: "INVALID_INPUT", message: "request body timed out" },
+  });
+  await slowAdmin.socketClosed;
+  assert.equal(uploadCalls, 0);
+
+  const slowCodex = startPartialHttpRequest(
+    `${fixture.origin}/api/actions/codex/upload-product-images`,
+    "POST",
+    ACTION_TOKEN,
+    "multipart/form-data; boundary=slow-codex-boundary",
+    "--slow-codex-boundary\r\nContent-Disposition: form-data; name=\"partial\"; filename=\"partial.png\"\r\nContent-Type: image/png\r\n\r\npartial",
+  );
+  await slowCodex.started;
+  const duringCodex = postJson(
+    `${fixture.origin}/api/actions/create-inventory-batch`,
+    inventoryBatchFor("during_codex_multipart", "During Codex multipart"),
+    CUSTOM_GPT_TOKEN,
+  );
+  assert.equal(
+    await Promise.race([
+      duringCodex.then(() => "valid" as const),
+      slowCodex.response.then(() => "slow" as const),
+    ]),
+    "valid",
+  );
+  assert.equal((await duringCodex).status, 200);
+  const codexTimeout = await slowCodex.response;
+  assert.equal(codexTimeout.status, 502);
+  assert.deepEqual(codexTimeout.body, {
+    error: {
+      code: "UPLOAD_FAILED",
+      message: "Action image upload timed out",
+    },
+  });
+  await slowCodex.socketClosed;
+  assert.equal(uploadCalls, 0);
+});
+
+test("a blocked Custom GPT downloader does not take the exclusive write gate", async (context) => {
+  let markDownloaderStarted!: () => void;
+  let releaseDownloader!: () => void;
+  const downloaderStarted = new Promise<void>((resolve) => {
+    markDownloaderStarted = resolve;
+  });
+  const downloaderRelease = new Promise<void>((resolve) => {
+    releaseDownloader = resolve;
+  });
+  let imageBytes: Uint8Array<ArrayBufferLike> = new Uint8Array();
+  const fixture = await startFixture(context, {
+    actionUploadTimeoutMs: 500,
+    actionDownloader: async (references, _allowedHosts, signal) => {
+      markDownloaderStarted();
+      await downloaderRelease;
+      if (signal.aborted) {
+        throw signal.reason;
+      }
+      return references.map((reference) => ({
+        source_ref: reference.id,
+        bytes: imageBytes,
+      }));
+    },
+  });
+  imageBytes = fixture.imageBytes;
+
+  const upload = postJson(
+    `${fixture.origin}/api/actions/upload-product-images`,
+    {
+      openaiFileIdRefs: [
+        {
+          name: "blocked.png",
+          id: "blocked_download",
+          mime_type: "image/png",
+          download_link: "https://files.example.test/blocked",
+        },
+      ],
+    },
+    CUSTOM_GPT_TOKEN,
+  );
+  await downloaderStarted;
+
+  const ordinaryWrite = postJson(
+    `${fixture.origin}/api/actions/create-inventory-batch`,
+    inventoryBatchFor("during_downloader", "During downloader"),
+    CUSTOM_GPT_TOKEN,
+  );
+  assert.equal(
+    await Promise.race([
+      ordinaryWrite.then(() => "ordinary" as const),
+      upload.then(() => "upload" as const),
+    ]),
+    "ordinary",
+  );
+  assert.equal((await ordinaryWrite).status, 200);
+
+  releaseDownloader();
+  const uploadResponse = await upload;
+  assert.equal(uploadResponse.status, 200);
+  const uploadBody = (await uploadResponse.json()) as {
+    readonly assets: readonly [{ readonly image_asset_id: string }];
+  };
+  assert.ok(
+    await fixture.repository.findImageAssetById(
+      uploadBody.assets[0].image_asset_id,
+    ),
+  );
+});
+
+test("timed-out Action preparation keeps both permits until signal-ignoring downloaders settle", async (context) => {
+  let markTwoDownloadersStarted!: () => void;
+  let markTwoDownloadersAborted!: () => void;
+  const twoDownloadersStarted = new Promise<void>((resolve) => {
+    markTwoDownloadersStarted = resolve;
+  });
+  const twoDownloadersAborted = new Promise<void>((resolve) => {
+    markTwoDownloadersAborted = resolve;
+  });
+  const releases: Array<() => void> = [];
+  const releasePromises: Promise<void>[] = [];
+  const abortedDownloaders = new Set<number>();
+  let downloaderStarts = 0;
+  let imageBytes: Uint8Array<ArrayBufferLike> = new Uint8Array();
+  const fixture = await startFixture(context, {
+    actionUploadTimeoutMs: 30,
+    actionDownloader: async (references, _allowedHosts, signal) => {
+      const index = downloaderStarts;
+      downloaderStarts += 1;
+      let release!: () => void;
+      releasePromises[index] = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      releases[index] = release;
+      const markAborted = (): void => {
+        abortedDownloaders.add(index);
+        if (abortedDownloaders.size === 2) {
+          markTwoDownloadersAborted();
+        }
+      };
+      signal.addEventListener("abort", markAborted, { once: true });
+      if (signal.aborted) {
+        markAborted();
+      }
+      if (downloaderStarts === 2) {
+        markTwoDownloadersStarted();
+      }
+
+      await releasePromises[index];
+      signal.removeEventListener("abort", markAborted);
+      return references.map((reference) => ({
+        source_ref: reference.id,
+        bytes: imageBytes,
+      }));
+    },
+  });
+  imageBytes = fixture.imageBytes;
+  let mutationCalls = 0;
+  const originalUpload = fixture.application.uploadProductImages;
+  fixture.application.uploadProductImages = async (...args) => {
+    mutationCalls += 1;
+    return originalUpload.apply(fixture.application, args);
+  };
+
+  const requests = [0, 1, 2].map((index) =>
+    postJson(
+      `${fixture.origin}/api/actions/upload-product-images`,
+      actionUploadBody(`bounded_downloader_${index}`),
+      CUSTOM_GPT_TOKEN,
+    ),
+  );
+  try {
+    await waitForMarker(twoDownloadersStarted, "two downloaders did not start");
+    await waitForMarker(
+      twoDownloadersAborted,
+      "download deadlines did not abort",
+    );
+    assert.equal(downloaderStarts, 2);
+    assert.equal(mutationCalls, 0);
+
+    const third = await requests[2];
+    assert.ok(third);
+    assert.equal(third.status, 502);
+    assert.deepEqual(await third.json(), actionTimeoutBody());
+    assert.equal(downloaderStarts, 2);
+
+    releases[0]?.();
+    const first = await requests[0];
+    assert.ok(first);
+    assert.equal(first.status, 502);
+    assert.deepEqual(await first.json(), actionTimeoutBody());
+    assert.equal(downloaderStarts, 2);
+    assert.equal(mutationCalls, 0);
+
+    releases[1]?.();
+    const second = await requests[1];
+    assert.ok(second);
+    assert.equal(second.status, 502);
+    assert.deepEqual(await second.json(), actionTimeoutBody());
+    assert.equal(downloaderStarts, 2);
+    assert.equal(mutationCalls, 0);
+  } finally {
+    for (const release of releases) {
+      release();
+    }
+    await Promise.allSettled(requests);
+  }
+});
+
+test("timed-out Codex multipart parsing keeps both permits until formData settles", async (context) => {
+  let markTwoParsersStarted!: () => void;
+  const twoParsersStarted = new Promise<void>((resolve) => {
+    markTwoParsersStarted = resolve;
+  });
+  const releases: Array<() => void> = [];
+  const releasePromises: Promise<void>[] = [];
+  let parserStarts = 0;
+  let mutationCalls = 0;
+  const originalRequest = globalThis.Request;
+  class BlockingFormDataRequest extends originalRequest {
+    override readonly formData = async (): Promise<FormData> => {
+      const index = parserStarts;
+      parserStarts += 1;
+      let release!: () => void;
+      releasePromises[index] = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      releases[index] = release;
+      if (parserStarts === 2) {
+        markTwoParsersStarted();
+      }
+      await releasePromises[index];
+      return originalRequest.prototype.formData.call(this);
+    };
+  }
+  globalThis.Request = BlockingFormDataRequest;
+  const fixture = await startFixture(context, { actionUploadTimeoutMs: 30 });
+  const originalUpload = fixture.application.uploadProductImages;
+  fixture.application.uploadProductImages = async (...args) => {
+    mutationCalls += 1;
+    return originalUpload.apply(fixture.application, args);
+  };
+
+  const requests: Promise<Response>[] = [];
+  try {
+    for (const index of [0, 1, 2]) {
+      const form = new FormData();
+      form.set(
+        `bounded_codex_${index}`,
+        new Blob([fixture.imageBytes], { type: "image/png" }),
+        "image",
+      );
+      requests.push(
+        fetch(`${fixture.origin}/api/actions/codex/upload-product-images`, {
+          method: "POST",
+          headers: authorization(ACTION_TOKEN),
+          body: form,
+        }),
+      );
+    }
+
+    await waitForMarker(twoParsersStarted, "two multipart parsers did not start");
+    const third = await requests[2];
+    assert.ok(third);
+    assert.equal(third.status, 502);
+    assert.deepEqual(await third.json(), actionTimeoutBody());
+    assert.equal(parserStarts, 2);
+    assert.equal(mutationCalls, 0);
+
+    releases[0]?.();
+    const first = await requests[0];
+    assert.ok(first);
+    assert.equal(first.status, 502);
+    assert.deepEqual(await first.json(), actionTimeoutBody());
+    assert.equal(parserStarts, 2);
+    assert.equal(mutationCalls, 0);
+
+    releases[1]?.();
+    const second = await requests[1];
+    assert.ok(second);
+    assert.equal(second.status, 502);
+    assert.deepEqual(await second.json(), actionTimeoutBody());
+    assert.equal(parserStarts, 2);
+    assert.equal(mutationCalls, 0);
+  } finally {
+    globalThis.Request = originalRequest;
+    for (const release of releases) {
+      release();
+    }
+    await Promise.allSettled(requests);
+  }
+});
+
+test("ordinary body deadline ends before an exclusive mutation begins", async (context) => {
+  const fixture = await startFixture(context, { writeBodyTimeoutMs: 20 });
+  let markCommitStarted!: () => void;
+  let releaseCommit!: () => void;
+  const commitStarted = new Promise<void>((resolve) => {
+    markCommitStarted = resolve;
+  });
+  const commitRelease = new Promise<void>((resolve) => {
+    releaseCommit = resolve;
+  });
+  const originalCreate = fixture.application.createInventoryBatch;
+  fixture.application.createInventoryBatch = async (...args) => {
+    markCommitStarted();
+    await commitRelease;
+    return originalCreate.apply(fixture.application, args);
+  };
+
+  let responseSettled = false;
+  const response = postJson(
+    `${fixture.origin}/api/actions/create-inventory-batch`,
+    inventoryBatchFor("commit_after_body", "Commit after body deadline"),
+    CUSTOM_GPT_TOKEN,
+  ).finally(() => {
+    responseSettled = true;
+  });
+  await commitStarted;
+  await new Promise((resolve) => setTimeout(resolve, 40));
+  assert.equal(responseSettled, false);
+
+  releaseCommit();
+  assert.equal((await response).status, 200);
+  const inventory = await fixture.application.listInventory({
+    as_of: "2026-08-19",
+  });
+  assert.deepEqual(
+    inventory.items.map((item) => item.product?.name),
+    ["Commit after body deadline"],
+  );
+});
+
+test("a full write-preparation queue rejects an incomplete body and closes its socket", async (context) => {
+  const fixture = await startFixture(context);
+  let createCalls = 0;
+  const originalCreate = fixture.application.createInventoryBatch;
+  fixture.application.createInventoryBatch = async (...args) => {
+    createCalls += 1;
+    return originalCreate.apply(fixture.application, args);
+  };
+  const dependencies = directRouteDependencies({
+    acquireWritePreparation: async () => {
+      throw new BeautioError(
+        "BATCH_CONFLICT",
+        "write preparation queue is full; retry later",
+      );
+    },
+  });
+
+  await withDirectRouteServer(
+    fixture.application,
+    dependencies,
+    async (origin) => {
+      const rejected = startPartialHttpRequest(
+        `${origin}/api/actions/create-inventory-batch`,
+        "POST",
+        CUSTOM_GPT_TOKEN,
+        "application/json",
+        '{"as_of":"2026-08-19","products":[',
+      );
+      await rejected.started;
+      const response = await rejected.response;
+      assert.equal(response.status, 409);
+      assert.equal(response.headers.connection, "close");
+      assert.deepEqual(response.body, {
+        error: {
+          code: "BATCH_CONFLICT",
+          message: "write preparation queue is full; retry later",
+        },
+      });
+      await rejected.socketClosed;
+    },
+  );
+  assert.equal(createCalls, 0);
+});
+
+test("a complete unread body is drained before its preparation failure keeps the connection reusable", async (context) => {
+  const fixture = await startFixture(context);
+  let incomingRequest: IncomingMessage | undefined;
+  let observedCompleteUnread = false;
+  let createCalls = 0;
+  const originalCreate = fixture.application.createInventoryBatch;
+  fixture.application.createInventoryBatch = async (...args) => {
+    createCalls += 1;
+    return originalCreate.apply(fixture.application, args);
+  };
+  const dependencies = directRouteDependencies({
+    acquireWritePreparation: async () => {
+      while (incomingRequest?.complete !== true) {
+        await new Promise<void>((resolve) => setImmediate(resolve));
+      }
+      observedCompleteUnread = !incomingRequest.readableEnded;
+      throw new BeautioError(
+        "BATCH_CONFLICT",
+        "write preparation queue is full; retry later",
+      );
+    },
+  });
+
+  await withDirectRouteServer(
+    fixture.application,
+    dependencies,
+    async (origin) => {
+      const response = await postJson(
+        `${origin}/api/actions/create-inventory-batch`,
+        {},
+        CUSTOM_GPT_TOKEN,
+      );
+      assert.equal(response.status, 409);
+      assert.notEqual(response.headers.get("connection"), "close");
+      assert.equal(observedCompleteUnread, true);
+      for (
+        let attempt = 0;
+        attempt < 100 && incomingRequest?.readableEnded !== true;
+        attempt += 1
+      ) {
+        await new Promise<void>((resolve) => setImmediate(resolve));
+      }
+      assert.equal(incomingRequest?.readableEnded, true);
+    },
+    (request) => {
+      incomingRequest = request;
+    },
+  );
+  assert.equal(createCalls, 0);
+});
+
+test("ordinary mutation routes finish preparation before entering their exclusive commit", async (context) => {
+  const fixture = await startFixture(context);
+  const uploaded = await fixture.application.uploadProductImages([
+    { source_ref: "exclusive_matrix", bytes: fixture.imageBytes },
+  ]);
+  const imageAssetId = uploaded.assets[0]?.image_asset_id;
+  assert.ok(imageAssetId);
+  const seeded = await fixture.application.createInventoryBatch({
+    as_of: "2026-08-19",
+    products: [
+      {
+        batch_ref: "exclusive_product",
+        name: "Exclusive route product",
+      },
+    ],
+    inventory_items: [
+      {
+        batch_ref: "record_open_target",
+        product_ref: { kind: "new", batch_ref: "exclusive_product" },
+        lifecycle_status: "unopened",
+      },
+      {
+        batch_ref: "facts_target",
+        product_ref: { kind: "new", batch_ref: "exclusive_product" },
+        lifecycle_status: "opened",
+        opened_on: "2026-08-01",
+        opened_on_accuracy: "exact",
+      },
+      {
+        batch_ref: "end_target",
+        product_ref: { kind: "new", batch_ref: "exclusive_product" },
+        lifecycle_status: "opened",
+        opened_on: "2026-08-02",
+        opened_on_accuracy: "exact",
+      },
+      {
+        batch_ref: "notes_target",
+        product_ref: { kind: "new", batch_ref: "exclusive_product" },
+        lifecycle_status: "unopened",
+      },
+    ],
+  });
+  const productId = seeded.products[0]?.product_id;
+  const recordOpenId = seeded.inventory_items[0]?.inventory_item_id;
+  const factsId = seeded.inventory_items[1]?.inventory_item_id;
+  const endId = seeded.inventory_items[2]?.inventory_item_id;
+  const notesId = seeded.inventory_items[3]?.inventory_item_id;
+  assert.ok(productId);
+  assert.ok(recordOpenId);
+  assert.ok(factsId);
+  assert.ok(endId);
+  assert.ok(notesId);
+
+  let calls = 0;
+  const originalRecordOpened = fixture.application.recordProductOpened;
+  fixture.application.recordProductOpened = async (...args) => {
+    calls += 1;
+    return originalRecordOpened.apply(fixture.application, args);
+  };
+  await assertRequestWaitsForExclusive(
+    fixture.application,
+    (origin) =>
+      postJson(
+        `${origin}/api/actions/codex/record-product-opened`,
+        {
+          inventory_item_id: recordOpenId,
+          opened_on: "2026-08-19",
+          opened_on_accuracy: "exact",
+        },
+        ACTION_TOKEN,
+      ),
+    () => calls,
+  );
+  fixture.application.recordProductOpened = originalRecordOpened;
+
+  calls = 0;
+  const originalSetImage = fixture.application.setProductDisplayImage;
+  fixture.application.setProductDisplayImage = async (...args) => {
+    calls += 1;
+    return originalSetImage.apply(fixture.application, args);
+  };
+  await assertRequestWaitsForExclusive(
+    fixture.application,
+    (origin) =>
+      postJson(
+        `${origin}/api/actions/codex/set-product-display-image`,
+        { product_id: productId, image_asset_id: imageAssetId },
+        ACTION_TOKEN,
+      ),
+    () => calls,
+  );
+  fixture.application.setProductDisplayImage = originalSetImage;
+
+  calls = 0;
+  const originalUpload = fixture.application.uploadProductImages;
+  fixture.application.uploadProductImages = async (...args) => {
+    calls += 1;
+    return originalUpload.apply(fixture.application, args);
+  };
+  await assertRequestWaitsForExclusive(
+    fixture.application,
+    async (origin) => {
+      const form = new FormData();
+      form.set(
+        "image",
+        new Blob([fixture.imageBytes], { type: "image/png" }),
+        "exclusive.png",
+      );
+      return fetch(`${origin}/api/admin/image-assets`, {
+        method: "POST",
+        headers: authorization(ADMIN_TOKEN),
+        body: form,
+      });
+    },
+    () => calls,
+  );
+  fixture.application.uploadProductImages = originalUpload;
+
+  calls = 0;
+  const originalUpdateFacts = fixture.application.updateInventoryItemFacts;
+  fixture.application.updateInventoryItemFacts = async (...args) => {
+    calls += 1;
+    return originalUpdateFacts.apply(fixture.application, args);
+  };
+  await assertRequestWaitsForExclusive(
+    fixture.application,
+    (origin) =>
+      putJson(
+        `${origin}/api/admin/inventory-items/${encodeURIComponent(factsId)}/facts`,
+        {
+          as_of: "2026-08-19",
+          lifecycle_status: "opened",
+          opened_on: "2026-08-03",
+          opened_on_accuracy: "exact",
+          expires_on: "2027-08-03",
+          pao_duration_months: 6,
+        },
+        ADMIN_TOKEN,
+      ),
+    () => calls,
+  );
+  fixture.application.updateInventoryItemFacts = originalUpdateFacts;
+
+  calls = 0;
+  const originalEndUse = fixture.application.endInventoryItem;
+  fixture.application.endInventoryItem = async (...args) => {
+    calls += 1;
+    return originalEndUse.apply(fixture.application, args);
+  };
+  await assertRequestWaitsForExclusive(
+    fixture.application,
+    (origin) =>
+      postJson(
+        `${origin}/api/admin/inventory-items/${encodeURIComponent(endId)}/end-use`,
+        { as_of: "2026-08-19", lifecycle_status: "finished" },
+        ADMIN_TOKEN,
+      ),
+    () => calls,
+  );
+  fixture.application.endInventoryItem = originalEndUse;
+
+  calls = 0;
+  const originalCustomNotes = fixture.application.updateInventoryItemCustomNotes;
+  fixture.application.updateInventoryItemCustomNotes = async (...args) => {
+    calls += 1;
+    return originalCustomNotes.apply(fixture.application, args);
+  };
+  await assertRequestWaitsForExclusive(
+    fixture.application,
+    (origin) =>
+      putJson(
+        `${origin}/api/admin/inventory-items/${encodeURIComponent(notesId)}/custom-notes`,
+        { custom_notes: "Prepared before commit" },
+        ADMIN_TOKEN,
+      ),
+    () => calls,
+  );
+  fixture.application.updateInventoryItemCustomNotes = originalCustomNotes;
+});
+
 test("backup restore body timeout aborts the request and releases the exclusive gate", async (context) => {
   const fixture = await startFixture(context, { backupOperationTimeoutMs: 20 });
 
@@ -2488,6 +3202,10 @@ interface Fixture {
 interface FixtureOptions {
   readonly actionUploadTimeoutMs?: number;
   readonly backupOperationTimeoutMs?: number;
+  readonly writeBodyTimeoutMs?: number;
+  readonly actionDownloader?: NonNullable<
+    CoreApiHandlerOptions["actionDownloader"]
+  >;
   readonly imageInspector?: ImageInspector;
   readonly imageStorageFactory?: (directory: string) => ImageAssetStorage;
   readonly publicOrigin?: string;
@@ -2541,17 +3259,22 @@ async function startFixture(
       actionBearerToken: ACTION_TOKEN,
       adminBearerToken: ADMIN_TOKEN,
       actionFileHosts: new Set(["files.example.test"]),
-      actionDownloader: async (references) =>
-        references.map((reference) => ({
-          source_ref: reference.id,
-          bytes: imageBytes,
-        })),
+      actionDownloader:
+        options.actionDownloader ??
+        (async (references) =>
+          references.map((reference) => ({
+            source_ref: reference.id,
+            bytes: imageBytes,
+          }))),
       ...(options.actionUploadTimeoutMs === undefined
         ? {}
         : { actionUploadTimeoutMs: options.actionUploadTimeoutMs }),
       ...(options.backupOperationTimeoutMs === undefined
         ? {}
         : { backupOperationTimeoutMs: options.backupOperationTimeoutMs }),
+      ...(options.writeBodyTimeoutMs === undefined
+        ? {}
+        : { writeBodyTimeoutMs: options.writeBodyTimeoutMs }),
       ...(options.publicOrigin === undefined
         ? {}
         : { publicOrigin: options.publicOrigin }),
@@ -2585,6 +3308,52 @@ function emptyBatch(): object {
       },
     ],
   };
+}
+
+function inventoryBatchFor(batchRef: string, name: string): object {
+  return {
+    as_of: "2026-08-19",
+    products: [{ batch_ref: batchRef, name }],
+    inventory_items: [
+      {
+        batch_ref: `${batchRef}_bottle`,
+        product_ref: { kind: "new", batch_ref: batchRef },
+        lifecycle_status: "unopened",
+      },
+    ],
+  };
+}
+
+function actionUploadBody(sourceRef: string): object {
+  return {
+    openaiFileIdRefs: [
+      {
+        name: `${sourceRef}.png`,
+        id: sourceRef,
+        mime_type: "image/png",
+        download_link: `https://files.example.test/${sourceRef}`,
+      },
+    ],
+  };
+}
+
+function actionTimeoutBody(): object {
+  return {
+    error: {
+      code: "UPLOAD_FAILED",
+      message: "Action image upload timed out",
+    },
+  };
+}
+
+function waitForMarker(marker: Promise<void>, message: string): Promise<void> {
+  return Promise.race([
+    marker,
+    new Promise<never>((_resolve, reject) => {
+      const timeout = setTimeout(() => reject(new Error(message)), 1_000);
+      marker.finally(() => clearTimeout(timeout)).catch(() => undefined);
+    }),
+  ]);
 }
 
 function authorization(token: string): Record<string, string> {
@@ -2642,6 +3411,180 @@ function closeServer(server: Server): Promise<void> {
   return new Promise((resolve, reject) => {
     server.close((error) => (error === undefined ? resolve() : reject(error)));
   });
+}
+
+function directRouteOptions(): ValidatedOptions {
+  return {
+    customGptBearerToken: CUSTOM_GPT_TOKEN,
+    actionBearerToken: ACTION_TOKEN,
+    adminBearerToken: ADMIN_TOKEN,
+    actionFileHosts: new Set(["files.example.test"]),
+    actionDownloader: async () => [],
+    actionUploadTimeoutMs: 500,
+    backupOperationTimeoutMs: 500,
+    writeBodyTimeoutMs: 500,
+    publicOrigin: undefined,
+    staticWebRoot: null,
+    readOnlyMcp: null,
+  };
+}
+
+function directRouteDependencies(
+  overrides: Partial<RouteRequestDependencies> = {},
+): RouteRequestDependencies {
+  return {
+    withActionUploadDeadline: async (_timeoutMs, signal, operation) =>
+      operation(signal),
+    acquireWritePreparation: async () => ({ release: () => undefined }),
+    withExclusiveOperation: async (operation) => operation(),
+    withBackupDeadline: async (_timeoutMs, signal, operation) =>
+      operation(signal),
+    withWriteBodyDeadline: async (_timeoutMs, signal, operation) =>
+      operation(signal),
+    ...overrides,
+  };
+}
+
+async function withDirectRouteServer<T>(
+  application: InventoryApplicationService,
+  dependencies: RouteRequestDependencies,
+  run: (origin: string) => Promise<T>,
+  observeRequest?: (request: IncomingMessage) => void,
+): Promise<T> {
+  const server = createServer((request, response) => {
+    observeRequest?.(request);
+    void routeRequest(
+      application,
+      directRouteOptions(),
+      request,
+      response,
+      dependencies,
+    ).catch((error: unknown) => {
+      if (!response.headersSent) {
+        sendError(response, error);
+        return;
+      }
+      response.destroy();
+    });
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const address = server.address() as AddressInfo;
+  try {
+    return await run(`http://127.0.0.1:${address.port}`);
+  } finally {
+    await closeServer(server);
+  }
+}
+
+async function assertRequestWaitsForExclusive(
+  application: InventoryApplicationService,
+  makeRequest: (origin: string) => Promise<Response>,
+  calls: () => number,
+): Promise<void> {
+  let markExclusiveEntered!: () => void;
+  let releaseExclusive!: () => void;
+  const exclusiveEntered = new Promise<void>((resolve) => {
+    markExclusiveEntered = resolve;
+  });
+  const exclusiveRelease = new Promise<void>((resolve) => {
+    releaseExclusive = resolve;
+  });
+  const dependencies = directRouteDependencies({
+    withExclusiveOperation: async (operation) => {
+      markExclusiveEntered();
+      await exclusiveRelease;
+      return operation();
+    },
+  });
+
+  await withDirectRouteServer(application, dependencies, async (origin) => {
+    let responseSettled = false;
+    const response = makeRequest(origin).finally(() => {
+      responseSettled = true;
+    });
+    await exclusiveEntered;
+    assert.equal(responseSettled, false);
+    assert.equal(calls(), 0);
+    releaseExclusive();
+    assert.equal((await response).status, 200);
+    assert.equal(calls(), 1);
+  });
+}
+
+interface PartialHttpResult {
+  readonly status: number;
+  readonly headers: IncomingHttpHeaders;
+  readonly body: unknown;
+}
+
+interface StartedPartialHttpRequest {
+  readonly started: Promise<void>;
+  readonly response: Promise<PartialHttpResult>;
+  readonly socketClosed: Promise<void>;
+}
+
+function startPartialHttpRequest(
+  url: string,
+  method: "POST" | "PUT",
+  token: string,
+  contentType: string,
+  firstChunk: string,
+): StartedPartialHttpRequest {
+  let markStarted!: () => void;
+  let rejectStarted!: (error: unknown) => void;
+  let markSocketClosed!: () => void;
+  const started = new Promise<void>((resolve, reject) => {
+    markStarted = resolve;
+    rejectStarted = reject;
+  });
+  const socketClosed = new Promise<void>((resolve) => {
+    markSocketClosed = resolve;
+  });
+  const response = new Promise<PartialHttpResult>((resolve, reject) => {
+    let responseStarted = false;
+    const request = makeHttpRequest(
+      url,
+      {
+        method,
+        headers: {
+          ...authorization(token),
+          "content-length": String(1024 * 1024),
+          "content-type": contentType,
+        },
+      },
+      (incoming) => {
+        responseStarted = true;
+        const chunks: Buffer[] = [];
+        incoming.on("data", (chunk: Buffer) => chunks.push(chunk));
+        incoming.once("end", () => {
+          const text = Buffer.concat(chunks).toString("utf8");
+          resolve({
+            status: incoming.statusCode ?? 0,
+            headers: incoming.headers,
+            body: JSON.parse(text) as unknown,
+          });
+        });
+      },
+    );
+    request.once("socket", (socket) => {
+      socket.once("close", markSocketClosed);
+    });
+    request.once("error", (error: NodeJS.ErrnoException) => {
+      if (!responseStarted) {
+        rejectStarted(error);
+        reject(error);
+      }
+    });
+    request.write(firstChunk, (error) => {
+      if (error == null) {
+        markStarted();
+        return;
+      }
+      rejectStarted(error);
+      reject(error);
+    });
+  });
+  return { started, response, socketClosed };
 }
 
 function postSlowMultipart(

@@ -182,12 +182,14 @@ export async function readMcpJson(
 
 export async function readSingleImageMultipart(
   request: IncomingMessage,
+  signal: AbortSignal,
 ): Promise<Uint8Array> {
   const contentType = request.headers["content-type"] ?? "";
   if (!contentType.toLowerCase().startsWith("multipart/form-data;")) {
     throw invalidInput();
   }
-  const body = await readBody(request, ADMIN_MULTIPART_LIMIT);
+  const body = await readBody(request, ADMIN_MULTIPART_LIMIT, signal);
+  throwIfRequestAborted(signal);
   let form: FormData;
   try {
     form = await new Request("http://127.0.0.1/upload", {
@@ -198,6 +200,7 @@ export async function readSingleImageMultipart(
   } catch {
     throw invalidInput();
   }
+  throwIfRequestAborted(signal);
   const entries = [...form.entries()];
   if (entries.length !== 1 || entries[0]?.[0] !== "image") {
     throw invalidInput();
@@ -209,7 +212,9 @@ export async function readSingleImageMultipart(
   if (file.size > MAXIMUM_IMAGE_BYTES) {
     throw new BeautioError("UPLOAD_TOO_LARGE", "image exceeds the 20 MiB limit");
   }
-  return new Uint8Array(await file.arrayBuffer());
+  const bytes = new Uint8Array(await file.arrayBuffer());
+  throwIfRequestAborted(signal);
+  return bytes;
 }
 
 export async function readCodexImageMultipart(
@@ -221,7 +226,7 @@ export async function readCodexImageMultipart(
     throw invalidInput();
   }
   const body = await readBody(request, CODEX_MULTIPART_LIMIT, signal);
-  throwIfActionAborted(signal);
+  throwIfRequestAborted(signal);
   let form: FormData;
   try {
     form = await new Request("http://127.0.0.1/upload", {
@@ -232,7 +237,7 @@ export async function readCodexImageMultipart(
   } catch {
     throw invalidInput();
   }
-  throwIfActionAborted(signal);
+  throwIfRequestAborted(signal);
 
   const entries = [...form.entries()];
   if (entries.length < 1 || entries.length > 10) {
@@ -242,7 +247,7 @@ export async function readCodexImageMultipart(
   let totalBytes = 0;
   const images: { source_ref: string; bytes: Uint8Array }[] = [];
   for (const [untrustedSourceRef, value] of entries) {
-    throwIfActionAborted(signal);
+    throwIfRequestAborted(signal);
     const parsedSourceRef = sourceRefSchema.safeParse(untrustedSourceRef);
     if (!parsedSourceRef.success || sourceRefs.has(parsedSourceRef.data)) {
       throw invalidInput();
@@ -265,7 +270,7 @@ export async function readCodexImageMultipart(
     }
     sourceRefs.add(parsedSourceRef.data);
     const bytes = new Uint8Array(await value.arrayBuffer());
-    throwIfActionAborted(signal);
+    throwIfRequestAborted(signal);
     images.push({
       source_ref: parsedSourceRef.data,
       bytes,
@@ -282,9 +287,9 @@ function mediaType(contentType: string): string {
   return contentType.toLowerCase().split(";", 1)[0]?.trim() ?? "";
 }
 
-function throwIfActionAborted(signal: AbortSignal): void {
+export function throwIfRequestAborted(signal: AbortSignal): void {
   if (signal.aborted) {
-    throw actionTimedOut();
+    throw abortFailure(signal);
   }
 }
 
@@ -292,7 +297,7 @@ function readBody(
   request: IncomingMessage,
   maximumBytes: number,
   signal?: AbortSignal,
-  abortError: () => BeautioError = actionTimedOut,
+  abortError: () => Error = requestAborted,
 ): Promise<Buffer> {
   return new Promise((resolve, reject) => {
     const chunks: Buffer[] = [];
@@ -307,7 +312,7 @@ function readBody(
       }
       signal?.removeEventListener("abort", onAbort);
     };
-    const rejectAndDrain = (error: BeautioError): void => {
+    const rejectAndDrain = (error: Error): void => {
       if (settled) {
         return;
       }
@@ -361,4 +366,14 @@ function readBody(
 
 function mcpBodyTimedOut(): BeautioError {
   return new BeautioError("INVALID_INPUT", "MCP request body timed out");
+}
+
+function requestAborted(): Error {
+  const error = new Error("request body operation was aborted");
+  error.name = "AbortError";
+  return error;
+}
+
+function abortFailure(signal: AbortSignal): Error {
+  return signal.reason instanceof Error ? signal.reason : requestAborted();
 }

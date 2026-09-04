@@ -10,6 +10,7 @@ import { actionTimedOut } from "./body.ts";
 import { validateHttpBearerTokens } from "./http-bearer-tokens.ts";
 import { sendError } from "./responses.ts";
 import { ExclusiveOperationGate } from "./exclusive-operation-gate.ts";
+import { WritePreparationGate } from "./write-preparation-gate.ts";
 import {
   routeRequest,
   type RouteRequestDependencies,
@@ -20,6 +21,7 @@ import type { ReadOnlyMcpRoute } from "./read-only-mcp.ts";
 
 const ACTION_UPLOAD_TIMEOUT_MS = 40_000;
 const BACKUP_OPERATION_TIMEOUT_MS = 120_000;
+const WRITE_BODY_TIMEOUT_MS = 10_000;
 
 export interface CoreApiHandlerOptions {
   readonly customGptBearerToken: string;
@@ -33,6 +35,7 @@ export interface CoreApiHandlerOptions {
   ) => Promise<readonly DownloadedActionImage[]>;
   readonly actionUploadTimeoutMs?: number;
   readonly backupOperationTimeoutMs?: number;
+  readonly writeBodyTimeoutMs?: number;
   readonly publicOrigin?: string;
   readonly webRoot?: string;
   readonly readOnlyMcp?: ReadOnlyMcpRoute;
@@ -51,12 +54,15 @@ export function createCoreApiHandler(
 ): RequestListener {
   const configuration = validateOptions(options);
   const exclusiveOperationGate = new ExclusiveOperationGate();
+  const writePreparationGate = new WritePreparationGate();
   const routeRequestDependencies: RouteRequestDependencies = {
     withActionUploadDeadline,
-    abortableActionOperation,
+    acquireWritePreparation: (signal) =>
+      writePreparationGate.acquire(signal),
     withExclusiveOperation: (operation, signal) =>
       exclusiveOperationGate.run(operation, signal),
     withBackupDeadline,
+    withWriteBodyDeadline,
   };
   return (request, response) => {
     void routeRequest(
@@ -100,6 +106,10 @@ function validateOptions(options: CoreApiHandlerOptions): ValidatedOptions {
     backupOperationTimeoutMs: positiveTimeout(
       options.backupOperationTimeoutMs,
       BACKUP_OPERATION_TIMEOUT_MS,
+    ),
+    writeBodyTimeoutMs: positiveTimeout(
+      options.writeBodyTimeoutMs,
+      WRITE_BODY_TIMEOUT_MS,
     ),
     publicOrigin: validatePublicOrigin(options.publicOrigin),
     staticWebRoot:
@@ -145,44 +155,123 @@ function isAbortFailure(error: unknown): boolean {
 
 async function withActionUploadDeadline<T>(
   timeoutMs: number,
+  externalSignal: AbortSignal,
   operation: (signal: AbortSignal) => Promise<T>,
 ): Promise<T> {
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), timeoutMs);
-  timeout.unref();
+  const deadline = createTaggedDeadline(timeoutMs, externalSignal);
   try {
-    return await operation(controller.signal);
+    return await operation(deadline.signal);
   } catch (error) {
-    if (controller.signal.aborted) {
+    if (
+      deadline.firstSource() === "deadline" &&
+      isExplicitAbortFailure(error)
+    ) {
       throw actionTimedOut();
+    }
+    if (
+      deadline.firstSource() === "external" &&
+      isExplicitAbortFailure(error)
+    ) {
+      throw deadline.abortReason();
     }
     throw error;
   } finally {
-    clearTimeout(timeout);
+    deadline.dispose();
   }
 }
 
-function abortableActionOperation<T>(
-  operation: Promise<T>,
-  signal: AbortSignal,
+async function withWriteBodyDeadline<T>(
+  timeoutMs: number,
+  externalSignal: AbortSignal,
+  operation: (signal: AbortSignal) => Promise<T>,
 ): Promise<T> {
-  if (signal.aborted) {
-    return Promise.reject(actionTimedOut());
+  const deadline = createTaggedDeadline(timeoutMs, externalSignal);
+  try {
+    const value = await operation(deadline.signal);
+    if (deadline.signal.aborted) {
+      throw deadline.abortReason();
+    }
+    return value;
+  } catch (error) {
+    if (
+      deadline.firstSource() === "deadline" &&
+      isExplicitAbortFailure(error)
+    ) {
+      throw new BeautioError("INVALID_INPUT", "request body timed out");
+    }
+    if (
+      deadline.firstSource() === "external" &&
+      isExplicitAbortFailure(error)
+    ) {
+      throw deadline.abortReason();
+    }
+    throw error;
+  } finally {
+    deadline.dispose();
   }
-  return new Promise<T>((resolve, reject) => {
-    const abort = (): void => reject(actionTimedOut());
-    signal.addEventListener("abort", abort, { once: true });
-    void operation.then(
-      (value) => {
-        signal.removeEventListener("abort", abort);
-        resolve(value);
-      },
-      (error: unknown) => {
-        signal.removeEventListener("abort", abort);
-        reject(error);
-      },
+}
+
+type AbortSource = "deadline" | "external";
+
+interface TaggedDeadline {
+  readonly signal: AbortSignal;
+  readonly abortReason: () => Error;
+  readonly firstSource: () => AbortSource | null;
+  readonly dispose: () => void;
+}
+
+function createTaggedDeadline(
+  timeoutMs: number,
+  externalSignal: AbortSignal,
+): TaggedDeadline {
+  const controller = new AbortController();
+  let firstSource: AbortSource | null = null;
+  const abort = (source: AbortSource): void => {
+    if (firstSource !== null) {
+      return;
+    }
+    firstSource = source;
+    const error = new Error(
+      source === "deadline" ? "operation deadline elapsed" : "request was aborted",
     );
-  });
+    error.name = "AbortError";
+    controller.abort(error);
+  };
+  const externalAbort = (): void => abort("external");
+  if (externalSignal.aborted) {
+    externalAbort();
+  } else {
+    externalSignal.addEventListener("abort", externalAbort, { once: true });
+  }
+  const timeout = setTimeout(() => abort("deadline"), timeoutMs);
+  timeout.unref();
+  return {
+    signal: controller.signal,
+    abortReason: () => abortReason(controller.signal),
+    firstSource: () => firstSource,
+    dispose: () => {
+      clearTimeout(timeout);
+      externalSignal.removeEventListener("abort", externalAbort);
+    },
+  };
+}
+
+function abortReason(signal: AbortSignal): Error {
+  if (signal.reason instanceof Error) {
+    return signal.reason;
+  }
+  const error = new Error("operation was aborted");
+  error.name = "AbortError";
+  return error;
+}
+
+function isExplicitAbortFailure(error: unknown): boolean {
+  return (
+    (error instanceof Error && error.name === "AbortError") ||
+    (error instanceof BeautioError &&
+      error.code === "UPLOAD_FAILED" &&
+      error.message === "image upload timed out")
+  );
 }
 
 function validatePublicOrigin(value: string | undefined): string | undefined {

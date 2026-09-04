@@ -18,12 +18,14 @@ import {
   readMcpJson,
   readSingleImageMultipart,
   readStreamingJson,
+  throwIfRequestAborted,
 } from "./body.ts";
 import { createBeautioActionsOpenApiV1 } from "./openapi.ts";
 import { routeId } from "./path-segment.ts";
 import { invalidInput, sendJson, sendNotFound } from "./responses.ts";
 import type { ReadOnlyMcpRoute } from "./read-only-mcp.ts";
 import { tryServeStaticWeb, type StaticWebRoot } from "./static-web.ts";
+import type { WritePreparationPermit } from "./write-preparation-gate.ts";
 
 const actionFileRequestSchema = z
   .object({
@@ -56,6 +58,7 @@ export interface ValidatedOptions {
   ) => Promise<readonly DownloadedActionImage[]>;
   readonly actionUploadTimeoutMs: number;
   readonly backupOperationTimeoutMs: number;
+  readonly writeBodyTimeoutMs: number;
   readonly publicOrigin: string | undefined;
   readonly staticWebRoot: StaticWebRoot | null;
   readonly readOnlyMcp: ReadOnlyMcpRoute | null;
@@ -64,17 +67,22 @@ export interface ValidatedOptions {
 export interface RouteRequestDependencies {
   readonly withActionUploadDeadline: <T>(
     timeoutMs: number,
+    externalSignal: AbortSignal,
     operation: (signal: AbortSignal) => Promise<T>,
   ) => Promise<T>;
-  readonly abortableActionOperation: <T>(
-    operation: Promise<T>,
+  readonly acquireWritePreparation: (
     signal: AbortSignal,
-  ) => Promise<T>;
+  ) => Promise<WritePreparationPermit>;
   readonly withExclusiveOperation: <T>(
     operation: () => Promise<T>,
     signal?: AbortSignal,
   ) => Promise<T>;
   readonly withBackupDeadline: <T>(
+    timeoutMs: number,
+    externalSignal: AbortSignal,
+    operation: (signal: AbortSignal) => Promise<T>,
+  ) => Promise<T>;
+  readonly withWriteBodyDeadline: <T>(
     timeoutMs: number,
     externalSignal: AbortSignal,
     operation: (signal: AbortSignal) => Promise<T>,
@@ -125,7 +133,10 @@ export async function routeRequest(
     requireBearer(request, options.adminBearerToken);
   }
 
-  const execute = (backupSignal?: AbortSignal): Promise<void> =>
+  const execute = (
+    backupSignal?: AbortSignal,
+    requestSignal?: AbortSignal,
+  ): Promise<void> =>
     routeAuthorizedRequest(
       application,
       options,
@@ -134,6 +145,7 @@ export async function routeRequest(
       dependencies,
       url,
       backupSignal,
+      requestSignal,
     );
   if (request.method === "PUT" && url.pathname === "/api/admin/backup") {
     await withRequestCancellation(request, response, (externalSignal) =>
@@ -172,13 +184,9 @@ export async function routeRequest(
     );
     return;
   }
-  if (isExclusiveWriteRoute(request.method, url.pathname)) {
-    await withRequestCancellation(request, response, (signal) =>
-      dependencies.withExclusiveOperation(() => execute(), signal),
-    );
-    return;
-  }
-  await execute();
+  await withRequestCancellation(request, response, (signal) =>
+    execute(undefined, signal),
+  );
 }
 
 async function routeAuthorizedRequest(
@@ -189,34 +197,38 @@ async function routeAuthorizedRequest(
   dependencies: RouteRequestDependencies,
   url: URL,
   backupSignal?: AbortSignal,
+  requestSignal?: AbortSignal,
 ): Promise<void> {
 
   if (
     request.method === "POST" &&
     url.pathname === "/api/actions/upload-product-images"
   ) {
-    const output = await dependencies.withActionUploadDeadline(
-      options.actionUploadTimeoutMs,
+    const signal = requireRequestSignal(requestSignal);
+    const output = await runActionPreparedWrite(
+      request,
+      response,
+      options,
+      dependencies,
+      signal,
       async (signal) => {
         const body = actionFileRequestSchema.safeParse(
-          await dependencies.abortableActionOperation(
-            readJson(request, JSON_BODY_LIMIT, signal),
-            signal,
-          ),
+          await readJson(request, JSON_BODY_LIMIT, signal),
         );
         if (!body.success) {
           throw invalidInput();
         }
-        const downloaded = await dependencies.abortableActionOperation(
-          options.actionDownloader(
-            body.data.openaiFileIdRefs,
-            options.actionFileHosts,
-            signal,
-          ),
+        const downloaded = await options.actionDownloader(
+          body.data.openaiFileIdRefs,
+          options.actionFileHosts,
           signal,
         );
-        return application.uploadProductImages(downloaded, { signal });
+        return downloaded;
       },
+      (downloaded, operationSignal) =>
+        application.uploadProductImages(downloaded, {
+          signal: operationSignal,
+        }),
     );
     sendJson(response, 200, output);
     return;
@@ -228,11 +240,24 @@ async function routeAuthorizedRequest(
       url.pathname === "/api/actions/codex/create-inventory-batch" ||
       url.pathname === "/api/admin/create-inventory-batch")
   ) {
+    const signal = requireRequestSignal(requestSignal);
+    const prepared = await prepareOrdinaryWrite(
+      request,
+      response,
+      options,
+      dependencies,
+      signal,
+      (preparationSignal) =>
+        readJson(request, JSON_BODY_LIMIT, preparationSignal),
+    );
     sendJson(
       response,
       200,
-      await application.createInventoryBatch(
-        await readJson(request, JSON_BODY_LIMIT),
+      await commitPreparedWrite(
+        prepared,
+        dependencies,
+        signal,
+        (body) => application.createInventoryBatch(body),
       ),
     );
     return;
@@ -242,15 +267,17 @@ async function routeAuthorizedRequest(
     request.method === "POST" &&
     url.pathname === "/api/actions/codex/upload-product-images"
   ) {
-    const output = await dependencies.withActionUploadDeadline(
-      options.actionUploadTimeoutMs,
-      async (signal) => {
-        const images = await dependencies.abortableActionOperation(
-          readCodexImageMultipart(request, signal),
-          signal,
-        );
-        return application.uploadProductImages(images, { signal });
-      },
+    const signal = requireRequestSignal(requestSignal);
+    const output = await runActionPreparedWrite(
+      request,
+      response,
+      options,
+      dependencies,
+      signal,
+      (operationSignal) =>
+        readCodexImageMultipart(request, operationSignal),
+      (images, operationSignal) =>
+        application.uploadProductImages(images, { signal: operationSignal }),
     );
     sendJson(response, 200, output);
     return;
@@ -260,12 +287,27 @@ async function routeAuthorizedRequest(
     request.method === "POST" &&
     url.pathname === "/api/actions/codex/record-product-opened"
   ) {
-    const body = await readJson(request, JSON_BODY_LIMIT);
+    const signal = requireRequestSignal(requestSignal);
+    const prepared = await prepareOrdinaryWrite(
+      request,
+      response,
+      options,
+      dependencies,
+      signal,
+      (preparationSignal) =>
+        readJson(request, JSON_BODY_LIMIT, preparationSignal),
+    );
     sendJson(
       response,
       200,
-      await application.recordProductOpened(
-        addLegacyOpeningAccuracyWhenMissing(body),
+      await commitPreparedWrite(
+        prepared,
+        dependencies,
+        signal,
+        (body) =>
+          application.recordProductOpened(
+            addLegacyOpeningAccuracyWhenMissing(body),
+          ),
       ),
     );
     return;
@@ -289,11 +331,24 @@ async function routeAuthorizedRequest(
     request.method === "POST" &&
     url.pathname === "/api/actions/codex/set-product-display-image"
   ) {
+    const signal = requireRequestSignal(requestSignal);
+    const prepared = await prepareOrdinaryWrite(
+      request,
+      response,
+      options,
+      dependencies,
+      signal,
+      (preparationSignal) =>
+        readJson(request, JSON_BODY_LIMIT, preparationSignal),
+    );
     sendJson(
       response,
       200,
-      await application.setProductDisplayImage(
-        await readJson(request, JSON_BODY_LIMIT),
+      await commitPreparedWrite(
+        prepared,
+        dependencies,
+        signal,
+        (body) => application.setProductDisplayImage(body),
       ),
     );
     return;
@@ -331,10 +386,25 @@ async function routeAuthorizedRequest(
     request.method === "POST" &&
     url.pathname === "/api/admin/image-assets"
   ) {
-    const bytes = await readSingleImageMultipart(request);
-    const uploaded = await application.uploadProductImages([
-      { source_ref: "admin_image", bytes },
-    ]);
+    const signal = requireRequestSignal(requestSignal);
+    const prepared = await prepareOrdinaryWrite(
+      request,
+      response,
+      options,
+      dependencies,
+      signal,
+      (preparationSignal) =>
+        readSingleImageMultipart(request, preparationSignal),
+    );
+    const uploaded = await commitPreparedWrite(
+      prepared,
+      dependencies,
+      signal,
+      (bytes) =>
+        application.uploadProductImages([
+          { source_ref: "admin_image", bytes },
+        ]),
+    );
     const asset = uploaded.assets[0];
     if (asset === undefined) {
       throw new BeautioError("INTERNAL_ERROR", "image upload returned no asset");
@@ -352,12 +422,24 @@ async function routeAuthorizedRequest(
 
   const productId = routeId(url.pathname, "/api/admin/products/", "");
   if (request.method === "PUT" && productId !== null) {
+    const signal = requireRequestSignal(requestSignal);
+    const prepared = await prepareOrdinaryWrite(
+      request,
+      response,
+      options,
+      dependencies,
+      signal,
+      (preparationSignal) =>
+        readJson(request, JSON_BODY_LIMIT, preparationSignal),
+    );
     sendJson(
       response,
       200,
-      await application.updateProduct(
-        productId,
-        await readJson(request, JSON_BODY_LIMIT),
+      await commitPreparedWrite(
+        prepared,
+        dependencies,
+        signal,
+        (body) => application.updateProduct(productId, body),
       ),
     );
     return;
@@ -369,12 +451,24 @@ async function routeAuthorizedRequest(
     "/facts",
   );
   if (request.method === "PUT" && inventoryItemId !== null) {
+    const signal = requireRequestSignal(requestSignal);
+    const prepared = await prepareOrdinaryWrite(
+      request,
+      response,
+      options,
+      dependencies,
+      signal,
+      (preparationSignal) =>
+        readJson(request, JSON_BODY_LIMIT, preparationSignal),
+    );
     sendJson(
       response,
       200,
-      await application.updateInventoryItemFacts(
-        inventoryItemId,
-        await readJson(request, JSON_BODY_LIMIT),
+      await commitPreparedWrite(
+        prepared,
+        dependencies,
+        signal,
+        (body) => application.updateInventoryItemFacts(inventoryItemId, body),
       ),
     );
     return;
@@ -386,12 +480,24 @@ async function routeAuthorizedRequest(
     "/end-use",
   );
   if (request.method === "POST" && endUseInventoryItemId !== null) {
+    const signal = requireRequestSignal(requestSignal);
+    const prepared = await prepareOrdinaryWrite(
+      request,
+      response,
+      options,
+      dependencies,
+      signal,
+      (preparationSignal) =>
+        readJson(request, JSON_BODY_LIMIT, preparationSignal),
+    );
     sendJson(
       response,
       200,
-      await application.endInventoryItem(
-        endUseInventoryItemId,
-        await readJson(request, JSON_BODY_LIMIT),
+      await commitPreparedWrite(
+        prepared,
+        dependencies,
+        signal,
+        (body) => application.endInventoryItem(endUseInventoryItemId, body),
       ),
     );
     return;
@@ -403,12 +509,28 @@ async function routeAuthorizedRequest(
     "/custom-notes",
   );
   if (request.method === "PUT" && customNotesInventoryItemId !== null) {
+    const signal = requireRequestSignal(requestSignal);
+    const prepared = await prepareOrdinaryWrite(
+      request,
+      response,
+      options,
+      dependencies,
+      signal,
+      (preparationSignal) =>
+        readJson(request, JSON_BODY_LIMIT, preparationSignal),
+    );
     sendJson(
       response,
       200,
-      await application.updateInventoryItemCustomNotes(
-        customNotesInventoryItemId,
-        await readJson(request, JSON_BODY_LIMIT),
+      await commitPreparedWrite(
+        prepared,
+        dependencies,
+        signal,
+        (body) =>
+          application.updateInventoryItemCustomNotes(
+            customNotesInventoryItemId,
+            body,
+          ),
       ),
     );
     return;
@@ -459,6 +581,133 @@ async function routeAuthorizedRequest(
   sendNotFound(response);
 }
 
+interface PreparedWrite<T> {
+  readonly value: T;
+  readonly permit: WritePreparationPermit;
+}
+
+async function prepareOrdinaryWrite<T>(
+  request: IncomingMessage,
+  response: ServerResponse,
+  options: ValidatedOptions,
+  dependencies: RouteRequestDependencies,
+  requestSignal: AbortSignal,
+  prepare: (signal: AbortSignal) => Promise<T>,
+): Promise<PreparedWrite<T>> {
+  let acquiredPermit: WritePreparationPermit | undefined;
+  try {
+    return await dependencies.withWriteBodyDeadline(
+      options.writeBodyTimeoutMs,
+      requestSignal,
+      async (preparationSignal) => {
+        acquiredPermit = await dependencies.acquireWritePreparation(
+          preparationSignal,
+        );
+        const value = await prepare(preparationSignal);
+        throwIfRequestAborted(preparationSignal);
+        return { value, permit: acquiredPermit };
+      },
+    );
+  } catch (error) {
+    acquiredPermit?.release();
+    closeIncompleteRequestAfterResponse(request, response);
+    throw error;
+  }
+}
+
+async function commitPreparedWrite<T, R>(
+  prepared: PreparedWrite<T>,
+  dependencies: RouteRequestDependencies,
+  requestSignal: AbortSignal,
+  commit: (value: T) => Promise<R>,
+): Promise<R> {
+  try {
+    return await dependencies.withExclusiveOperation(
+      () => commit(prepared.value),
+      requestSignal,
+    );
+  } finally {
+    prepared.permit.release();
+  }
+}
+
+async function runActionPreparedWrite<T, R>(
+  request: IncomingMessage,
+  response: ServerResponse,
+  options: ValidatedOptions,
+  dependencies: RouteRequestDependencies,
+  requestSignal: AbortSignal,
+  prepare: (signal: AbortSignal) => Promise<T>,
+  commit: (value: T, signal: AbortSignal) => Promise<R>,
+): Promise<R> {
+  return dependencies.withActionUploadDeadline(
+    options.actionUploadTimeoutMs,
+    requestSignal,
+    async (operationSignal) => {
+      let permit: WritePreparationPermit | undefined;
+      let preparationComplete = false;
+      try {
+        permit = await dependencies.acquireWritePreparation(operationSignal);
+        const value = await prepare(operationSignal);
+        throwIfRequestAborted(operationSignal);
+        preparationComplete = true;
+        return await dependencies.withExclusiveOperation(
+          () => commit(value, operationSignal),
+          operationSignal,
+        );
+      } catch (error) {
+        if (!preparationComplete) {
+          closeIncompleteRequestAfterResponse(request, response);
+        }
+        throw error;
+      } finally {
+        permit?.release();
+      }
+    },
+  );
+}
+
+function requireRequestSignal(signal: AbortSignal | undefined): AbortSignal {
+  if (signal === undefined) {
+    throw new BeautioError(
+      "INTERNAL_ERROR",
+      "write route is missing request cancellation state",
+    );
+  }
+  return signal;
+}
+
+const closedPreparationRequests = new WeakSet<IncomingMessage>();
+
+function closeIncompleteRequestAfterResponse(
+  request: IncomingMessage,
+  response: ServerResponse,
+): void {
+  if (closedPreparationRequests.has(request)) {
+    return;
+  }
+  closedPreparationRequests.add(request);
+
+  if (!request.destroyed && !request.readableEnded) {
+    request.resume();
+  }
+  if (request.complete || request.destroyed) {
+    return;
+  }
+  if (response.headersSent) {
+    response.destroy();
+    return;
+  }
+
+  const socket = request.socket;
+  response.setHeader("connection", "close");
+  response.once("finish", () => {
+    if (!socket.destroyed) {
+      socket.destroySoon();
+    }
+  });
+}
+
 function addLegacyOpeningAccuracyWhenMissing(body: unknown): unknown {
   if (
     typeof body !== "object" ||
@@ -469,33 +718,6 @@ function addLegacyOpeningAccuracyWhenMissing(body: unknown): unknown {
     return body;
   }
   return { ...body, opened_on_accuracy: "legacy_unknown" };
-}
-
-function isExclusiveWriteRoute(
-  method: string | undefined,
-  pathname: string,
-): boolean {
-  if (method === "POST") {
-    return (
-      pathname === "/api/actions/upload-product-images" ||
-      pathname === "/api/actions/create-inventory-batch" ||
-      pathname === "/api/actions/codex/create-inventory-batch" ||
-      pathname === "/api/actions/codex/upload-product-images" ||
-      pathname === "/api/actions/codex/record-product-opened" ||
-      pathname === "/api/actions/codex/set-product-display-image" ||
-      pathname === "/api/admin/create-inventory-batch" ||
-      pathname === "/api/admin/image-assets" ||
-      routeId(pathname, "/api/admin/inventory-items/", "/end-use") !== null
-    );
-  }
-  if (method !== "PUT") {
-    return false;
-  }
-  return (
-    routeId(pathname, "/api/admin/products/", "") !== null ||
-    routeId(pathname, "/api/admin/inventory-items/", "/facts") !== null ||
-    routeId(pathname, "/api/admin/inventory-items/", "/custom-notes") !== null
-  );
 }
 
 async function withRequestCancellation<T>(
