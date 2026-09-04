@@ -1,5 +1,7 @@
 # Beautio
 
+English | [简体中文](README.zh-CN.md)
+
 Beautio is a low-friction, inventory-first personal beauty management system. Its core keeps inventory and lifecycle facts independent from any single AI provider, and exposes the same rules through MCP, GPT Actions, and a human management page.
 
 ## Project status, licensing, and privacy
