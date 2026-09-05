@@ -13,6 +13,10 @@ import { ExclusiveOperationGate } from "./exclusive-operation-gate.ts";
 import { WritePreparationGate } from "./write-preparation-gate.ts";
 import { createCustomGptReadRoute, type CustomGptReadApplication, type CustomGptReadLimits } from "./custom-gpt-read-route.ts";
 import {
+  createCustomGptFactActionRoute,
+  type CustomGptFactActionApplication,
+} from "./custom-gpt-fact-action-route.ts";
+import {
   routeRequest,
   type RouteRequestDependencies,
   type ValidatedOptions,
@@ -42,6 +46,7 @@ export interface CoreApiHandlerOptions {
   readonly readOnlyMcp?: ReadOnlyMcpRoute;
   readonly customGptReads?: CustomGptReadApplication;
   readonly customGptReadLimits?: CustomGptReadLimits;
+  readonly customGptFactWrites?: CustomGptFactActionApplication;
 }
 
 /**
@@ -122,6 +127,10 @@ function validateOptions(options: CoreApiHandlerOptions): ValidatedOptions {
     readOnlyMcp: options.readOnlyMcp ?? null,
     customGptReadRoute: options.customGptReads === undefined ? null :
       createCustomGptReadRoute(options.customGptReads, options.customGptReadLimits),
+    customGptFactActionRoute:
+      options.customGptFactWrites === undefined
+        ? null
+        : createCustomGptFactActionRoute(options.customGptFactWrites),
   };
 }
 

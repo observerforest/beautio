@@ -34,6 +34,31 @@ const CONSUMERS = [
     prefix: "/api/image-assets/",
     suffix: "/content",
   },
+  {
+    name: "Custom GPT Product profile",
+    prefix: "/api/actions/products/",
+    suffix: "/profile",
+  },
+  {
+    name: "Custom GPT inventory facts",
+    prefix: "/api/actions/inventory-items/",
+    suffix: "/facts",
+  },
+  {
+    name: "Custom GPT inventory custom notes",
+    prefix: "/api/actions/inventory-items/",
+    suffix: "/custom-notes",
+  },
+  {
+    name: "Custom GPT inventory opening",
+    prefix: "/api/actions/inventory-items/",
+    suffix: "/open",
+  },
+  {
+    name: "Custom GPT inventory end use",
+    prefix: "/api/actions/inventory-items/",
+    suffix: "/end-use",
+  },
 ] as const satisfies readonly RouteConsumer[];
 
 function pathnameFor(consumer: RouteConsumer, rawSegment: string): string {
@@ -71,7 +96,7 @@ function assertRejectedByEveryConsumer(rawSegment: string): void {
   }
 }
 
-test("routeId accepts ordinary identifiers for all five route consumers", () => {
+test("routeId accepts ordinary identifiers for every route consumer", () => {
   const uuid = "7d6c06b1-d390-4a31-ae7d-360e5d931d43";
   assertAcceptedByEveryConsumer(uuid, uuid);
 });

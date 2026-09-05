@@ -1,4 +1,9 @@
-import { CommandExecutionService, CustomGptReadService, InventoryApplicationService } from "@beautio/application";
+import {
+  CommandExecutionService,
+  CustomGptFactWriteService,
+  CustomGptReadService,
+  InventoryApplicationService,
+} from "@beautio/application";
 import { SqliteInventoryRepository } from "@beautio/database";
 import {
   FileImageAssetStorage,
@@ -33,6 +38,7 @@ const port = parsePort(process.env.BEAUTIO_API_PORT);
 const remoteMcpEnvironment = parseRemoteMcpEnvironment(process.env);
 
 const repository = new SqliteInventoryRepository(databasePath);
+const commands = new CommandExecutionService(repository);
 const application = new InventoryApplicationService(repository, {
   imageStorage: new FileImageAssetStorage(imageStorageRoot),
   imageInspector: sharpImageInspector,
@@ -52,7 +58,8 @@ const readOnlyMcp =
       });
 const handler = createCoreApiHandler(application, {
   ...bearerTokens,
-  customGptReads: new CustomGptReadService(application, repository, new CommandExecutionService(repository)),
+  customGptReads: new CustomGptReadService(application, repository, commands),
+  customGptFactWrites: new CustomGptFactWriteService(repository, commands),
   actionFileHosts,
   ...(publicOrigin === undefined ? {} : { publicOrigin }),
   ...(webRoot === undefined ? {} : { webRoot }),

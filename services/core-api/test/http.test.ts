@@ -3846,6 +3846,7 @@ function directRouteOptions(
     staticWebRoot: null,
     readOnlyMcp: null,
     customGptReadRoute: null,
+    customGptFactActionRoute: null,
     ...overrides,
   };
 }

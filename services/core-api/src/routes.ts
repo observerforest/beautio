@@ -28,6 +28,11 @@ import { tryServeStaticWeb, type StaticWebRoot } from "./static-web.ts";
 import type { WritePreparationPermit } from "./write-preparation-gate.ts";
 import type { CustomGptReadRoute } from "./custom-gpt-read-route.ts";
 import { closeIncompleteRequestAfterResponse } from "./incomplete-request.ts";
+import {
+  isCustomGptFactActionPath,
+  type CustomGptFactActionRoute,
+} from "./custom-gpt-fact-action-route.ts";
+import { sendCustomGptFactActionNotFound } from "./custom-gpt-fact-action-errors.ts";
 
 const actionFileRequestSchema = z
   .object({
@@ -65,6 +70,7 @@ export interface ValidatedOptions {
   readonly staticWebRoot: StaticWebRoot | null;
   readonly readOnlyMcp: ReadOnlyMcpRoute | null;
   readonly customGptReadRoute: CustomGptReadRoute | null;
+  readonly customGptFactActionRoute: CustomGptFactActionRoute | null;
 }
 
 export interface RouteRequestDependencies {
@@ -202,6 +208,25 @@ async function routeAuthorizedRequest(
   backupSignal?: AbortSignal,
   requestSignal?: AbortSignal,
 ): Promise<void> {
+
+  if (url.pathname.startsWith("/api/actions/")) {
+    const signal = requireRequestSignal(requestSignal);
+    if (options.customGptFactActionRoute !== null) {
+      const handled = await options.customGptFactActionRoute.handleRequest(
+        request,
+        response,
+        url,
+        dependencies,
+        options.writeBodyTimeoutMs,
+        signal,
+      );
+      if (handled) return;
+    } else if (isCustomGptFactActionPath(url.pathname)) {
+      closeIncompleteRequestAfterResponse(request, response);
+      sendCustomGptFactActionNotFound(response);
+      return;
+    }
+  }
 
   if (options.customGptReadRoute !== null && url.pathname.startsWith("/api/actions/")) {
     const signal = requireRequestSignal(requestSignal);
