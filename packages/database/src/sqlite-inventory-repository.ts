@@ -22,12 +22,13 @@ import type {
   RevisionedInventoryRepository,
   VersionedInventoryItem,
   VersionedProduct,
+  FactCommandMutation,
+  FactCommandPersistenceResult,
+  FactCommandRepository,
 } from "@beautio/application";
 import {
   BeautioError,
   createInventoryItem,
-  endInventoryItem as endInventoryItemTransition,
-  openInventoryItem,
   updateInventoryItemPao,
   type ImageAsset,
   type InventoryItem,
@@ -70,6 +71,8 @@ import {
   findVersionedInventoryItemRecord,
   reviseProductProfileRecord,
 } from "./revisioned-inventory-records.ts";
+import { executeFactCommandRecord } from "./fact-command-records.ts";
+import { endInventoryItemInTransaction, recordProductOpenedInTransaction, updateInventoryItemCustomNotesInTransaction } from "./inventory-lifecycle-records.ts";
 
 export type {
   InventoryImportData,
@@ -78,7 +81,7 @@ export type {
 } from "./import.ts";
 
 export class SqliteInventoryRepository
-  implements BackupInventoryRepository, CommandExecutionRepository, RevisionedInventoryRepository
+  implements BackupInventoryRepository, CommandExecutionRepository, RevisionedInventoryRepository, FactCommandRepository
 {
   readonly #database: DatabaseSync;
 
@@ -114,6 +117,11 @@ export class SqliteInventoryRepository
   /** @inheritdoc */
   async correctInventoryItemFacts(input: CorrectInventoryItemFactsPersistenceInput): Promise<VersionedInventoryItem> {
     return correctInventoryItemFactsRecord(this.#database, input);
+  }
+
+  /** @inheritdoc */
+  async executeFactCommand(command: FactCommandMutation): Promise<FactCommandPersistenceResult> {
+    return executeFactCommandRecord(this.#database, command);
   }
 
   /** @inheritdoc */
@@ -395,49 +403,9 @@ export class SqliteInventoryRepository
   ): Promise<RecordProductOpenedPersistenceResult> {
     this.beginImmediateForRecordProductOpened();
     try {
-      let current = this.readInventoryItem(input.inventoryItemId);
-      if (current === null) {
-        throw new BeautioError(
-          "INVENTORY_ITEM_NOT_FOUND",
-          `inventory item ${input.inventoryItemId} does not exist`,
-        );
-      }
-
-      if (
-        current.lifecycleStatus === "unopened" &&
-        current.paoDurationMonths === null &&
-        current.productId !== null
-      ) {
-        const product = this.readProduct(current.productId);
-        current = updateInventoryItemPao(
-          current,
-          product?.paoDurationMonths ?? null,
-        );
-      }
-
-      const transition = openInventoryItem(
-        current,
-        input.openedOn,
-        input.openedOnAccuracy,
-      );
-      if (transition.outcome === "opened") {
-        this.updateInventoryRow(transition.item);
-      }
-
-      const persisted = this.readInventoryItem(input.inventoryItemId);
-      if (
-        persisted === null ||
-        persisted.lifecycleStatus !== "opened" ||
-        persisted.openedOn !== input.openedOn ||
-        persisted.openedOnAccuracy !== input.openedOnAccuracy
-      ) {
-        throw new BeautioError(
-          "INTERNAL_ERROR",
-          "database write could not be verified",
-        );
-      }
+      const result = recordProductOpenedInTransaction(this.#database, input);
       this.#database.exec("COMMIT");
-      return { outcome: transition.outcome, item: persisted };
+      return result;
     } catch (error) {
       try {
         this.#database.exec("ROLLBACK");
@@ -638,68 +606,14 @@ export class SqliteInventoryRepository
 
   /** @inheritdoc */
   async endInventoryItem(item: InventoryItem): Promise<InventoryItem> {
-    return this.inImmediateTransaction(() => {
-      const current = this.readInventoryItem(item.id);
-      if (current === null) {
-        throw new BeautioError(
-          "INVENTORY_ITEM_NOT_FOUND",
-          `inventory item ${item.id} does not exist`,
-        );
-      }
-      let terminal: InventoryItem;
-      if (item.lifecycleStatus === "finished") {
-        terminal = endInventoryItemTransition(current, {
-          lifecycleStatus: "finished",
-        });
-      } else if (item.lifecycleStatus === "discarded") {
-        terminal = endInventoryItemTransition(current, {
-          lifecycleStatus: "discarded",
-          remainingPercentEstimate: item.remainingPercentEstimate,
-        });
-      } else {
-        throw new BeautioError(
-          "INVALID_INPUT",
-          "end-use persistence requires a terminal inventory item",
-        );
-      }
-
-      this.updateInventoryRow(terminal);
-      const committed = this.readInventoryItem(item.id);
-      if (committed === null) {
-        throw new BeautioError(
-          "INTERNAL_ERROR",
-          "ended inventory item could not be re-read",
-        );
-      }
-      return committed;
-    });
+    return this.inImmediateTransaction(() => endInventoryItemInTransaction(this.#database, item));
   }
 
   /** @inheritdoc */
   async updateInventoryItemCustomNotes(
     input: InventoryItemCustomNotesPersistenceInput,
   ): Promise<InventoryItem> {
-    return this.inImmediateTransaction(() => {
-      const result = this.#database
-        .prepare(
-          "UPDATE inventory_items SET custom_notes = ? WHERE id = ?",
-        )
-        .run(input.customNotes, input.inventoryItemId);
-      if (result.changes !== 1) {
-        throw new BeautioError(
-          "INVENTORY_ITEM_NOT_FOUND",
-          `inventory item ${input.inventoryItemId} does not exist`,
-        );
-      }
-      const committed = this.readInventoryItem(input.inventoryItemId);
-      if (committed === null) {
-        throw new BeautioError(
-          "INTERNAL_ERROR",
-          "updated inventory item could not be re-read",
-        );
-      }
-      return committed;
-    });
+    return this.inImmediateTransaction(() => updateInventoryItemCustomNotesInTransaction(this.#database, input));
   }
 
   /** @inheritdoc */

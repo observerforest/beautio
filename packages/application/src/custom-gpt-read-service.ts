@@ -5,6 +5,7 @@ import {
   customGptSearchInputSchema,
   customGptSearchOutputSchema,
   getCommandStatusInputSchema,
+  parseFactCommandSuccessResult,
   type CustomGptCommandStatusOutput,
   type CustomGptFetchOutput,
   type CustomGptSearchOutput,
@@ -74,7 +75,7 @@ export class CustomGptReadService {
    * Reads a command's stored status without claiming, repairing or replaying it.
    *
    * @param untrustedInput - Strict supported operation and canonical command UUID.
-   * @returns Only status, identity, timestamps and failure code; absence makes no claim about past effects.
+   * @returns Status and allowlisted fact receipts; absence makes no claim about past effects.
    */
   async getCommandStatus(untrustedInput: unknown): Promise<CustomGptCommandStatusOutput> {
     const input = parseInput(getCommandStatusInputSchema, untrustedInput);
@@ -86,6 +87,7 @@ export class CustomGptReadService {
       created_at: command?.createdAt ?? null,
       completed_at: command?.completedAt ?? null,
       failure_code: command?.status === "failed" ? command.failure?.code ?? null : null,
+      result: command?.status === "succeeded" ? parseFactCommandSuccessResult(input.operation_id, command.result) : null,
     });
   }
 }

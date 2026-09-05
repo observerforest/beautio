@@ -11,6 +11,7 @@ import {
   searchInventoryOutputSchema,
 } from "./inventory.ts";
 import { versionedInventoryOutputSchema } from "./revisioned-inventory.ts";
+import { factCommandSuccessResultSchema, parseFactCommandSuccessResult } from "./fact-command-results.ts";
 
 export const inventorySearchScopeSchema = z.enum(["active", "archived", "all"]);
 export const inventorySearchOptionsSchema = z.strictObject({
@@ -49,6 +50,7 @@ export const customGptCommandStatusOutputSchema = z.discriminatedUnion("status",
     created_at: z.null(),
     completed_at: z.null(),
     failure_code: z.null(),
+    result: z.null(),
   }),
   z.strictObject({
     ...commandStatusIdentity,
@@ -56,6 +58,7 @@ export const customGptCommandStatusOutputSchema = z.discriminatedUnion("status",
     created_at: commandTimestampSchema,
     completed_at: z.null(),
     failure_code: z.null(),
+    result: z.null(),
   }),
   z.strictObject({
     ...commandStatusIdentity,
@@ -63,6 +66,7 @@ export const customGptCommandStatusOutputSchema = z.discriminatedUnion("status",
     created_at: commandTimestampSchema,
     completed_at: commandTimestampSchema,
     failure_code: z.null(),
+    result: factCommandSuccessResultSchema.nullable(),
   }),
   z.strictObject({
     ...commandStatusIdentity,
@@ -70,8 +74,10 @@ export const customGptCommandStatusOutputSchema = z.discriminatedUnion("status",
     created_at: commandTimestampSchema,
     completed_at: commandTimestampSchema,
     failure_code: z.string().min(1).max(64),
+    result: z.null(),
   }),
-]);
+]).refine((output) => output.result === null || parseFactCommandSuccessResult(output.operation_id, output.result) !== null,
+  "status result must match the supported fact operation");
 
 export type InventorySearchScope = z.infer<typeof inventorySearchScopeSchema>;
 export type InventorySearchOptions = z.infer<typeof inventorySearchOptionsSchema>;

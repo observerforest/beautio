@@ -45,7 +45,7 @@ test("command status validates canonical identity and enforces safe status-speci
   assert.equal(getCommandStatusInputSchema.safeParse({ ...commandIdentity, principal: "admin" }).success, false);
   assert.equal(getCommandStatusInputSchema.safeParse({ ...commandIdentity, command_id: commandIdentity.command_id.toUpperCase() }).success, false);
   assert.equal(getCommandStatusInputSchema.safeParse({ ...commandIdentity, operation_id: "restore_backup" }).success, false);
-  const missing = { ...commandIdentity, status: "not_found", created_at: null, completed_at: null, failure_code: null };
+  const missing = { ...commandIdentity, status: "not_found", created_at: null, completed_at: null, failure_code: null, result: null };
   assert.equal(customGptCommandStatusOutputSchema.safeParse(missing).success, true);
   const created = "2026-09-05T00:00:00.000Z";
   const completed = "2026-09-05T00:01:00.000Z";

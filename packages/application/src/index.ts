@@ -3,6 +3,8 @@ export * from "./command-execution-port.ts";
 export * from "./command-execution-service.ts";
 export * from "./command-execution-types.ts";
 export * from "./custom-gpt-read-service.ts";
+export * from "./custom-gpt-fact-write-service.ts";
+export * from "./fact-command-port.ts";
 export * from "./inventory-service.ts";
 export * from "./inventory-service-types.ts";
 export type { PreparedProductImageUpload } from "./prepared-product-image-upload.ts";

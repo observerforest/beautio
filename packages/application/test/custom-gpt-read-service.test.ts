@@ -173,7 +173,8 @@ test("command status fixes the principal and projects four states without comman
     assert.equal(output.created_at, record?.createdAt ?? null);
     assert.equal(output.completed_at, record?.completedAt ?? null);
     assert.equal(output.failure_code, record?.status === "failed" ? "REVISION_CONFLICT" : null);
-    assert.deepEqual(Object.keys(output).sort(), ["command_id", "completed_at", "created_at", "failure_code", "operation_id", "status"]);
+    assert.deepEqual(Object.keys(output).sort(), ["command_id", "completed_at", "created_at", "failure_code", "operation_id", "result", "status"]);
+    assert.equal(output.result, null);
     assert.equal(customGptCommandStatusOutputSchema.safeParse(output).success, true);
     assert.equal(JSON.stringify(output).includes("private"), false);
     assert.equal(JSON.stringify(output).includes(base.payloadSha256), false);
