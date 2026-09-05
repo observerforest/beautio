@@ -6,3 +6,7 @@ export * from "./inventory-service.ts";
 export * from "./inventory-service-types.ts";
 export type { PreparedProductImageUpload } from "./prepared-product-image-upload.ts";
 export * from "./ports.ts";
+export * from "./revisioned-inventory-types.ts";
+export * from "./revisioned-inventory-port.ts";
+export * from "./revisioned-inventory-changes.ts";
+export * from "./revisioned-inventory-service.ts";

@@ -47,7 +47,12 @@ export function toInventoryReadModelOutput(
   };
 }
 
-function toReadInventoryProductOutput(
+/**
+ * Projects shared Product facts without revealing managed image identity.
+ * @param product - Domain-validated Product from the same inventory snapshot.
+ * @returns Public read fields with only a boolean image presence indicator.
+ */
+export function toReadInventoryProductOutput(
   product: Product,
 ): NonNullable<InventoryReadModelOutput["product"]> {
   return {

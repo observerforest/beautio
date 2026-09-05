@@ -7,6 +7,7 @@ export {
   type IsoInstant,
 } from "./dates.ts";
 export * from "./errors.ts";
+export * from "./revision.ts";
 export * from "./inventory.ts";
 export {
   customNotesMaximumLength,
