@@ -17,6 +17,11 @@ import type {
   ProductImagePersistenceInput,
   RecordProductOpenedPersistenceInput,
   RecordProductOpenedPersistenceResult,
+  CorrectInventoryItemFactsPersistenceInput,
+  ReviseProductProfilePersistenceInput,
+  RevisionedInventoryRepository,
+  VersionedInventoryItem,
+  VersionedProduct,
 } from "@beautio/application";
 import {
   BeautioError,
@@ -59,6 +64,12 @@ import {
   updateInventoryRow as updateInventoryRecord,
 } from "./records.ts";
 import { applySchema } from "./schema.ts";
+import { cascadeProductPao, inheritProductPao } from "./product-pao-records.ts";
+import {
+  correctInventoryItemFactsRecord,
+  findVersionedInventoryItemRecord,
+  reviseProductProfileRecord,
+} from "./revisioned-inventory-records.ts";
 
 export type {
   InventoryImportData,
@@ -67,7 +78,7 @@ export type {
 } from "./import.ts";
 
 export class SqliteInventoryRepository
-  implements BackupInventoryRepository, CommandExecutionRepository
+  implements BackupInventoryRepository, CommandExecutionRepository, RevisionedInventoryRepository
 {
   readonly #database: DatabaseSync;
 
@@ -82,7 +93,27 @@ export class SqliteInventoryRepository
     }
 
     this.#database = new DatabaseSync(databasePath);
-    applySchema(this.#database);
+    try {
+      applySchema(this.#database);
+    } catch (error) {
+      this.#database.close();
+      throw error;
+    }
+  }
+
+  /** @inheritdoc */
+  async findVersionedInventoryItem(inventoryItemId: string): Promise<VersionedInventoryItem | null> {
+    return findVersionedInventoryItemRecord(this.#database, inventoryItemId);
+  }
+
+  /** @inheritdoc */
+  async reviseProductProfile(input: ReviseProductProfilePersistenceInput): Promise<VersionedProduct> {
+    return reviseProductProfileRecord(this.#database, input);
+  }
+
+  /** @inheritdoc */
+  async correctInventoryItemFacts(input: CorrectInventoryItemFactsPersistenceInput): Promise<VersionedInventoryItem> {
+    return correctInventoryItemFactsRecord(this.#database, input);
   }
 
   /** @inheritdoc */
@@ -507,21 +538,7 @@ export class SqliteInventoryRepository
         );
       }
       if (input.paoDurationMonths !== undefined) {
-        const bottles = this.#database
-          .prepare("SELECT id FROM inventory_items WHERE product_id = ?")
-          .all(input.productId) as unknown as readonly { readonly id: string }[];
-        for (const bottle of bottles) {
-          const item = this.readInventoryItem(bottle.id);
-          if (item === null) {
-            throw new BeautioError(
-              "INTERNAL_ERROR",
-              "associated inventory item could not be read",
-            );
-          }
-          this.updateInventoryRow(
-            updateInventoryItemPao(item, input.paoDurationMonths),
-          );
-        }
+        cascadeProductPao(this.#database, input.productId, input.paoDurationMonths);
       }
     });
 
@@ -872,19 +889,7 @@ export class SqliteInventoryRepository
   }
 
   private inheritProductPao(item: InventoryItem, product: Product): InventoryItem {
-    if (product.paoDurationMonths === null) {
-      return item;
-    }
-    if (
-      item.paoDurationMonths !== null &&
-      item.paoDurationMonths !== product.paoDurationMonths
-    ) {
-      throw new BeautioError(
-        "INVALID_INPUT",
-        "bottle pao_duration_months conflicts with the shared Product PAO",
-      );
-    }
-    return updateInventoryItemPao(item, product.paoDurationMonths);
+    return inheritProductPao(item, product);
   }
 
   private readImageAsset(imageAssetId: string): ImageAsset | null {

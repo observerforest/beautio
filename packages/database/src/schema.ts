@@ -1,6 +1,7 @@
 import { productAliasMaximumLength } from "@beautio/domain";
 import { DatabaseSync } from "node:sqlite";
 import { createCommandExecutionTable } from "./command-execution-schema.ts";
+import { applyEntityRevisionSchema, validateExistingEntityRevisionSchema } from "./entity-revision-schema.ts";
 
 interface TableInfoRow {
   readonly name: string;
@@ -14,6 +15,7 @@ interface TableInfoRow {
  * @returns Nothing after migration; shared PAO backfill runs only when adding its column.
  */
 export function applySchema(database: DatabaseSync): void {
+  validateExistingEntityRevisionSchema(database);
   database.exec("PRAGMA foreign_keys = OFF");
   createCurrentTables(database);
   createCommandExecutionTable(database);
@@ -38,6 +40,7 @@ export function applySchema(database: DatabaseSync): void {
     WHERE product_id IS NOT NULL;
   `);
   database.exec("PRAGMA foreign_keys = ON");
+  applyEntityRevisionSchema(database);
 }
 
 function createCurrentTables(database: DatabaseSync): void {
