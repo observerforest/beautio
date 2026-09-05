@@ -32,10 +32,11 @@ export type ConsequentialCommandOperationId = z.infer<
 const CANONICAL_UUID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 
-export const commandIdSchema = z
+export const canonicalUuidSchema = z
   .string()
-  .regex(CANONICAL_UUID_PATTERN, "command_id must be a canonical lowercase UUID")
-  .brand<"CommandId">();
+  .regex(CANONICAL_UUID_PATTERN, "command_id must be a canonical lowercase UUID");
+
+export const commandIdSchema = canonicalUuidSchema.brand<"CommandId">();
 
 export type CommandId = z.infer<typeof commandIdSchema>;
 

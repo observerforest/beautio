@@ -25,6 +25,9 @@ import type {
   FactCommandMutation,
   FactCommandPersistenceResult,
   FactCommandRepository,
+  CreateCommandRepository,
+  CreateCommandPersistenceInput,
+  CreateCommandPersistenceResult,
 } from "@beautio/application";
 import {
   BeautioError,
@@ -72,6 +75,9 @@ import {
   reviseProductProfileRecord,
 } from "./revisioned-inventory-records.ts";
 import { executeFactCommandRecord } from "./fact-command-records.ts";
+import { executeCreateCommandRecord } from "./create-command-records.ts";
+import { createInventoryBatchInTransaction } from "./inventory-batch-records.ts";
+import { claimImageForProduct } from "./image-association-records.ts";
 import { endInventoryItemInTransaction, recordProductOpenedInTransaction, updateInventoryItemCustomNotesInTransaction } from "./inventory-lifecycle-records.ts";
 
 export type {
@@ -81,7 +87,7 @@ export type {
 } from "./import.ts";
 
 export class SqliteInventoryRepository
-  implements BackupInventoryRepository, CommandExecutionRepository, RevisionedInventoryRepository, FactCommandRepository
+  implements BackupInventoryRepository, CommandExecutionRepository, RevisionedInventoryRepository, FactCommandRepository, CreateCommandRepository
 {
   readonly #database: DatabaseSync;
 
@@ -122,6 +128,11 @@ export class SqliteInventoryRepository
   /** @inheritdoc */
   async executeFactCommand(command: FactCommandMutation): Promise<FactCommandPersistenceResult> {
     return executeFactCommandRecord(this.#database, command);
+  }
+
+  /** @inheritdoc */
+  async executeCreateCommand(input: CreateCommandPersistenceInput): Promise<CreateCommandPersistenceResult> {
+    return executeCreateCommandRecord(this.#database, input);
   }
 
   /** @inheritdoc */
@@ -421,34 +432,7 @@ export class SqliteInventoryRepository
 
   /** @inheritdoc */
   async createBatch(input: InventoryBatchPersistenceInput): Promise<void> {
-    this.inImmediateTransaction(() => {
-      for (const product of input.products) {
-        if (product.imageAssetId !== null) {
-          this.assertImageCanBeLinked(product.imageAssetId, input.now);
-        }
-        this.insertProduct(product);
-        if (product.imageAssetId !== null) {
-          this.claimImageForProduct(product.imageAssetId, product.id, input.now);
-        }
-      }
-
-      for (const item of input.inventoryItems) {
-        const product =
-          item.productId === null ? null : this.readProduct(item.productId);
-        if (product === null) {
-          throw new BeautioError(
-            "PRODUCT_NOT_FOUND",
-            `Product ${item.productId ?? ""} does not exist`,
-          );
-        }
-        this.insertInventoryItem(
-          createInventoryItem({
-            ...this.inheritProductPao(item, product),
-            createdAt: input.now,
-          }),
-        );
-      }
-    });
+    this.inImmediateTransaction(() => createInventoryBatchInTransaction(this.#database, input));
   }
 
   /** @inheritdoc */
@@ -841,28 +825,6 @@ export class SqliteInventoryRepository
     updateInventoryRecord(this.#database, item);
   }
 
-  private assertImageCanBeLinked(imageAssetId: string, now: string): void {
-    const asset = this.readImageAsset(imageAssetId);
-    if (asset === null) {
-      throw new BeautioError(
-        "IMAGE_ASSET_NOT_FOUND",
-        `image asset ${imageAssetId} does not exist`,
-      );
-    }
-    if (asset.status === "temporary" && asset.expiresAt <= now) {
-      throw new BeautioError(
-        "IMAGE_ASSET_EXPIRED",
-        `image asset ${imageAssetId} is expired`,
-      );
-    }
-    if (asset.status !== "temporary" || asset.productId !== null) {
-      throw new BeautioError(
-        "BATCH_CONFLICT",
-        `image asset ${imageAssetId} is not available`,
-      );
-    }
-  }
-
   private replaceProductImageAssociation(
     existing: Product,
     imageAssetId: string | null,
@@ -913,22 +875,7 @@ export class SqliteInventoryRepository
     productId: string,
     now: string,
   ): void {
-    const result = this.#database
-      .prepare(
-        `UPDATE image_assets SET status = 'linked', product_id = ?
-        WHERE id = ?
-          AND status = 'temporary'
-          AND product_id IS NULL
-          AND expires_at > ?`,
-      )
-      .run(productId, imageAssetId, now);
-    if (result.changes !== 1) {
-      this.assertImageCanBeLinked(imageAssetId, now);
-      throw new BeautioError(
-        "BATCH_CONFLICT",
-        `image asset ${imageAssetId} could not be associated`,
-      );
-    }
+    claimImageForProduct(this.#database, imageAssetId, productId, now);
   }
 
   private inImmediateTransaction<T>(action: () => T): T {

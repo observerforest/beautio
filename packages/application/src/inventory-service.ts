@@ -50,7 +50,6 @@ import type {
 } from "./ports.ts";
 import {
   assertUploadNotAborted,
-  ensureUniqueRefs,
   parseInput,
   parseRequiredId,
   validateEditedOpeningAccuracy,
@@ -87,6 +86,7 @@ import {
   requireProduct,
 } from "./repository-queries.ts";
 import { searchInventoryRecords } from "./inventory-search.ts";
+import { prepareInventoryBatchItems, prepareInventoryBatchProducts, validateInventoryBatchReferences } from "./inventory-batch-preparation.ts";
 
 const MAX_IMAGE_BYTES = 20 * 1024 * 1024;
 const MAX_IMAGE_PIXELS = 40_000_000;
@@ -267,68 +267,8 @@ export class InventoryApplicationService {
     untrustedInput: unknown,
   ): Promise<CreateInventoryBatchOutput> {
     const input = parseInput(createInventoryBatchInputSchema, untrustedInput);
-    ensureUniqueRefs(
-      input.products.map((product) => product.batch_ref),
-      "product",
-    );
-    ensureUniqueRefs(
-      input.inventory_items.map((item) => item.batch_ref),
-      "inventory item",
-    );
-
-    const referencedNewProducts = new Set(
-      input.inventory_items.flatMap((item) =>
-        item.product_ref.kind === "new" ? [item.product_ref.batch_ref] : [],
-      ),
-    );
-    const productInputsByRef = new Map(
-      input.products.map((product) => [product.batch_ref, product]),
-    );
-    for (const product of input.products) {
-      if (!referencedNewProducts.has(product.batch_ref)) {
-        throw new BeautioError(
-          "INVALID_INPUT",
-          `new Product ${product.batch_ref} is not referenced by inventory`,
-        );
-      }
-    }
-    for (const batchRef of referencedNewProducts) {
-      if (!productInputsByRef.has(batchRef)) {
-        throw new BeautioError(
-          "INVALID_INPUT",
-          `inventory references missing Product ${batchRef}`,
-        );
-      }
-    }
-
-    const productIdsByBatchRef = new Map<string, string>();
-    const products = input.products.map((productInput) => {
-      const productId = this.generateId("product");
-      productIdsByBatchRef.set(productInput.batch_ref, productId);
-      return createProduct({
-        id: productId,
-        name: productInput.name,
-        alias: productInput.alias ?? null,
-        brand: productInput.brand ?? null,
-        category: productInput.category ?? null,
-        sizeLabel: productInput.size_label ?? null,
-        paoDurationMonths:
-          productInput.pao_duration_months === undefined
-            ? inferLegacyProductPao(
-                input.inventory_items.flatMap((item) =>
-                  item.product_ref.kind === "new" &&
-                  item.product_ref.batch_ref === productInput.batch_ref
-                    ? [item.pao_duration_months ?? null]
-                    : [],
-                ),
-              )
-            : productInput.pao_duration_months,
-        imageAssetId: productInput.image_asset_id ?? null,
-        imageRef: null,
-        ingredientListText: productInput.ingredient_list_text ?? null,
-        sharedNotes: productInput.shared_notes ?? null,
-      });
-    });
+    validateInventoryBatchReferences(input);
+    const products = prepareInventoryBatchProducts(input, () => this.generateId("product"));
 
     const existingProductIds = [
       ...new Set(
@@ -349,33 +289,7 @@ export class InventoryApplicationService {
     }
 
     const now = this.currentTimestamp();
-    const inventoryItems = input.inventory_items.map((itemInput) => {
-      const productId =
-        itemInput.product_ref.kind === "existing"
-          ? itemInput.product_ref.product_id
-          : productIdsByBatchRef.get(itemInput.product_ref.batch_ref);
-      if (productId === undefined) {
-        throw new BeautioError(
-          "INVALID_INPUT",
-          "inventory references a missing batch Product",
-        );
-      }
-      return createInventoryItemFromFacts(
-        {
-          id: this.generateId("inventory_item"),
-          productId,
-          createdAt: now,
-        },
-        {
-          lifecycleStatus: itemInput.lifecycle_status,
-          openedOn: itemInput.opened_on ?? null,
-          openedOnAccuracy: itemInput.opened_on_accuracy ?? null,
-          expiresOn: itemInput.expires_on ?? null,
-          paoDurationMonths: itemInput.pao_duration_months ?? null,
-          customNotes: itemInput.custom_notes ?? null,
-        },
-      );
-    });
+    const inventoryItems = prepareInventoryBatchItems(input, products, () => this.generateId("inventory_item"), now);
 
     await this.#repository.createBatch({ products, inventoryItems, now });
 
@@ -1386,13 +1300,6 @@ function toBackupProduct(product: Product) {
     ingredient_list_text: product.ingredientListText,
     shared_notes: product.sharedNotes,
   };
-}
-
-function inferLegacyProductPao(
-  durations: readonly (number | null)[],
-): number | null {
-  const known = new Set(durations.filter((duration) => duration !== null));
-  return known.size === 1 ? (known.values().next().value ?? null) : null;
 }
 
 function toBackupInventoryItem(item: InventoryItem) {

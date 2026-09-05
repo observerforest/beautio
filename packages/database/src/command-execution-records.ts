@@ -75,8 +75,20 @@ export function completeCommandExecutionSuccessRecord(
   database: DatabaseSync,
   input: CompleteCommandExecutionSuccessPersistenceInput,
 ): CompleteCommandExecutionPersistenceResult {
-  return settleCommandExecutionRecord(database, input.key, () =>
-    database
+  return inCommandExecutionTransaction(database, () => completeCommandExecutionSuccessInTransaction(database, input));
+}
+
+/**
+ * Performs the existing success CAS without opening or committing a transaction.
+ * @param database - Connection inside a transaction owned by the caller.
+ * @param input - Original claim, bounded result and completion candidate instant.
+ * @returns CAS ownership and the persisted row for the caller's pre-commit verification.
+ */
+export function completeCommandExecutionSuccessInTransaction(
+  database: DatabaseSync,
+  input: CompleteCommandExecutionSuccessPersistenceInput,
+): CompleteCommandExecutionPersistenceResult {
+  const changes = database
       .prepare(
         `UPDATE command_executions
         SET status = 'succeeded',
@@ -95,8 +107,8 @@ export function completeCommandExecutionSuccessRecord(
         input.key.operationId,
         input.key.commandId,
         input.payloadSha256,
-      ).changes,
-  );
+      ).changes;
+  return { updated: changes === 1 || changes === 1n, record: findCommandExecutionRecord(database, input.key) };
 }
 
 export function completeCommandExecutionKnownFailureRecord(
