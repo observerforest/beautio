@@ -33,6 +33,11 @@ import {
   type CustomGptFactActionRoute,
 } from "./custom-gpt-fact-action-route.ts";
 import { sendCustomGptFactActionNotFound } from "./custom-gpt-fact-action-errors.ts";
+import {
+  isCustomGptCreateActionPath,
+  type CustomGptCreateActionRoute,
+} from "./custom-gpt-create-action-route.ts";
+import { sendCustomGptCreateActionNotFound } from "./custom-gpt-create-action-errors.ts";
 
 const actionFileRequestSchema = z
   .object({
@@ -71,6 +76,7 @@ export interface ValidatedOptions {
   readonly readOnlyMcp: ReadOnlyMcpRoute | null;
   readonly customGptReadRoute: CustomGptReadRoute | null;
   readonly customGptFactActionRoute: CustomGptFactActionRoute | null;
+  readonly customGptCreateActionRoute: CustomGptCreateActionRoute | null;
 }
 
 export interface RouteRequestDependencies {
@@ -211,6 +217,21 @@ async function routeAuthorizedRequest(
 
   if (url.pathname.startsWith("/api/actions/")) {
     const signal = requireRequestSignal(requestSignal);
+    if (options.customGptCreateActionRoute !== null) {
+      const handled = await options.customGptCreateActionRoute.handleRequest(
+        request,
+        response,
+        url,
+        dependencies,
+        options.writeBodyTimeoutMs,
+        signal,
+      );
+      if (handled) return;
+    } else if (isCustomGptCreateActionPath(url.pathname)) {
+      closeIncompleteRequestAfterResponse(request, response);
+      sendCustomGptCreateActionNotFound(response);
+      return;
+    }
     if (options.customGptFactActionRoute !== null) {
       const handled = await options.customGptFactActionRoute.handleRequest(
         request,
@@ -277,8 +298,7 @@ async function routeAuthorizedRequest(
 
   if (
     request.method === "POST" &&
-    (url.pathname === "/api/actions/create-inventory-batch" ||
-      url.pathname === "/api/actions/codex/create-inventory-batch" ||
+    (url.pathname === "/api/actions/codex/create-inventory-batch" ||
       url.pathname === "/api/admin/create-inventory-batch")
   ) {
     const signal = requireRequestSignal(requestSignal);

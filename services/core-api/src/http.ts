@@ -1,5 +1,6 @@
 import {
   CommandExecutionService,
+  CustomGptCreateCommandService,
   CustomGptFactWriteService,
   CustomGptReadService,
   InventoryApplicationService,
@@ -60,6 +61,7 @@ const handler = createCoreApiHandler(application, {
   ...bearerTokens,
   customGptReads: new CustomGptReadService(application, repository, commands),
   customGptFactWrites: new CustomGptFactWriteService(repository, commands),
+  customGptCreates: new CustomGptCreateCommandService(repository, commands),
   actionFileHosts,
   ...(publicOrigin === undefined ? {} : { publicOrigin }),
   ...(webRoot === undefined ? {} : { webRoot }),

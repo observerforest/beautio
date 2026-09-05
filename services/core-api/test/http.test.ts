@@ -12,6 +12,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { type TestContext } from "node:test";
 import {
+  CommandExecutionService,
+  CustomGptCreateCommandService,
   InventoryApplicationService,
   type ImageAssetStorage,
   type ImageInspector,
@@ -50,6 +52,7 @@ const ACTION_TOKEN = "test-action-token-not-a-secret";
 const CUSTOM_GPT_TOKEN = "test-custom-gpt-token-not-a-secret";
 const ADMIN_TOKEN = "test-admin-token-not-a-secret";
 const STATIC_SCRIPT = "console.log('beautio production web');\n";
+let nextCustomGptCommand = 1_000;
 
 test("HTTP adapter requires three pairwise-distinct bearer tokens", () => {
   const repository = new SqliteInventoryRepository(":memory:");
@@ -867,7 +870,7 @@ test("restore excludes concurrent Admin, Custom GPT, and Codex writes until repl
   });
   const customGptWrite = postJson(
     `${fixture.origin}/api/actions/create-inventory-batch`,
-    {
+    customGptBatch({
       as_of: "2026-08-19",
       products: [{ batch_ref: "queued_product", name: "Queued GPT product" }],
       inventory_items: [
@@ -877,7 +880,7 @@ test("restore excludes concurrent Admin, Custom GPT, and Codex writes until repl
           lifecycle_status: "unopened",
         },
       ],
-    },
+    }),
     CUSTOM_GPT_TOKEN,
   ).finally(() => {
     customGptWriteSettled = true;
@@ -965,7 +968,7 @@ test("Action upload and batch creation share persisted state with Admin read and
   );
 
   const batchResponse = await postJson(
-    `${fixture.origin}/api/actions/create-inventory-batch`,
+    `${fixture.origin}/api/actions/codex/create-inventory-batch`,
     {
       as_of: "2026-08-19",
       products: [
@@ -1004,7 +1007,7 @@ test("Action upload and batch creation share persisted state with Admin read and
         },
       ],
     },
-    CUSTOM_GPT_TOKEN,
+    ACTION_TOKEN,
   );
   assert.equal(batchResponse.status, 200);
   const batch = (await batchResponse.json()) as {
@@ -1915,7 +1918,12 @@ test("Action deadline waits for signal-ignoring inspection to settle without blo
 
   const ordinaryWrite = postJson(
     `${fixture.origin}/api/actions/create-inventory-batch`,
-    inventoryBatchFor("during_semantic_inspection", "During semantic inspection"),
+    customGptBatch(
+      inventoryBatchFor(
+        "during_semantic_inspection",
+        "During semantic inspection",
+      ),
+    ),
     CUSTOM_GPT_TOKEN,
   );
   assert.equal(
@@ -2181,7 +2189,7 @@ test("Action timeout keeps the write gate until delayed storage settles and comp
   let queuedWriteSettled = false;
   const queuedWrite = postJson(
     `${fixture.origin}/api/actions/create-inventory-batch`,
-    {
+    customGptBatch({
       as_of: "2026-08-19",
       products: [{ batch_ref: "after_upload", name: "After upload timeout" }],
       inventory_items: [
@@ -2191,7 +2199,7 @@ test("Action timeout keeps the write gate until delayed storage settles and comp
           lifecycle_status: "unopened",
         },
       ],
-    },
+    }),
     CUSTOM_GPT_TOKEN,
   ).finally(() => {
     queuedWriteSettled = true;
@@ -2199,7 +2207,7 @@ test("Action timeout keeps the write gate until delayed storage settles and comp
 
   await postJsonAndAbort(
     `${fixture.origin}/api/actions/create-inventory-batch`,
-    {
+    customGptBatch({
       as_of: "2026-08-19",
       products: [
         { batch_ref: "aborted_after_upload", name: "Aborted queued write" },
@@ -2211,7 +2219,7 @@ test("Action timeout keeps the write gate until delayed storage settles and comp
           lifecycle_status: "unopened",
         },
       ],
-    },
+    }),
     CUSTOM_GPT_TOKEN,
   );
 
@@ -2322,12 +2330,12 @@ test("upload compensation retains the exclusive gate until cleanup settles", asy
 
         let queuedWriteSettled = false;
         const queuedWrite = postJson(
-          `${origin}/api/actions/create-inventory-batch`,
+          `${origin}/api/admin/create-inventory-batch`,
           inventoryBatchFor(
             "after_compensation",
             "After upload compensation",
           ),
-          CUSTOM_GPT_TOKEN,
+          ADMIN_TOKEN,
         ).finally(() => {
           queuedWriteSettled = true;
         });
@@ -2395,18 +2403,18 @@ test("a timed-out ordinary JSON body never takes the exclusive gate and closes i
   };
 
   const slow = startPartialHttpRequest(
-    `${fixture.origin}/api/actions/create-inventory-batch`,
+    `${fixture.origin}/api/admin/create-inventory-batch`,
     "POST",
-    CUSTOM_GPT_TOKEN,
+    ADMIN_TOKEN,
     "application/json",
     '{"as_of":"2026-08-19","products":[',
   );
   await slow.started;
 
   const valid = postJson(
-    `${fixture.origin}/api/actions/create-inventory-batch`,
+    `${fixture.origin}/api/admin/create-inventory-batch`,
     inventoryBatchFor("ordinary_during_slow", "Ordinary during slow body"),
-    CUSTOM_GPT_TOKEN,
+    ADMIN_TOKEN,
   );
   assert.equal(
     await Promise.race([
@@ -2427,9 +2435,9 @@ test("a timed-out ordinary JSON body never takes the exclusive gate and closes i
   assert.equal(createCalls, 1);
 
   const afterTimeout = await postJson(
-    `${fixture.origin}/api/actions/create-inventory-batch`,
+    `${fixture.origin}/api/admin/create-inventory-batch`,
     inventoryBatchFor("ordinary_after_timeout", "Ordinary after timeout"),
-    CUSTOM_GPT_TOKEN,
+    ADMIN_TOKEN,
   );
   assert.equal(afterTimeout.status, 200);
   assert.equal(createCalls, 2);
@@ -2464,7 +2472,9 @@ test("slow Admin and Codex multipart preparation cannot block ordinary writes", 
   await slowAdmin.started;
   const duringAdmin = postJson(
     `${fixture.origin}/api/actions/create-inventory-batch`,
-    inventoryBatchFor("during_admin_multipart", "During Admin multipart"),
+    customGptBatch(
+      inventoryBatchFor("during_admin_multipart", "During Admin multipart"),
+    ),
     CUSTOM_GPT_TOKEN,
   );
   assert.equal(
@@ -2494,7 +2504,9 @@ test("slow Admin and Codex multipart preparation cannot block ordinary writes", 
   await slowCodex.started;
   const duringCodex = postJson(
     `${fixture.origin}/api/actions/create-inventory-batch`,
-    inventoryBatchFor("during_codex_multipart", "During Codex multipart"),
+    customGptBatch(
+      inventoryBatchFor("during_codex_multipart", "During Codex multipart"),
+    ),
     CUSTOM_GPT_TOKEN,
   );
   assert.equal(
@@ -2561,7 +2573,7 @@ test("a blocked Custom GPT downloader does not take the exclusive write gate", a
 
   const ordinaryWrite = postJson(
     `${fixture.origin}/api/actions/create-inventory-batch`,
-    inventoryBatchFor("during_downloader", "During downloader"),
+    customGptBatch(inventoryBatchFor("during_downloader", "During downloader")),
     CUSTOM_GPT_TOKEN,
   );
   assert.equal(
@@ -2788,9 +2800,9 @@ test("ordinary body deadline ends before an exclusive mutation begins", async (c
 
   let responseSettled = false;
   const response = postJson(
-    `${fixture.origin}/api/actions/create-inventory-batch`,
+    `${fixture.origin}/api/admin/create-inventory-batch`,
     inventoryBatchFor("commit_after_body", "Commit after body deadline"),
-    CUSTOM_GPT_TOKEN,
+    ADMIN_TOKEN,
   ).finally(() => {
     responseSettled = true;
   });
@@ -2831,9 +2843,9 @@ test("a full write-preparation queue rejects an incomplete body and closes its s
     dependencies,
     async (origin) => {
       const rejected = startPartialHttpRequest(
-        `${origin}/api/actions/create-inventory-batch`,
+        `${origin}/api/admin/create-inventory-batch`,
         "POST",
-        CUSTOM_GPT_TOKEN,
+        ADMIN_TOKEN,
         "application/json",
         '{"as_of":"2026-08-19","products":[',
       );
@@ -2881,9 +2893,9 @@ test("a complete unread body is drained before its preparation failure keeps the
     dependencies,
     async (origin) => {
       const response = await postJson(
-        `${origin}/api/actions/create-inventory-batch`,
+        `${origin}/api/admin/create-inventory-batch`,
         {},
-        CUSTOM_GPT_TOKEN,
+        ADMIN_TOKEN,
       );
       assert.equal(response.status, 409);
       assert.notEqual(response.headers.get("connection"), "close");
@@ -3098,7 +3110,7 @@ test("backup restore body timeout aborts the request and releases the exclusive 
 
   const nextWrite = await postJson(
     `${fixture.origin}/api/actions/create-inventory-batch`,
-    {
+    customGptBatch({
       as_of: "2026-08-19",
       products: [{ batch_ref: "after_timeout", name: "After timeout" }],
       inventory_items: [
@@ -3108,7 +3120,7 @@ test("backup restore body timeout aborts the request and releases the exclusive 
           lifecycle_status: "unopened",
         },
       ],
-    },
+    }),
     CUSTOM_GPT_TOKEN,
   );
   assert.equal(nextWrite.status, 200);
@@ -3125,7 +3137,7 @@ test("a slow backup upload does not hold the exclusive write gate", async (conte
   const nextWrite = await Promise.race([
     postJson(
       `${fixture.origin}/api/actions/create-inventory-batch`,
-      {
+      customGptBatch({
         as_of: "2026-08-19",
         products: [{ batch_ref: "during_upload", name: "During backup upload" }],
         inventory_items: [
@@ -3135,7 +3147,7 @@ test("a slow backup upload does not hold the exclusive write gate", async (conte
             lifecycle_status: "unopened",
           },
         ],
-      },
+      }),
       CUSTOM_GPT_TOKEN,
     ),
     new Promise<never>((_resolve, reject) =>
@@ -3232,7 +3244,7 @@ test("timed-out backup inspection releases restore while retaining the shared in
 
   const nextWrite = await postJson(
     `${fixture.origin}/api/actions/create-inventory-batch`,
-    {
+    customGptBatch({
       as_of: "2026-08-19",
       products: [{ batch_ref: "after_restore_timeout", name: "After restore timeout" }],
       inventory_items: [
@@ -3242,7 +3254,7 @@ test("timed-out backup inspection releases restore while retaining the shared in
           lifecycle_status: "unopened",
         },
       ],
-    },
+    }),
     CUSTOM_GPT_TOKEN,
   );
   assert.equal(nextWrite.status, 200);
@@ -3393,15 +3405,15 @@ test("shared Product PAO is inherited and updates per-bottle deadlines through A
     batch_ref: "added_bottle", product_ref: { kind: "existing", product_id: product.product_id },
     lifecycle_status: "unopened",
   };
-  const inherited = await postJson(`${fixture.origin}/api/actions/create-inventory-batch`, {
+  const inherited = await postJson(`${fixture.origin}/api/actions/codex/create-inventory-batch`, {
     as_of: "2026-03-01", products: [], inventory_items: [existingBottle],
-  }, CUSTOM_GPT_TOKEN);
+  }, ACTION_TOKEN);
   assert.equal(inherited.status, 200);
   assert.equal(createInventoryBatchOutputSchema.parse(await inherited.json()).inventory_items[0]?.pao_duration_months, 12);
 
-  const conflicting = await postJson(`${fixture.origin}/api/actions/create-inventory-batch`, {
+  const conflicting = await postJson(`${fixture.origin}/api/actions/codex/create-inventory-batch`, {
     as_of: "2026-03-01", products: [], inventory_items: [{ ...existingBottle, pao_duration_months: 6 }],
-  }, CUSTOM_GPT_TOKEN);
+  }, ACTION_TOKEN);
   assert.equal(conflicting.status, 400);
   assert.match(JSON.stringify(await conflicting.json()), /PAO|pao/u);
   assert.equal((await fixture.application.listInventory({ as_of: "2026-03-01" })).items.length, 3);
@@ -3426,9 +3438,9 @@ test("HTTP maps strict batch errors and serves versioned Actions OpenAPI", async
   assert.equal(jsonp.status, 400);
 
   const invalid = await postJson(
-    `${fixture.origin}/api/actions/create-inventory-batch`,
+    `${fixture.origin}/api/admin/create-inventory-batch`,
     { ...emptyBatch(), unexpected: true },
-    CUSTOM_GPT_TOKEN,
+    ADMIN_TOKEN,
   );
   assert.equal(invalid.status, 400);
   assert.deepEqual(await invalid.json(), {
@@ -3439,7 +3451,7 @@ test("HTTP maps strict batch errors and serves versioned Actions OpenAPI", async
   });
 
   const oversizedAlias = await postJson(
-    `${fixture.origin}/api/actions/create-inventory-batch`,
+    `${fixture.origin}/api/admin/create-inventory-batch`,
     {
       as_of: "2026-08-19",
       products: [
@@ -3457,7 +3469,7 @@ test("HTTP maps strict batch errors and serves versioned Actions OpenAPI", async
         },
       ],
     },
-    CUSTOM_GPT_TOKEN,
+    ADMIN_TOKEN,
   );
   assert.equal(oversizedAlias.status, 400);
   assert.deepEqual(await oversizedAlias.json(), {
@@ -3508,11 +3520,11 @@ test("maximum legal confirmed text batch stays within the existing one MiB JSON 
   assert.ok(Buffer.byteLength(requestBody) < 1024 * 1024);
 
   const response = await fetch(
-    `${fixture.origin}/api/actions/create-inventory-batch`,
+    `${fixture.origin}/api/actions/codex/create-inventory-batch`,
     {
       method: "POST",
       headers: {
-        ...authorization(CUSTOM_GPT_TOKEN),
+        ...authorization(ACTION_TOKEN),
         "content-type": "application/json",
       },
       body: requestBody,
@@ -3661,6 +3673,7 @@ async function startFixture(
     .png()
     .toBuffer();
   let nextId = 0;
+  let nextCreateId = 0;
   const application = new InventoryApplicationService(repository, {
     idGenerator: (kind) => `${kind}-${++nextId}`,
     clock: () => new Date("2026-08-19T00:00:00.000Z"),
@@ -3670,12 +3683,28 @@ async function startFixture(
     imageInspector: options.imageInspector ?? sharpImageInspector,
     imageRenditions: new FileImageRenditionProvider(join(directory, "images")),
   });
+  const commands = new CommandExecutionService(
+    repository,
+    () => new Date("2026-08-19T00:00:00.000Z"),
+  );
+  const customGptCreates = new CustomGptCreateCommandService(
+    repository,
+    commands,
+    {
+      clock: () => new Date("2026-08-19T00:00:01.000Z"),
+      idGenerator: () =>
+        `20000000-0000-4000-8000-${(++nextCreateId)
+          .toString()
+          .padStart(12, "0")}`,
+    },
+  );
   const server = createServer(
     createCoreApiHandler(application, {
       customGptBearerToken: CUSTOM_GPT_TOKEN,
       actionBearerToken: ACTION_TOKEN,
       adminBearerToken: ADMIN_TOKEN,
       actionFileHosts: new Set(["files.example.test"]),
+      customGptCreates,
       actionDownloader:
         options.actionDownloader ??
         (async (references) =>
@@ -3738,6 +3767,16 @@ function inventoryBatchFor(batchRef: string, name: string): object {
         lifecycle_status: "unopened",
       },
     ],
+  };
+}
+
+function customGptBatch(body: object): object {
+  nextCustomGptCommand += 1;
+  return {
+    command_id: `00000000-0000-4000-8000-${nextCustomGptCommand
+      .toString()
+      .padStart(12, "0")}`,
+    ...body,
   };
 }
 
@@ -3847,6 +3886,7 @@ function directRouteOptions(
     readOnlyMcp: null,
     customGptReadRoute: null,
     customGptFactActionRoute: null,
+    customGptCreateActionRoute: null,
     ...overrides,
   };
 }

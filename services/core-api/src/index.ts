@@ -17,6 +17,10 @@ import {
   type CustomGptFactActionApplication,
 } from "./custom-gpt-fact-action-route.ts";
 import {
+  createCustomGptCreateActionRoute,
+  type CustomGptCreateActionApplication,
+} from "./custom-gpt-create-action-route.ts";
+import {
   routeRequest,
   type RouteRequestDependencies,
   type ValidatedOptions,
@@ -47,6 +51,7 @@ export interface CoreApiHandlerOptions {
   readonly customGptReads?: CustomGptReadApplication;
   readonly customGptReadLimits?: CustomGptReadLimits;
   readonly customGptFactWrites?: CustomGptFactActionApplication;
+  readonly customGptCreates?: CustomGptCreateActionApplication;
 }
 
 /**
@@ -131,6 +136,10 @@ function validateOptions(options: CoreApiHandlerOptions): ValidatedOptions {
       options.customGptFactWrites === undefined
         ? null
         : createCustomGptFactActionRoute(options.customGptFactWrites),
+    customGptCreateActionRoute:
+      options.customGptCreates === undefined
+        ? null
+        : createCustomGptCreateActionRoute(options.customGptCreates),
   };
 }
 
