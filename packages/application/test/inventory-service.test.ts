@@ -1017,6 +1017,35 @@ test("BD-DATA-005 search sorts complete IDs after filtering and reports paginati
   assert.equal(all.items[0]?.has_image, false);
 });
 
+test("search retains all-inventory legacy defaults and accepts strictly scoped options before pagination", async () => {
+  const items = [
+    createInventoryItem({ id: "a-archived", lifecycleStatus: "finished" }),
+    createInventoryItem({ id: "b-active", lifecycleStatus: "unopened" }),
+    createInventoryItem({ id: "c-archived", lifecycleStatus: "discarded" }),
+    createInventoryItem({ id: "d-active", lifecycleStatus: "unopened" }),
+  ];
+  const repository = new ReadOnlyInventoryRepository(items);
+  const service = new InventoryApplicationService(repository);
+  const all = await service.searchInventory({ limit: 1 });
+  assert.equal(all.total, 4);
+  assert.equal(all.items[0]?.inventory_item_id, "a-archived");
+  const active = await service.searchInventory({ limit: 1 }, { scope: "active" });
+  assert.equal(active.total, 2);
+  assert.equal(active.next_offset, 1);
+  assert.equal(active.items[0]?.inventory_item_id, "b-active");
+  const archived = await service.searchInventory({ limit: 1, offset: 1 }, { scope: "archived" });
+  assert.equal(archived.total, 2);
+  assert.equal(archived.next_offset, null);
+  assert.equal(archived.items[0]?.inventory_item_id, "c-archived");
+  const reads = repository.findAllMaximumItems.length;
+  for (const options of [{ scope: "opened" }, { scope: "all", limit: 1 }, null]) {
+    await assert.rejects(service.searchInventory({}, options), { code: "INVALID_INPUT" });
+  }
+  await assert.rejects(service.searchInventory({ scope: "active" }), { code: "INVALID_INPUT" });
+  assert.equal(repository.findAllMaximumItems.length, reads);
+  assert.equal(repository.saveCalls, 0);
+});
+
 test("BD-DATA-005 search reads cap plus one and rejects an oversized candidate set", async () => {
   const product = createProduct({
     id: "oversized-product",

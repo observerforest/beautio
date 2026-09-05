@@ -9,7 +9,6 @@ import {
   listInventoryInputSchema,
   productIdSchema,
   recordProductOpenedCommandSchema,
-  searchInventoryInputSchema,
   setProductDisplayImageInputSchema,
   updateInventoryItemFactsInputSchema,
   updateInventoryItemCustomNotesInputSchema,
@@ -71,12 +70,10 @@ import {
   asActiveLifecycle,
   assertValidClock,
   countInventoryByProduct,
-  inventoryMatchesQuery,
   requireArrayItem,
   requireProductId,
   toInventoryListItemOutput,
   toInventoryReadModelOutput,
-  toInventorySearchItemOutput,
   toInventoryStateOutput,
   toProductOutput,
 } from "./output-mappers.ts";
@@ -89,12 +86,12 @@ import {
   requireInventoryItem,
   requireProduct,
 } from "./repository-queries.ts";
+import { searchInventoryRecords } from "./inventory-search.ts";
 
 const MAX_IMAGE_BYTES = 20 * 1024 * 1024;
 const MAX_IMAGE_PIXELS = 40_000_000;
 const TEMPORARY_ASSET_MILLISECONDS = 24 * 60 * 60 * 1000;
 const MAX_BACKUP_TOTAL_IMAGE_BYTES = 200 * 1024 * 1024;
-const MAXIMUM_SEARCH_CANDIDATE_ITEMS = 1_000;
 const MAX_BACKUP_SERIALIZED_BYTES = 280 * 1024 * 1024;
 
 export class InventoryApplicationService {
@@ -220,55 +217,14 @@ export class InventoryApplicationService {
    * unless the caller supplies an explicit comparison date.
    *
    * @param untrustedInput - Strict optional query, pagination, and as-of date.
+   * @param options - Strict optional scope; legacy callers default to all inventory.
    * @returns One stable inventory-ID-ordered page with compact matching summaries.
    */
   async searchInventory(
     untrustedInput: unknown,
+    options: unknown = { scope: "all" },
   ): Promise<SearchInventoryOutput> {
-    const input = parseInput(searchInventoryInputSchema, untrustedInput);
-    const items = await this.#repository.findAll({
-      maximumItems: MAXIMUM_SEARCH_CANDIDATE_ITEMS + 1,
-    });
-    if (items.length > MAXIMUM_SEARCH_CANDIDATE_ITEMS) {
-      throw new BeautioError(
-        "INTERNAL_ERROR",
-        "inventory search exceeds the 1000-item safety limit",
-      );
-    }
-    const productsById = await loadProducts(this.#repository, items);
-    const normalizedQuery = input.query?.toLowerCase() ?? null;
-    const asOf =
-      input.as_of === undefined ? null : parseIsoDate(input.as_of, "as_of");
-    const matches = items.flatMap((item) => {
-      const product =
-        item.productId === null
-          ? null
-          : (productsById.get(item.productId) ?? null);
-      if (!inventoryMatchesQuery(item, product, normalizedQuery)) {
-        return [];
-      }
-      return [{ item, product }];
-    });
-    matches.sort((left, right) =>
-      left.item.id < right.item.id
-        ? -1
-        : left.item.id > right.item.id
-          ? 1
-          : 0,
-    );
-    const page = matches.slice(input.offset, input.offset + input.limit);
-    const consumedOffset = input.offset + page.length;
-
-    return {
-      query: input.query ?? null,
-      offset: input.offset,
-      limit: input.limit,
-      total: matches.length,
-      next_offset: consumedOffset < matches.length ? consumedOffset : null,
-      items: page.map(({ item, product }) =>
-        toInventorySearchItemOutput(item, product, asOf),
-      ),
-    };
+    return searchInventoryRecords(this.#repository, untrustedInput, options);
   }
 
   /**

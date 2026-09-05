@@ -5,8 +5,14 @@ import {
 } from "@beautio/domain";
 import type { InventoryRepository } from "./ports.ts";
 
+/**
+ * Reads each shared Product at most once for a bounded inventory collection.
+ * @param repository - Read-only Product lookup capability.
+ * @param items - Inventory candidates whose existing Product IDs should be loaded.
+ * @returns Product results indexed by ID, retaining null for missing shared records.
+ */
 export async function loadProducts(
-  repository: InventoryRepository,
+  repository: Pick<InventoryRepository, "findProductById">,
   items: readonly InventoryItem[],
 ): Promise<ReadonlyMap<string, Product | null>> {
   const productIds = [

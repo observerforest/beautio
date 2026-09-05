@@ -3,11 +3,11 @@ import {
   reviseProductProfileInputSchema, versionedReadOptionsSchema,
   type VersionedInventoryOutput, type VersionedProductOutput,
 } from "@beautio/contracts";
-import { BeautioError, parseIsoDate } from "@beautio/domain";
+import { BeautioError } from "@beautio/domain";
 import { parseInput } from "./input-parsing.ts";
-import { toInventoryReadModelOutput, toReadInventoryProductOutput } from "./output-mappers.ts";
+import { toReadInventoryProductOutput } from "./output-mappers.ts";
 import type { RevisionedInventoryRepository } from "./revisioned-inventory-port.ts";
-import type { VersionedInventoryItem } from "./revisioned-inventory-types.ts";
+import { toVersionedInventoryOutput } from "./versioned-inventory-output.ts";
 
 export class RevisionedInventoryService {
   readonly #repository: RevisionedInventoryRepository;
@@ -57,15 +57,4 @@ export class RevisionedInventoryService {
     const committed = await this.#repository.correctInventoryItemFacts({ inventoryItemId: id, expectedRevision: expected_revision, patch: Object.freeze(patch) });
     return toVersionedInventoryOutput(committed);
   }
-}
-
-function toVersionedInventoryOutput(snapshot: VersionedInventoryItem, asOf?: string): VersionedInventoryOutput {
-  const output = toInventoryReadModelOutput(snapshot.item, snapshot.product?.product ?? null, asOf === undefined ? null : parseIsoDate(asOf, "as_of"));
-  return {
-    ...output,
-    revision: snapshot.revision,
-    product: snapshot.product === null ? null : {
-      ...toReadInventoryProductOutput(snapshot.product.product), revision: snapshot.product.revision,
-    },
-  };
 }
