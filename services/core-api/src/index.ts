@@ -2,7 +2,7 @@ import type { InventoryApplicationService } from "@beautio/application";
 import { BeautioError } from "@beautio/domain";
 import type { RequestListener } from "node:http";
 import {
-  downloadActionImages,
+  downloadActionImagesSettled,
   type ActionFileReference,
   type DownloadedActionImage,
 } from "./action-download.ts";
@@ -20,6 +20,10 @@ import {
   createCustomGptCreateActionRoute,
   type CustomGptCreateActionApplication,
 } from "./custom-gpt-create-action-route.ts";
+import {
+  createCustomGptImageActionRoute,
+  type CustomGptImageActionApplication,
+} from "./custom-gpt-image-action-route.ts";
 import {
   routeRequest,
   type RouteRequestDependencies,
@@ -52,6 +56,7 @@ export interface CoreApiHandlerOptions {
   readonly customGptReadLimits?: CustomGptReadLimits;
   readonly customGptFactWrites?: CustomGptFactActionApplication;
   readonly customGptCreates?: CustomGptCreateActionApplication;
+  readonly customGptImageCommands?: CustomGptImageActionApplication;
 }
 
 /**
@@ -99,19 +104,22 @@ function validateOptions(options: CoreApiHandlerOptions): ValidatedOptions {
   if (options.actionFileHosts.size === 0) {
     throw new Error("at least one Action file host is required");
   }
+  const actionFileHosts = new Set(options.actionFileHosts);
+  const neverAbortedSignal = new AbortController().signal;
+  const actionDownloader =
+    options.actionDownloader ??
+    ((references, allowedHosts, signal) =>
+      downloadActionImagesSettled(
+        references,
+        allowedHosts,
+        undefined,
+        undefined,
+        { signal },
+      ));
   return {
     ...bearerTokens,
-    actionFileHosts: new Set(options.actionFileHosts),
-    actionDownloader:
-      options.actionDownloader ??
-      ((references, allowedHosts, signal) =>
-        downloadActionImages(
-          references,
-          allowedHosts,
-          undefined,
-          undefined,
-          { signal },
-        )),
+    actionFileHosts,
+    actionDownloader,
     actionUploadTimeoutMs: positiveTimeout(
       options.actionUploadTimeoutMs,
       ACTION_UPLOAD_TIMEOUT_MS,
@@ -140,6 +148,18 @@ function validateOptions(options: CoreApiHandlerOptions): ValidatedOptions {
       options.customGptCreates === undefined
         ? null
         : createCustomGptCreateActionRoute(options.customGptCreates),
+    customGptImageActionRoute:
+      options.customGptImageCommands === undefined
+        ? null
+        : createCustomGptImageActionRoute(
+            options.customGptImageCommands,
+            (references, signal) =>
+              actionDownloader(
+                references,
+                actionFileHosts,
+                signal ?? neverAbortedSignal,
+              ),
+          ),
   };
 }
 

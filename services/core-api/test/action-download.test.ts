@@ -4,6 +4,7 @@ import { BeautioError } from "@beautio/domain";
 import { createServer } from "node:net";
 import {
   downloadActionImages,
+  downloadActionImagesSettled,
   isPublicActionAddress,
   parseActionFileHostAllowlist,
   requestPinned,
@@ -395,6 +396,145 @@ test("Action downloader applies per-file and overall timeouts across DNS and red
   } finally {
     clearTimeout(keepAlive);
   }
+});
+
+test("settled Action download waits for an aborted resolver and starts no requester", async () => {
+  const allowed = parseActionFileHostAllowlist("files.example.test");
+  const controller = new AbortController();
+  let markResolverStarted!: () => void;
+  let releaseResolver!: () => void;
+  const resolverStarted = new Promise<void>((resolve) => {
+    markResolverStarted = resolve;
+  });
+  const resolverRelease = new Promise<void>((resolve) => {
+    releaseResolver = resolve;
+  });
+  let requesterCalls = 0;
+  let settled = false;
+
+  const download = downloadActionImagesSettled(
+    [
+      {
+        name: "settled-resolver.png",
+        id: "settled_resolver",
+        mime_type: "image/png",
+        download_link: "https://files.example.test/settled-resolver",
+      },
+    ],
+    allowed,
+    async () => {
+      markResolverStarted();
+      await resolverRelease;
+      return [{ address: "8.8.8.8", family: 4 }];
+    },
+    async () => {
+      requesterCalls += 1;
+      return { bytes: Uint8Array.from([1]), redirectLocation: null };
+    },
+    { fileTimeoutMs: 5_000, actionTimeoutMs: 5_000, signal: controller.signal },
+  ).finally(() => {
+    settled = true;
+  });
+
+  await resolverStarted;
+  controller.abort();
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.equal(settled, false);
+  assert.equal(requesterCalls, 0);
+
+  releaseResolver();
+  await assert.rejects(download, hasCode("UPLOAD_FAILED"));
+  assert.equal(requesterCalls, 0);
+});
+
+test("settled Action download starts no dependency when already aborted", async () => {
+  const allowed = parseActionFileHostAllowlist("files.example.test");
+  const controller = new AbortController();
+  controller.abort();
+  let resolverCalls = 0;
+  let requesterCalls = 0;
+
+  await assert.rejects(
+    downloadActionImagesSettled(
+      [
+        {
+          name: "already-aborted.png",
+          id: "already_aborted",
+          mime_type: "image/png",
+          download_link: "https://files.example.test/already-aborted",
+        },
+      ],
+      allowed,
+      async () => {
+        resolverCalls += 1;
+        return [{ address: "8.8.8.8", family: 4 }];
+      },
+      async () => {
+        requesterCalls += 1;
+        return { bytes: Uint8Array.from([1]), redirectLocation: null };
+      },
+      {
+        fileTimeoutMs: 5_000,
+        actionTimeoutMs: 5_000,
+        signal: controller.signal,
+      },
+    ),
+    hasCode("UPLOAD_FAILED"),
+  );
+  assert.equal(resolverCalls, 0);
+  assert.equal(requesterCalls, 0);
+});
+
+test("settled Action download waits for an aborted requester and follows no redirect", async () => {
+  const allowed = parseActionFileHostAllowlist(
+    "files.example.test,redirect.example.test",
+  );
+  const controller = new AbortController();
+  let markRequesterStarted!: () => void;
+  let releaseRequester!: () => void;
+  const requesterStarted = new Promise<void>((resolve) => {
+    markRequesterStarted = resolve;
+  });
+  const requesterRelease = new Promise<void>((resolve) => {
+    releaseRequester = resolve;
+  });
+  let requesterCalls = 0;
+  let settled = false;
+
+  const download = downloadActionImagesSettled(
+    [
+      {
+        name: "settled-requester.png",
+        id: "settled_requester",
+        mime_type: "image/png",
+        download_link: "https://files.example.test/settled-requester",
+      },
+    ],
+    allowed,
+    async () => [{ address: "8.8.8.8", family: 4 }],
+    async () => {
+      requesterCalls += 1;
+      markRequesterStarted();
+      await requesterRelease;
+      return {
+        bytes: new Uint8Array(),
+        redirectLocation: "https://redirect.example.test/next",
+      };
+    },
+    { fileTimeoutMs: 5_000, actionTimeoutMs: 5_000, signal: controller.signal },
+  ).finally(() => {
+    settled = true;
+  });
+
+  await requesterStarted;
+  controller.abort();
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.equal(settled, false);
+  assert.equal(requesterCalls, 1);
+
+  releaseRequester();
+  await assert.rejects(download, hasCode("UPLOAD_FAILED"));
+  assert.equal(requesterCalls, 1);
 });
 
 test("pinned HTTPS transport supports Node autoSelectFamily lookup shape", async () => {

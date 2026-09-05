@@ -2,6 +2,7 @@ import {
   CommandExecutionService,
   CustomGptCreateCommandService,
   CustomGptFactWriteService,
+  CustomGptImageCommandService,
   CustomGptReadService,
   InventoryApplicationService,
 } from "@beautio/application";
@@ -40,8 +41,9 @@ const remoteMcpEnvironment = parseRemoteMcpEnvironment(process.env);
 
 const repository = new SqliteInventoryRepository(databasePath);
 const commands = new CommandExecutionService(repository);
+const imageStorage = new FileImageAssetStorage(imageStorageRoot);
 const application = new InventoryApplicationService(repository, {
-  imageStorage: new FileImageAssetStorage(imageStorageRoot),
+  imageStorage,
   imageInspector: sharpImageInspector,
   imageRenditions: new FileImageRenditionProvider(imageStorageRoot),
 });
@@ -62,6 +64,12 @@ const handler = createCoreApiHandler(application, {
   customGptReads: new CustomGptReadService(application, repository, commands),
   customGptFactWrites: new CustomGptFactWriteService(repository, commands),
   customGptCreates: new CustomGptCreateCommandService(repository, commands),
+  customGptImageCommands: new CustomGptImageCommandService(
+    repository,
+    commands,
+    application,
+    imageStorage,
+  ),
   actionFileHosts,
   ...(publicOrigin === undefined ? {} : { publicOrigin }),
   ...(webRoot === undefined ? {} : { webRoot }),

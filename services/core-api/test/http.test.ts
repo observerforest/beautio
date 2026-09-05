@@ -14,8 +14,10 @@ import test, { type TestContext } from "node:test";
 import {
   CommandExecutionService,
   CustomGptCreateCommandService,
+  CustomGptImageCommandService,
   InventoryApplicationService,
   type ImageAssetStorage,
+  type ImageCommandStorage,
   type ImageInspector,
 } from "@beautio/application";
 import {
@@ -53,6 +55,7 @@ const CUSTOM_GPT_TOKEN = "test-custom-gpt-token-not-a-secret";
 const ADMIN_TOKEN = "test-admin-token-not-a-secret";
 const STATIC_SCRIPT = "console.log('beautio production web');\n";
 let nextCustomGptCommand = 1_000;
+let nextCustomGptImageCommand = 2_000;
 
 test("HTTP adapter requires three pairwise-distinct bearer tokens", () => {
   const repository = new SqliteInventoryRepository(":memory:");
@@ -938,23 +941,14 @@ test("Action upload and batch creation share persisted state with Admin read and
   const fixture = await startFixture(context);
   const uploadResponse = await postJson(
     `${fixture.origin}/api/actions/upload-product-images`,
-    {
-      openaiFileIdRefs: [
-        {
-          name: "confirmed-product.png",
-          id: "file_confirmed_1",
-          mime_type: "image/png",
-          download_link: "https://files.example.test/short-lived",
-        },
-      ],
-    },
+    actionUploadBody("file_confirmed_1"),
     CUSTOM_GPT_TOKEN,
   );
   assert.equal(uploadResponse.status, 200);
   const uploadBody = (await uploadResponse.json()) as {
-    readonly assets: readonly [{ readonly image_asset_id: string }];
+    readonly result: { readonly image_asset_ids: readonly [string] };
   };
-  const imageAssetId = uploadBody.assets[0].image_asset_id;
+  const imageAssetId = uploadBody.result.image_asset_ids[0];
 
   const temporaryCard = await fetch(
     `${fixture.origin}/api/image-assets/${encodeURIComponent(imageAssetId)}/content?variant=card`,
@@ -1878,7 +1872,7 @@ test("Codex multipart upload enforces field, count, byte, and all-or-nothing bou
   );
 });
 
-test("Action deadline waits for signal-ignoring inspection to settle without blocking ordinary writes", async (context) => {
+test("Custom GPT image deadline waits for signal-ignoring inspection and reports an unknown claimed outcome", async (context) => {
   let markInspectionStarted!: () => void;
   let releaseInspection!: () => void;
   const inspectionStarted = new Promise<void>((resolve) => {
@@ -1899,11 +1893,11 @@ test("Action deadline waits for signal-ignoring inspection to settle without blo
     imageInspector: ignoringSignalInspector,
   });
   context.after(() => releaseInspection());
-  let commitCalls = 0;
-  const originalCommit = fixture.application.commitPreparedProductImages;
-  fixture.application.commitPreparedProductImages = async (...args) => {
-    commitCalls += 1;
-    return originalCommit.apply(fixture.application, args);
+  let finalizeCalls = 0;
+  const originalFinalize = fixture.repository.finalizeImageUploadCommand;
+  fixture.repository.finalizeImageUploadCommand = async (...args) => {
+    finalizeCalls += 1;
+    return originalFinalize.apply(fixture.repository, args);
   };
 
   let uploadSettled = false;
@@ -1937,14 +1931,13 @@ test("Action deadline waits for signal-ignoring inspection to settle without blo
 
   await new Promise((resolve) => setTimeout(resolve, 35));
   assert.equal(uploadSettled, false);
-  assert.equal(commitCalls, 0);
+  assert.equal(finalizeCalls, 0);
 
   releaseInspection();
   const timedOut = await response;
-  assert.equal(timedOut.status, 502);
-  assert.deepEqual(await timedOut.json(), actionTimeoutBody());
-  assert.equal(commitCalls, 0);
-  assert.equal(await fixture.repository.findImageAssetById("image_asset-3"), null);
+  assert.equal(timedOut.status, 500);
+  assert.deepEqual(await timedOut.json(), imageCommandUnknownBody());
+  assert.equal(finalizeCalls, 0);
 });
 
 test("Admin body deadline is cleared before semantic image inspection begins", async (context) => {
@@ -1993,7 +1986,7 @@ test("Admin body deadline is cleared before semantic image inspection begins", a
   });
 });
 
-test("all HTTP image entry points prepare semantics before requesting exclusive commit", async (context) => {
+test("Admin and Codex image entry points prepare semantics before requesting exclusive commit", async (context) => {
   const fixture = await startFixture(context);
   const options = directRouteOptions({
     actionDownloader: async (references) =>
@@ -2021,16 +2014,6 @@ test("all HTTP image entry points prepare semantics before requesting exclusive 
     });
   };
 
-  await assertImageUploadPreparesBeforeExclusive(
-    fixture.application,
-    options,
-    (origin) =>
-      postJson(
-        `${origin}/api/actions/upload-product-images`,
-        actionUploadBody("semantic_custom_gpt"),
-        CUSTOM_GPT_TOKEN,
-      ),
-  );
   await assertImageUploadPreparesBeforeExclusive(
     fixture.application,
     options,
@@ -2126,9 +2109,9 @@ test("real 40 megapixel image inspection is serialized across concurrent HTTP pr
   for (const response of responses) {
     assert.equal(response.status, 200);
     const body = (await response.json()) as {
-      readonly assets: readonly [{ readonly image_asset_id: string }];
+      readonly result: { readonly image_asset_ids: readonly [string] };
     };
-    imageAssetIds.push(body.assets[0].image_asset_id);
+    imageAssetIds.push(body.result.image_asset_ids[0]);
   }
   assert.equal(completedInspections, 2);
   assert.equal(maximumActiveInspections, 1);
@@ -2142,7 +2125,7 @@ test("real 40 megapixel image inspection is serialized across concurrent HTTP pr
   }
 });
 
-test("Action timeout keeps the write gate until delayed storage settles and compensates", async (context) => {
+test("Custom GPT image commit keeps the write gate until delayed storage settles", async (context) => {
   let releasePut!: () => void;
   let markPutStarted!: () => void;
   const putStarted = new Promise<void>((resolve) => {
@@ -2152,17 +2135,21 @@ test("Action timeout keeps the write gate until delayed storage settles and comp
     releasePut = resolve;
   });
   const fixture = await startFixture(context, {
-    actionUploadTimeoutMs: 20,
-    imageStorageFactory: (directory) => {
+    imageCommandStorageFactory: (directory) => {
       const underlying = new FileImageAssetStorage(directory);
       return {
-        async put(storageKey, bytes, signal) {
+        reserve: (storageKey) => underlying.reserve(storageKey),
+        async writeReserved(reservation, bytes) {
           markPutStarted();
           await putRelease;
-          await underlying.put(storageKey, bytes, signal);
+          await underlying.writeReserved(reservation, bytes);
         },
-        get: (storageKey, signal) => underlying.get(storageKey, signal),
-        delete: (storageKey) => underlying.delete(storageKey),
+        verifyReserved: (reservation, bytes) =>
+          underlying.verifyReserved(reservation, bytes),
+        discardReserved: (reservation) =>
+          underlying.discardReserved(reservation),
+        releaseReserved: (reservation) =>
+          underlying.releaseReserved(reservation),
       };
     },
   });
@@ -2170,16 +2157,7 @@ test("Action timeout keeps the write gate until delayed storage settles and comp
   let uploadSettled = false;
   const upload = postJson(
     `${fixture.origin}/api/actions/upload-product-images`,
-    {
-      openaiFileIdRefs: [
-        {
-          name: "confirmed.png",
-          id: "file_delayed_storage",
-          mime_type: "image/png",
-          download_link: "https://files.example.test/short-lived",
-        },
-      ],
-    },
+    actionUploadBody("file_delayed_storage"),
     CUSTOM_GPT_TOKEN,
   ).finally(() => {
     uploadSettled = true;
@@ -2228,9 +2206,17 @@ test("Action timeout keeps the write gate until delayed storage settles and comp
   assert.equal(queuedWriteSettled, false);
 
   releasePut();
-  assert.equal((await upload).status, 502);
+  const uploaded = await upload;
+  assert.equal(uploaded.status, 200);
+  const uploadedBody = (await uploaded.json()) as {
+    readonly result: { readonly image_asset_ids: readonly [string] };
+  };
   assert.equal((await queuedWrite).status, 200);
-  assert.equal(await fixture.repository.findImageAssetById("image_asset-1"), null);
+  assert.ok(
+    await fixture.repository.findImageAssetById(
+      uploadedBody.result.image_asset_ids[0],
+    ),
+  );
   const inventory = await fixture.application.listInventory({
     as_of: "2026-08-19",
   });
@@ -2240,7 +2226,7 @@ test("Action timeout keeps the write gate until delayed storage settles and comp
   );
 });
 
-test("upload compensation retains the exclusive gate until cleanup settles", async (context) => {
+test("Codex upload compensation retains the exclusive gate until cleanup settles", async (context) => {
   const fixture = await startFixture(context, {
     imageStorageFactory: (directory) => {
       const underlying = new FileImageAssetStorage(directory);
@@ -2296,13 +2282,7 @@ test("upload compensation retains the exclusive gate until cleanup settles", asy
       }
     },
   });
-  const options = directRouteOptions({
-    actionDownloader: async (references) =>
-      references.map((reference) => ({
-        source_ref: reference.id,
-        bytes: fixture.imageBytes,
-      })),
-  });
+  const options = directRouteOptions();
   let createCalls = 0;
   const originalCreate = fixture.application.createInventoryBatch;
   fixture.application.createInventoryBatch = async (...args) => {
@@ -2316,10 +2296,19 @@ test("upload compensation retains the exclusive gate until cleanup settles", asy
       dependencies,
       async (origin) => {
         let uploadSettled = false;
-        const upload = postJson(
-          `${origin}/api/actions/upload-product-images`,
-          actionUploadBody("compensation_barrier"),
-          CUSTOM_GPT_TOKEN,
+        const uploadForm = new FormData();
+        uploadForm.set(
+          "compensation_barrier",
+          new Blob([fixture.imageBytes], { type: "image/png" }),
+          "compensation.png",
+        );
+        const upload = fetch(
+          `${origin}/api/actions/codex/upload-product-images`,
+          {
+            method: "POST",
+            headers: authorization(ACTION_TOKEN),
+            body: uploadForm,
+          },
         ).finally(() => {
           uploadSettled = true;
         });
@@ -2557,16 +2546,7 @@ test("a blocked Custom GPT downloader does not take the exclusive write gate", a
 
   const upload = postJson(
     `${fixture.origin}/api/actions/upload-product-images`,
-    {
-      openaiFileIdRefs: [
-        {
-          name: "blocked.png",
-          id: "blocked_download",
-          mime_type: "image/png",
-          download_link: "https://files.example.test/blocked",
-        },
-      ],
-    },
+    actionUploadBody("blocked_download"),
     CUSTOM_GPT_TOKEN,
   );
   await downloaderStarted;
@@ -2589,11 +2569,11 @@ test("a blocked Custom GPT downloader does not take the exclusive write gate", a
   const uploadResponse = await upload;
   assert.equal(uploadResponse.status, 200);
   const uploadBody = (await uploadResponse.json()) as {
-    readonly assets: readonly [{ readonly image_asset_id: string }];
+    readonly result: { readonly image_asset_ids: readonly [string] };
   };
   assert.ok(
     await fixture.repository.findImageAssetById(
-      uploadBody.assets[0].image_asset_id,
+      uploadBody.result.image_asset_ids[0],
     ),
   );
 });
@@ -2614,6 +2594,7 @@ test("timed-out Action preparation keeps both permits until signal-ignoring down
   let imageBytes: Uint8Array<ArrayBufferLike> = new Uint8Array();
   const fixture = await startFixture(context, {
     actionUploadTimeoutMs: 30,
+    writeBodyTimeoutMs: 30,
     actionDownloader: async (references, _allowedHosts, signal) => {
       const index = downloaderStarts;
       downloaderStarts += 1;
@@ -2646,10 +2627,10 @@ test("timed-out Action preparation keeps both permits until signal-ignoring down
   });
   imageBytes = fixture.imageBytes;
   let mutationCalls = 0;
-  const originalUpload = fixture.application.commitPreparedProductImages;
-  fixture.application.commitPreparedProductImages = async (...args) => {
+  const originalFinalize = fixture.repository.finalizeImageUploadCommand;
+  fixture.repository.finalizeImageUploadCommand = async (...args) => {
     mutationCalls += 1;
-    return originalUpload.apply(fixture.application, args);
+    return originalFinalize.apply(fixture.repository, args);
   };
 
   const requests = [0, 1, 2].map((index) =>
@@ -2670,23 +2651,23 @@ test("timed-out Action preparation keeps both permits until signal-ignoring down
 
     const third = await requests[2];
     assert.ok(third);
-    assert.equal(third.status, 502);
-    assert.deepEqual(await third.json(), actionTimeoutBody());
+    assert.equal(third.status, 400);
+    assert.deepEqual(await third.json(), imageCommandInvalidBody());
     assert.equal(downloaderStarts, 2);
 
     releases[0]?.();
     const first = await requests[0];
     assert.ok(first);
-    assert.equal(first.status, 502);
-    assert.deepEqual(await first.json(), actionTimeoutBody());
+    assert.equal(first.status, 500);
+    assert.deepEqual(await first.json(), imageCommandUnknownBody());
     assert.equal(downloaderStarts, 2);
     assert.equal(mutationCalls, 0);
 
     releases[1]?.();
     const second = await requests[1];
     assert.ok(second);
-    assert.equal(second.status, 502);
-    assert.deepEqual(await second.json(), actionTimeoutBody());
+    assert.equal(second.status, 500);
+    assert.deepEqual(await second.json(), imageCommandUnknownBody());
     assert.equal(downloaderStarts, 2);
     assert.equal(mutationCalls, 0);
   } finally {
@@ -3637,6 +3618,9 @@ interface FixtureOptions {
   >;
   readonly imageInspector?: ImageInspector;
   readonly imageStorageFactory?: (directory: string) => ImageAssetStorage;
+  readonly imageCommandStorageFactory?: (
+    directory: string,
+  ) => ImageCommandStorage;
   readonly publicOrigin?: string;
   readonly serveWeb?: boolean;
 }
@@ -3674,14 +3658,19 @@ async function startFixture(
     .toBuffer();
   let nextId = 0;
   let nextCreateId = 0;
+  let nextImageCommandId = 0;
+  const imageDirectory = join(directory, "images");
+  const defaultImageStorage = new FileImageAssetStorage(imageDirectory);
+  const imageCommandStorage =
+    options.imageCommandStorageFactory?.(imageDirectory) ??
+    defaultImageStorage;
   const application = new InventoryApplicationService(repository, {
     idGenerator: (kind) => `${kind}-${++nextId}`,
     clock: () => new Date("2026-08-19T00:00:00.000Z"),
     imageStorage:
-      options.imageStorageFactory?.(join(directory, "images")) ??
-      new FileImageAssetStorage(join(directory, "images")),
+      options.imageStorageFactory?.(imageDirectory) ?? defaultImageStorage,
     imageInspector: options.imageInspector ?? sharpImageInspector,
-    imageRenditions: new FileImageRenditionProvider(join(directory, "images")),
+    imageRenditions: new FileImageRenditionProvider(imageDirectory),
   });
   const commands = new CommandExecutionService(
     repository,
@@ -3698,6 +3687,19 @@ async function startFixture(
           .padStart(12, "0")}`,
     },
   );
+  const customGptImageCommands = new CustomGptImageCommandService(
+    repository,
+    commands,
+    application,
+    imageCommandStorage,
+    {
+      clock: () => new Date("2026-08-19T00:00:01.000Z"),
+      idGenerator: () =>
+        `30000000-0000-4000-8000-${(++nextImageCommandId)
+          .toString()
+          .padStart(12, "0")}`,
+    },
+  );
   const server = createServer(
     createCoreApiHandler(application, {
       customGptBearerToken: CUSTOM_GPT_TOKEN,
@@ -3705,6 +3707,7 @@ async function startFixture(
       adminBearerToken: ADMIN_TOKEN,
       actionFileHosts: new Set(["files.example.test"]),
       customGptCreates,
+      customGptImageCommands,
       actionDownloader:
         options.actionDownloader ??
         (async (references) =>
@@ -3781,7 +3784,11 @@ function customGptBatch(body: object): object {
 }
 
 function actionUploadBody(sourceRef: string): object {
+  nextCustomGptImageCommand += 1;
   return {
+    command_id: `00000000-0000-4000-8000-${nextCustomGptImageCommand
+      .toString()
+      .padStart(12, "0")}`,
     openaiFileIdRefs: [
       {
         name: `${sourceRef}.png`,
@@ -3798,6 +3805,26 @@ function actionTimeoutBody(): object {
     error: {
       code: "UPLOAD_FAILED",
       message: "Action image upload timed out",
+    },
+  };
+}
+
+function imageCommandUnknownBody(): object {
+  return {
+    error: {
+      code: "COMMAND_STORE_FAILURE",
+      message:
+        "The command outcome is unknown. Check command status and image or Product facts before taking another action.",
+    },
+  };
+}
+
+function imageCommandInvalidBody(): object {
+  return {
+    error: {
+      code: "INVALID_INPUT",
+      message:
+        "Invalid image Action request or request body deadline exceeded.",
     },
   };
 }
@@ -3887,6 +3914,7 @@ function directRouteOptions(
     customGptReadRoute: null,
     customGptFactActionRoute: null,
     customGptCreateActionRoute: null,
+    customGptImageActionRoute: null,
     ...overrides,
   };
 }

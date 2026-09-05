@@ -137,6 +137,57 @@ export async function downloadActionImages(
   requester: PinnedActionRequester = requestPinned,
   timing: ActionDownloadTiming = {},
 ): Promise<readonly DownloadedActionImage[]> {
+  return downloadActionImagesWithCancellation(
+    references,
+    allowedHosts,
+    resolver,
+    requester,
+    timing,
+    "immediate",
+  );
+}
+
+/**
+ * Downloads Action files while retaining caller capacity until started dependencies settle.
+ *
+ * Unlike `downloadActionImages`, cancellation does not make an already-started DNS or
+ * requester promise appear finished. The active promise is awaited, its value is
+ * discarded after cancellation, and no redirect or later file is started.
+ *
+ * @param references - Runtime file objects supplied by ChatGPT Actions.
+ * @param allowedHosts - Deployment-configured Action file hosts.
+ * @param resolver - Injectable DNS resolver whose promise represents its work settlement.
+ * @param requester - Injectable pinned requester whose promise represents its work settlement.
+ * @param timing - Optional deterministic deadlines and caller cancellation.
+ * @returns Bytes keyed by the upstream file ID in input order.
+ */
+export async function downloadActionImagesSettled(
+  references: readonly ActionFileReference[],
+  allowedHosts: ReadonlySet<string>,
+  resolver: HostResolver = resolveHost,
+  requester: PinnedActionRequester = requestPinned,
+  timing: ActionDownloadTiming = {},
+): Promise<readonly DownloadedActionImage[]> {
+  return downloadActionImagesWithCancellation(
+    references,
+    allowedHosts,
+    resolver,
+    requester,
+    timing,
+    "settled",
+  );
+}
+
+type DownloadCancellationMode = "immediate" | "settled";
+
+async function downloadActionImagesWithCancellation(
+  references: readonly ActionFileReference[],
+  allowedHosts: ReadonlySet<string>,
+  resolver: HostResolver,
+  requester: PinnedActionRequester,
+  timing: ActionDownloadTiming,
+  cancellationMode: DownloadCancellationMode,
+): Promise<readonly DownloadedActionImage[]> {
   if (references.length < 1 || references.length > 10) {
     throw new BeautioError(
       "INVALID_INPUT",
@@ -175,6 +226,7 @@ export async function downloadActionImages(
         Math.min(MAX_FILE_BYTES, remainingBytes),
         overallSignal,
         fileTimeoutMs,
+        cancellationMode,
       );
       totalBytes += bytes.byteLength;
       downloaded.push({ source_ref: reference.id, bytes });
@@ -239,6 +291,7 @@ async function downloadOne(
   maximumBytes: number,
   overallSignal: AbortSignal,
   fileTimeoutMs: number,
+  cancellationMode: DownloadCancellationMode,
 ): Promise<Uint8Array> {
   const fileController = new AbortController();
   const fileTimeout = setTimeout(() => fileController.abort(), fileTimeoutMs);
@@ -247,18 +300,21 @@ async function downloadOne(
   try {
     let currentUrl = initialUrl;
     for (let redirectCount = 0; redirectCount <= MAX_REDIRECTS; redirectCount += 1) {
-      const addresses = await abortable(
-        validateDownloadTarget(currentUrl, allowedHosts, resolver),
+      const addresses = await runDownloadDependency(
+        () => validateDownloadTarget(currentUrl, allowedHosts, resolver),
         signal,
+        cancellationMode,
       );
-      const response = await abortable(
-        requester(
-          currentUrl,
-          addresses[0] as ResolvedAddress,
-          maximumBytes,
-          signal,
-        ),
+      const response = await runDownloadDependency(
+        () =>
+          requester(
+            currentUrl,
+            addresses[0] as ResolvedAddress,
+            maximumBytes,
+            signal,
+          ),
         signal,
+        cancellationMode,
       );
       if (response.redirectLocation === null) {
         if (response.bytes.byteLength > maximumBytes) {
@@ -466,6 +522,54 @@ function abortable<T>(operation: Promise<T>, signal: AbortSignal): Promise<T> {
       },
     );
   });
+}
+
+function runDownloadDependency<T>(
+  operation: () => Promise<T>,
+  signal: AbortSignal,
+  cancellationMode: DownloadCancellationMode,
+): Promise<T> {
+  if (cancellationMode === "immediate") {
+    return abortable(operation(), signal);
+  }
+  return awaitOperationSettlement(operation, signal);
+}
+
+async function awaitOperationSettlement<T>(
+  operation: () => Promise<T>,
+  signal: AbortSignal,
+): Promise<T> {
+  if (signal.aborted) {
+    throw actionDownloadTimedOut();
+  }
+  let aborted = false;
+  const markAborted = (): void => {
+    aborted = true;
+  };
+  signal.addEventListener("abort", markAborted, { once: true });
+  if (signal.aborted) {
+    signal.removeEventListener("abort", markAborted);
+    throw actionDownloadTimedOut();
+  }
+
+  try {
+    const value = await operation();
+    if (aborted || signal.aborted) {
+      throw actionDownloadTimedOut();
+    }
+    return value;
+  } catch (error) {
+    if (aborted || signal.aborted) {
+      throw actionDownloadTimedOut();
+    }
+    throw error;
+  } finally {
+    signal.removeEventListener("abort", markAborted);
+  }
+}
+
+function actionDownloadTimedOut(): BeautioError {
+  return new BeautioError("UPLOAD_FAILED", "Action file download timed out");
 }
 
 function isHostname(value: string): boolean {

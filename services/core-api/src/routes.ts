@@ -2,10 +2,8 @@ import type {
   ImageAssetReadVariant,
   InventoryApplicationService,
 } from "@beautio/application";
-import { sourceRefSchema } from "@beautio/contracts";
 import { BeautioError } from "@beautio/domain";
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { z } from "zod";
 import type {
   ActionFileReference,
   DownloadedActionImage,
@@ -38,24 +36,11 @@ import {
   type CustomGptCreateActionRoute,
 } from "./custom-gpt-create-action-route.ts";
 import { sendCustomGptCreateActionNotFound } from "./custom-gpt-create-action-errors.ts";
-
-const actionFileRequestSchema = z
-  .object({
-    openaiFileIdRefs: z
-      .array(
-        z
-          .object({
-            name: z.string().min(1),
-            id: sourceRefSchema,
-            mime_type: z.string().min(1),
-            download_link: z.string().min(1),
-          })
-          .strict(),
-      )
-      .min(1)
-      .max(10),
-  })
-  .strict();
+import {
+  isCustomGptImageActionPath,
+  type CustomGptImageActionRoute,
+} from "./custom-gpt-image-action-route.ts";
+import { sendCustomGptImageActionNotFound } from "./custom-gpt-image-action-errors.ts";
 const BACKUP_BODY_LIMIT = 280 * 1024 * 1024;
 
 export interface ValidatedOptions {
@@ -77,6 +62,7 @@ export interface ValidatedOptions {
   readonly customGptReadRoute: CustomGptReadRoute | null;
   readonly customGptFactActionRoute: CustomGptFactActionRoute | null;
   readonly customGptCreateActionRoute: CustomGptCreateActionRoute | null;
+  readonly customGptImageActionRoute: CustomGptImageActionRoute | null;
 }
 
 export interface RouteRequestDependencies {
@@ -217,6 +203,22 @@ async function routeAuthorizedRequest(
 
   if (url.pathname.startsWith("/api/actions/")) {
     const signal = requireRequestSignal(requestSignal);
+    if (options.customGptImageActionRoute !== null) {
+      const handled = await options.customGptImageActionRoute.handleRequest(
+        request,
+        response,
+        url,
+        dependencies,
+        options.writeBodyTimeoutMs,
+        options.actionUploadTimeoutMs,
+        signal,
+      );
+      if (handled) return;
+    } else if (isCustomGptImageActionPath(url.pathname)) {
+      closeIncompleteRequestAfterResponse(request, response);
+      sendCustomGptImageActionNotFound(response);
+      return;
+    }
     if (options.customGptCreateActionRoute !== null) {
       const handled = await options.customGptCreateActionRoute.handleRequest(
         request,
@@ -259,41 +261,6 @@ async function routeAuthorizedRequest(
       ), signal,
     );
     if (handled) return;
-  }
-
-  if (
-    request.method === "POST" &&
-    url.pathname === "/api/actions/upload-product-images"
-  ) {
-    const signal = requireRequestSignal(requestSignal);
-    const output = await runActionPreparedWrite(
-      request,
-      response,
-      options,
-      dependencies,
-      signal,
-      async (signal) => {
-        const body = actionFileRequestSchema.safeParse(
-          await readJson(request, JSON_BODY_LIMIT, signal),
-        );
-        if (!body.success) {
-          throw invalidInput();
-        }
-        const downloaded = await options.actionDownloader(
-          body.data.openaiFileIdRefs,
-          options.actionFileHosts,
-          signal,
-        );
-        return application.prepareProductImages(downloaded, { signal });
-      },
-      (prepared, operationSignal) =>
-        application.commitPreparedProductImages(prepared, {
-          signal: operationSignal,
-        }),
-      (prepared) => application.discardPreparedProductImages(prepared),
-    );
-    sendJson(response, 200, output);
-    return;
   }
 
   if (
