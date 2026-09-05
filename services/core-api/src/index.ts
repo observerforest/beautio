@@ -11,6 +11,7 @@ import { validateHttpBearerTokens } from "./http-bearer-tokens.ts";
 import { sendError } from "./responses.ts";
 import { ExclusiveOperationGate } from "./exclusive-operation-gate.ts";
 import { WritePreparationGate } from "./write-preparation-gate.ts";
+import { createCustomGptReadRoute, type CustomGptReadApplication, type CustomGptReadLimits } from "./custom-gpt-read-route.ts";
 import {
   routeRequest,
   type RouteRequestDependencies,
@@ -39,6 +40,8 @@ export interface CoreApiHandlerOptions {
   readonly publicOrigin?: string;
   readonly webRoot?: string;
   readonly readOnlyMcp?: ReadOnlyMcpRoute;
+  readonly customGptReads?: CustomGptReadApplication;
+  readonly customGptReadLimits?: CustomGptReadLimits;
 }
 
 /**
@@ -117,6 +120,8 @@ function validateOptions(options: CoreApiHandlerOptions): ValidatedOptions {
         ? null
         : createStaticWebRoot(options.webRoot),
     readOnlyMcp: options.readOnlyMcp ?? null,
+    customGptReadRoute: options.customGptReads === undefined ? null :
+      createCustomGptReadRoute(options.customGptReads, options.customGptReadLimits),
   };
 }
 

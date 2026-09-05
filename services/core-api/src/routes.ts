@@ -26,6 +26,8 @@ import { invalidInput, sendJson, sendNotFound } from "./responses.ts";
 import type { ReadOnlyMcpRoute } from "./read-only-mcp.ts";
 import { tryServeStaticWeb, type StaticWebRoot } from "./static-web.ts";
 import type { WritePreparationPermit } from "./write-preparation-gate.ts";
+import type { CustomGptReadRoute } from "./custom-gpt-read-route.ts";
+import { closeIncompleteRequestAfterResponse } from "./incomplete-request.ts";
 
 const actionFileRequestSchema = z
   .object({
@@ -62,6 +64,7 @@ export interface ValidatedOptions {
   readonly publicOrigin: string | undefined;
   readonly staticWebRoot: StaticWebRoot | null;
   readonly readOnlyMcp: ReadOnlyMcpRoute | null;
+  readonly customGptReadRoute: CustomGptReadRoute | null;
 }
 
 export interface RouteRequestDependencies {
@@ -199,6 +202,18 @@ async function routeAuthorizedRequest(
   backupSignal?: AbortSignal,
   requestSignal?: AbortSignal,
 ): Promise<void> {
+
+  if (options.customGptReadRoute !== null && url.pathname.startsWith("/api/actions/")) {
+    const signal = requireRequestSignal(requestSignal);
+    const handled = await options.customGptReadRoute.handleRequest(
+      request, response, url,
+      (maximumBytes) => dependencies.withWriteBodyDeadline(
+        options.writeBodyTimeoutMs, signal,
+        (bodySignal) => readJson(request, maximumBytes, bodySignal),
+      ), signal,
+    );
+    if (handled) return;
+  }
 
   if (
     request.method === "POST" &&
@@ -719,37 +734,6 @@ function requireRequestSignal(signal: AbortSignal | undefined): AbortSignal {
     );
   }
   return signal;
-}
-
-const closedPreparationRequests = new WeakSet<IncomingMessage>();
-
-function closeIncompleteRequestAfterResponse(
-  request: IncomingMessage,
-  response: ServerResponse,
-): void {
-  if (closedPreparationRequests.has(request)) {
-    return;
-  }
-  closedPreparationRequests.add(request);
-
-  if (!request.destroyed && !request.readableEnded) {
-    request.resume();
-  }
-  if (request.complete || request.destroyed) {
-    return;
-  }
-  if (response.headersSent) {
-    response.destroy();
-    return;
-  }
-
-  const socket = request.socket;
-  response.setHeader("connection", "close");
-  response.once("finish", () => {
-    if (!socket.destroyed) {
-      socket.destroySoon();
-    }
-  });
 }
 
 function addLegacyOpeningAccuracyWhenMissing(body: unknown): unknown {

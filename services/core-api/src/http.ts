@@ -1,4 +1,4 @@
-import { InventoryApplicationService } from "@beautio/application";
+import { CommandExecutionService, CustomGptReadService, InventoryApplicationService } from "@beautio/application";
 import { SqliteInventoryRepository } from "@beautio/database";
 import {
   FileImageAssetStorage,
@@ -52,6 +52,7 @@ const readOnlyMcp =
       });
 const handler = createCoreApiHandler(application, {
   ...bearerTokens,
+  customGptReads: new CustomGptReadService(application, repository, new CommandExecutionService(repository)),
   actionFileHosts,
   ...(publicOrigin === undefined ? {} : { publicOrigin }),
   ...(webRoot === undefined ? {} : { webRoot }),
