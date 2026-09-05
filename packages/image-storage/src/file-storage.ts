@@ -10,6 +10,7 @@ import {
 import { join, resolve } from "node:path";
 import { createCardImageRendition } from "./card-rendition.ts";
 import { isMissingFile, throwIfAborted } from "./errors.ts";
+import { ReservedImageObjectStore, type ReservedImageObject } from "./reserved-image-objects.ts";
 import {
   EMPTY_BYTES,
   STORAGE_KEY_PATTERN,
@@ -194,6 +195,7 @@ export class FileImageRenditionProvider {
  */
 export class FileImageAssetStorage {
   readonly #root: string;
+  readonly #reservations: ReservedImageObjectStore;
 
   /**
    * Creates a filesystem-backed image store.
@@ -205,7 +207,19 @@ export class FileImageAssetStorage {
       throw new BeautioError("INVALID_INPUT", "image storage root is required");
     }
     this.#root = resolve(rootDirectory);
+    this.#reservations = new ReservedImageObjectStore(this.#root);
   }
+
+  /** @param key - Generated opaque key. @returns Exclusive empty-file capability without claiming existing files. */
+  reserve(key: string): Promise<ReservedImageObject> { return this.#reservations.reserve(key); }
+  /** @param handle - Owned capability. @param bytes - Validated bytes. @returns Completion of one durable write. */
+  writeReserved(handle: ReservedImageObject, bytes: Uint8Array): Promise<void> { return this.#reservations.writeReserved(handle, bytes); }
+  /** @param handle - Owned capability. @param bytes - Expected complete bytes. @returns Completion after identity and exact readback match. */
+  verifyReserved(handle: ReservedImageObject, bytes: Uint8Array): Promise<void> { return this.#reservations.verifyReserved(handle, bytes); }
+  /** @param handle - Owned capability. @returns Completion after deleting only its matching file identity. */
+  discardReserved(handle: ReservedImageObject): Promise<void> { return this.#reservations.discardReserved(handle); }
+  /** @param handle - Owned capability. @returns Completion after closing and retiring it without deleting content. */
+  releaseReserved(handle: ReservedImageObject): Promise<void> { return this.#reservations.releaseReserved(handle); }
 
   /**
    * Persists bytes once under a validated opaque storage key.

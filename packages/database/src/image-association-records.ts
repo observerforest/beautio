@@ -1,4 +1,4 @@
-import { BeautioError } from "@beautio/domain";
+import { BeautioError, type Product } from "@beautio/domain";
 import type { DatabaseSync } from "node:sqlite";
 import { readImageAsset } from "./records.ts";
 
@@ -30,5 +30,22 @@ export function claimImageForProduct(database: DatabaseSync, imageAssetId: strin
   if (result.changes !== 1) {
     assertImageCanBeLinked(database, imageAssetId, now);
     throw new BeautioError("BATCH_CONFLICT", `image asset ${imageAssetId} could not be associated`);
+  }
+}
+
+/** @param database - Caller transaction. @param existing - Current Product. @param imageAssetId - Selected image or legacy clearing request. @param now - Current instant. @param unlinkedExpiresAt - Existing temporary retention policy. @returns Completion after preserving existing association replacement semantics. */
+export function replaceProductImageAssociation(database: DatabaseSync, existing: Product, imageAssetId: string | null, now: string, unlinkedExpiresAt: string): void {
+  if (existing.imageAssetId !== imageAssetId) {
+    if (existing.imageAssetId !== null) {
+      const released = database.prepare(`UPDATE image_assets SET status = 'temporary', product_id = NULL, expires_at = ?
+        WHERE id = ? AND status = 'linked' AND product_id = ?`).run(unlinkedExpiresAt, existing.imageAssetId, existing.id);
+      if (released.changes !== 1) throw new BeautioError("BATCH_CONFLICT", "the existing Product image association is inconsistent");
+    }
+    if (imageAssetId !== null) claimImageForProduct(database, imageAssetId, existing.id, now);
+    return;
+  }
+  if (imageAssetId !== null) {
+    const current = readImageAsset(database, imageAssetId);
+    if (current === null || current.status !== "linked" || current.productId !== existing.id) throw new BeautioError("BATCH_CONFLICT", "the Product image association is inconsistent");
   }
 }

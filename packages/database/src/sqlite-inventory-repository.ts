@@ -28,6 +28,8 @@ import type {
   CreateCommandRepository,
   CreateCommandPersistenceInput,
   CreateCommandPersistenceResult,
+  ImageCommandRepository, ImageUploadPersistenceInput, FinalizeImageUploadPersistenceInput,
+  SetDisplayImageCommandPersistenceInput, SetDisplayImageCommandPersistenceResult, SucceededCommandExecutionRecord,
 } from "@beautio/application";
 import {
   BeautioError,
@@ -77,7 +79,9 @@ import {
 import { executeFactCommandRecord } from "./fact-command-records.ts";
 import { executeCreateCommandRecord } from "./create-command-records.ts";
 import { createInventoryBatchInTransaction } from "./inventory-batch-records.ts";
-import { claimImageForProduct } from "./image-association-records.ts";
+import { claimImageForProduct, replaceProductImageAssociation } from "./image-association-records.ts";
+import { stageImageUploadCommandRecord, finalizeImageUploadCommandRecord, abandonImageUploadCommandRecord } from "./image-upload-command-records.ts";
+import { executeSetDisplayImageCommandRecord } from "./set-display-image-command-records.ts";
 import { endInventoryItemInTransaction, recordProductOpenedInTransaction, updateInventoryItemCustomNotesInTransaction } from "./inventory-lifecycle-records.ts";
 
 export type {
@@ -87,7 +91,7 @@ export type {
 } from "./import.ts";
 
 export class SqliteInventoryRepository
-  implements BackupInventoryRepository, CommandExecutionRepository, RevisionedInventoryRepository, FactCommandRepository, CreateCommandRepository
+  implements BackupInventoryRepository, CommandExecutionRepository, RevisionedInventoryRepository, FactCommandRepository, CreateCommandRepository, ImageCommandRepository
 {
   readonly #database: DatabaseSync;
 
@@ -640,6 +644,23 @@ export class SqliteInventoryRepository
   }
 
   /** @inheritdoc */
+  async stageImageUploadCommand(input: ImageUploadPersistenceInput): Promise<void> {
+    stageImageUploadCommandRecord(this.#database, input);
+  }
+  /** @inheritdoc */
+  async finalizeImageUploadCommand(input: FinalizeImageUploadPersistenceInput): Promise<SucceededCommandExecutionRecord> {
+    return finalizeImageUploadCommandRecord(this.#database, input);
+  }
+  /** @inheritdoc */
+  async abandonImageUploadCommand(input: ImageUploadPersistenceInput): Promise<void> {
+    abandonImageUploadCommandRecord(this.#database, input);
+  }
+  /** @inheritdoc */
+  async executeSetDisplayImageCommand(input: SetDisplayImageCommandPersistenceInput): Promise<SetDisplayImageCommandPersistenceResult> {
+    return executeSetDisplayImageCommandRecord(this.#database, input);
+  }
+
+  /** @inheritdoc */
   async activateStagedImageAssets(
     imageAssetIds: readonly string[],
   ): Promise<void> {
@@ -831,43 +852,7 @@ export class SqliteInventoryRepository
     now: string,
     unlinkedExpiresAt: string,
   ): void {
-    if (existing.imageAssetId !== imageAssetId) {
-      if (existing.imageAssetId !== null) {
-        const released = this.#database
-          .prepare(
-            `UPDATE image_assets SET
-              status = 'temporary',
-              product_id = NULL,
-              expires_at = ?
-            WHERE id = ? AND status = 'linked' AND product_id = ?`,
-          )
-          .run(unlinkedExpiresAt, existing.imageAssetId, existing.id);
-        if (released.changes !== 1) {
-          throw new BeautioError(
-            "BATCH_CONFLICT",
-            "the existing Product image association is inconsistent",
-          );
-        }
-      }
-      if (imageAssetId !== null) {
-        this.claimImageForProduct(imageAssetId, existing.id, now);
-      }
-      return;
-    }
-
-    if (imageAssetId !== null) {
-      const currentAsset = this.readImageAsset(imageAssetId);
-      if (
-        currentAsset === null ||
-        currentAsset.status !== "linked" ||
-        currentAsset.productId !== existing.id
-      ) {
-        throw new BeautioError(
-          "BATCH_CONFLICT",
-          "the Product image association is inconsistent",
-        );
-      }
-    }
+    replaceProductImageAssociation(this.#database, existing, imageAssetId, now, unlinkedExpiresAt);
   }
 
   private claimImageForProduct(

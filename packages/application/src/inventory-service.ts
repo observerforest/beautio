@@ -78,6 +78,7 @@ import {
 } from "./output-mappers.ts";
 import {
   ImageUploadPreparationCoordinator,
+  type ConsumedProductImageUpload,
   type PreparedProductImageUpload,
 } from "./prepared-product-image-upload.ts";
 import {
@@ -535,6 +536,15 @@ export class InventoryApplicationService {
       untrustedImages,
       options,
     );
+  }
+
+  /**
+   * Transfers a shared preparation capability to the trusted image command writer.
+   * @param prepared - Same-instance unconsumed semantic preparation.
+   * @returns Owned immutable snapshots and their capacity release callback.
+   */
+  consumePreparedProductImages(prepared: PreparedProductImageUpload): ConsumedProductImageUpload {
+    return this.requireImageCapabilities().preparation.consume(prepared);
   }
 
   /**

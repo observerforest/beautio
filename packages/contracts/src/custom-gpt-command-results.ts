@@ -1,8 +1,9 @@
 import { z } from "zod";
 import { createCommandSuccessResultSchema } from "./create-command-results.ts";
 import { factCommandSuccessResultSchema, parseFactCommandSuccessResult } from "./fact-command-results.ts";
+import { parseImageCommandSuccessResult, setDisplayImageCommandSuccessResultSchema, uploadImagesCommandSuccessResultSchema } from "./image-command-results.ts";
 
-export const customGptCommandSuccessResultSchema = z.union([factCommandSuccessResultSchema, createCommandSuccessResultSchema]);
+export const customGptCommandSuccessResultSchema = z.union([factCommandSuccessResultSchema, createCommandSuccessResultSchema, uploadImagesCommandSuccessResultSchema, setDisplayImageCommandSuccessResultSchema]);
 
 /**
  * Projects only a supported operation's strict, minimal persisted receipt.
@@ -15,5 +16,5 @@ export function parseCustomGptCommandSuccessResult(operationId: string, value: u
     const parsed = createCommandSuccessResultSchema.safeParse(value);
     return parsed.success ? parsed.data : null;
   }
-  return parseFactCommandSuccessResult(operationId, value);
+  return parseFactCommandSuccessResult(operationId, value) ?? parseImageCommandSuccessResult(operationId, value);
 }

@@ -6,6 +6,8 @@ export * from "./custom-gpt-read-service.ts";
 export * from "./custom-gpt-fact-write-service.ts";
 export * from "./custom-gpt-create-command-service.ts";
 export * from "./create-command-port.ts";
+export * from "./image-command-port.ts";
+export * from "./custom-gpt-image-command-service.ts";
 export * from "./inventory-batch-preparation.ts";
 export * from "./fact-command-port.ts";
 export * from "./inventory-service.ts";

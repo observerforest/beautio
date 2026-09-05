@@ -5,6 +5,8 @@ export * from "./custom-gpt-fact-commands.ts";
 export * from "./custom-gpt-create-command.ts";
 export * from "./create-command-results.ts";
 export * from "./custom-gpt-command-results.ts";
+export * from "./custom-gpt-image-commands.ts";
+export * from "./image-command-results.ts";
 export * from "./fact-command-results.ts";
 export * from "./inventory.ts";
 export * from "./revisioned-inventory.ts";
