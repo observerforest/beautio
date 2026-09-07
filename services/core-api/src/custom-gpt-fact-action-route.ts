@@ -191,6 +191,9 @@ export function createCustomGptFactActionRoute(
           requestSignal,
         );
         const output = customGptFactCommandOutputSchema.parse(rawOutput);
+        if (output.operation_id !== matched.operationId) {
+          throw new Error("fact Action returned a mismatched operation receipt");
+        }
         if (
           Buffer.byteLength(JSON.stringify(output), "utf8") >
           FACT_ACTION_RESPONSE_LIMIT

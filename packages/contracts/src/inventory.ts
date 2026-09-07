@@ -43,6 +43,19 @@ const nullableTrimmedTextSchema = (fieldName: string, maximum: number) =>
       { error: invalidInput(`${fieldName} must be null when it is unknown`) },
     );
 
+const nullableTrimmedSupportedTextSchema = (
+  fieldName: string,
+  maximum: number,
+) =>
+  nullableTrimmedTextSchema(fieldName, maximum).refine(
+    (value) => value === null || hasOnlySupportedTextCharacters(value),
+    {
+      error: invalidInput(
+        `${fieldName} contains unsupported control characters`,
+      ),
+    },
+  );
+
 const nullableNormalizedTextSchema = (fieldName: string, maximum: number) =>
   z
     .string({ error: invalidInput(`${fieldName} must be a string or null`) })
@@ -378,7 +391,7 @@ const newProductInputSchema = z
   .object({
     batch_ref: batchRefSchema,
     name: productNameSchema,
-    alias: nullableTrimmedTextSchema("alias", productAliasMaximumLength)
+    alias: nullableTrimmedSupportedTextSchema("alias", productAliasMaximumLength)
       .describe(
         "A user-provided Product nickname or a commonly used online name that the user has confirmed. Use null when it is missing or uncertain; never guess.",
       )
@@ -499,7 +512,7 @@ export const uploadProductImagesMcpInputSchema = z
 export const updateProductInputSchema = z
   .object({
     name: productNameSchema,
-    alias: nullableTrimmedTextSchema("alias", productAliasMaximumLength).optional(),
+    alias: nullableTrimmedSupportedTextSchema("alias", productAliasMaximumLength).optional(),
     brand: nullableTrimmedTextSchema("brand", 100).optional(),
     category: nullableTrimmedTextSchema("category", 100),
     size_label: nullableTrimmedTextSchema("size_label", 100),

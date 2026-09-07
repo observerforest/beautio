@@ -278,32 +278,64 @@ its SQLite or image directory with production.
 
 ### GPT Actions HTTP
 
-The versioned schema (currently API version 1.1) is available to the Custom GPT bearer key from a configured
-server at:
+The versioned OpenAPI document (currently contract version 2.0.0) is available
+to the Custom GPT bearer key from a configured server at the compatibility URL:
 
 ```text
 GET /openapi/beautio-actions-v1.json
 ```
 
-It exposes only:
+It exposes exactly three read operations, all marked non-consequential:
+
+```text
+POST /api/actions/inventory/search
+POST /api/actions/inventory/fetch
+POST /api/actions/commands/status
+```
+
+It also exposes exactly eight consequential write operations:
 
 ```text
 POST /api/actions/upload-product-images
 POST /api/actions/create-inventory-batch
+PATCH /api/actions/products/{product_id}/profile
+PUT   /api/actions/products/{product_id}/display-image
+PATCH /api/actions/inventory-items/{inventory_item_id}/facts
+PUT   /api/actions/inventory-items/{inventory_item_id}/custom-notes
+POST  /api/actions/inventory-items/{inventory_item_id}/open
+POST  /api/actions/inventory-items/{inventory_item_id}/end-use
 ```
 
-Both require the Custom GPT bearer key and are marked consequential. Action file downloads require HTTPS and a configured trusted source: normal allowlist entries are exact, while the explicit `oaiusercontent.com` root also accepts only its dot-boundary subdomains. Public DNS results are required on every redirect, with at most three redirects, 15 seconds per file, and 40 seconds for the complete upload. Short-lived upstream file IDs and URLs are not persisted.
+All 11 operations require the Custom GPT bearer key. Every write carries its
+own lowercase UUID `command_id`; reuse that ID only when the identical confirmed
+command is redelivered. If a write response is unknown, stop further writes and
+use the read-only command-status operation plus inventory reads to check the
+original outcome instead of submitting a new command. After a successful write,
+read the affected inventory record back and compare the confirmed fields and
+revision. Image upload is checked through its complete ordered status receipt
+because the GPT surface has no general asset-read operation.
+
+Action file downloads require HTTPS and a configured trusted source: normal
+allowlist entries are exact, while the explicit `oaiusercontent.com` root also
+accepts only its dot-boundary subdomains. Public DNS results are required on
+every redirect, with at most three redirects, 15 seconds per file, and 40 seconds
+for the complete upload. Short-lived upstream file IDs and URLs are not
+persisted.
 
 For a public deployment, `BEAUTIO_PUBLIC_ORIGIN` adds the exact HTTPS server URL
 that Custom GPT should call. With the variable omitted, the schema keeps its
 local-test form and has no `servers` entry.
 
-This repository verifies the local Action contract with simulated upstream file delivery. It does not claim that a public domain, Custom GPT, TLS, DNS, or remote server deployment is live.
+This repository verifies the local Action contract with simulated upstream file
+delivery. A source change does not synchronize a Custom GPT Builder: schema and
+instructions must be updated as separate configuration steps and then verified
+in a fresh Builder session. The repository does not claim that Builder
+synchronization, a public domain, TLS, DNS, or a remote deployment is live.
 
 ## Admin HTTP surface
 
-Only health is public. The OpenAPI document and its two GPT Action writes require
-the Custom GPT bearer key. The fixed Codex automation bridge uses the existing
+Only health is public. The OpenAPI document and all 11 GPT Actions require the
+Custom GPT bearer key. The fixed Codex automation bridge uses the existing
 Action bearer key. Inventory, management edits, browser image upload, and
 private-image reads require the separate Admin bearer key:
 
