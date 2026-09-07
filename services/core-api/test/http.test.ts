@@ -43,6 +43,7 @@ import {
   createCoreApiHandler,
   type CoreApiHandlerOptions,
 } from "../src/index.ts";
+import { createBeautioActionsOpenApiV1 } from "../src/openapi.ts";
 import { sendError } from "../src/responses.ts";
 import {
   routeRequest,
@@ -3468,12 +3469,14 @@ test("HTTP maps strict batch errors and serves versioned Actions OpenAPI", async
     headers: authorization(CUSTOM_GPT_TOKEN),
   });
   assert.equal(openapi.status, 200);
-  const openapiBody = (await openapi.json()) as {
+  const openapiBody = await openapi.json();
+  assert.deepEqual(openapiBody, createBeautioActionsOpenApiV1(undefined));
+  const servedOpenApi = openapiBody as {
     readonly paths: object;
     readonly servers?: unknown;
   };
-  assert.equal(Object.keys(openapiBody.paths).length, 2);
-  assert.equal(openapiBody.servers, undefined);
+  assert.equal(Object.keys(servedOpenApi.paths).length, 11);
+  assert.equal("servers" in servedOpenApi, false);
 });
 
 test("maximum legal confirmed text batch stays within the existing one MiB JSON boundary", async (context) => {

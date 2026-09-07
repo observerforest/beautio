@@ -135,6 +135,64 @@ test("fact routes accept only the Custom GPT identity and fail closed when disab
   assert.deepEqual(disabled.snapshot()[4], []);
 });
 
+test("each fact endpoint fails closed when the application returns another operation receipt", async (context) => {
+  const commandId = factCommandId(15);
+  const fixture = await factActionFixture(context, {
+    createFactWrites: ({ service }) => ({
+      prepare: service.prepare.bind(service),
+      executePrepared: async () => customGptFactCommandOutputSchema.parse({
+        operation_id: "end_inventory_item_use",
+        command_id: commandId,
+        status: "in_progress",
+        created_at: "2026-09-05T00:00:00.000Z",
+        completed_at: null,
+        failure_code: null,
+        result: null,
+      }),
+    }),
+  });
+  const cases = [
+    ["PATCH", "/api/actions/products/product/profile", { command_id: commandId, expected_revision: 1, alias: "Safe alias" }],
+    ["PATCH", "/api/actions/inventory-items/bottle/facts", { command_id: commandId, expected_revision: 1, expires_on: null }],
+    ["PUT", "/api/actions/inventory-items/bottle/custom-notes", { command_id: commandId, custom_notes: null }],
+    ["POST", "/api/actions/inventory-items/bottle/open", { command_id: commandId, opened_on: "2026-09-05", opened_on_accuracy: "exact" }],
+  ] as const;
+  for (const [method, path, body] of cases) {
+    const response = await fixture.request(method, path, body);
+    assert.equal(response.status, 500, path);
+    assert.equal(
+      customGptFactActionErrorSchema.parse(await response.json()).error.code,
+      "COMMAND_STORE_FAILURE",
+      path,
+    );
+  }
+
+  const endFixture = await factActionFixture(context, {
+    createFactWrites: ({ service }) => ({
+      prepare: service.prepare.bind(service),
+      executePrepared: async () => customGptFactCommandOutputSchema.parse({
+        operation_id: "revise_product_profile",
+        command_id: commandId,
+        status: "in_progress",
+        created_at: "2026-09-05T00:00:00.000Z",
+        completed_at: null,
+        failure_code: null,
+        result: null,
+      }),
+    }),
+  });
+  const response = await endFixture.request(
+    "POST",
+    "/api/actions/inventory-items/bottle/end-use",
+    { command_id: commandId, as_of: "2026-09-05", lifecycle_status: "finished" },
+  );
+  assert.equal(response.status, 500);
+  assert.equal(
+    customGptFactActionErrorSchema.parse(await response.json()).error.code,
+    "COMMAND_STORE_FAILURE",
+  );
+});
+
 test("fact routes reject method, query, path, media, field and body boundary violations before claim", async (context) => {
   const fixture = await factActionFixture(context);
   const command = {
@@ -173,6 +231,15 @@ test("fact routes reject method, query, path, media, field and body boundary vio
       "PUT",
       "/api/actions/inventory-items/bottle/custom-notes",
       { ...command, unknown: true },
+    ).then((response) => [response, 400] as const),
+    fixture.request(
+      "PATCH",
+      "/api/actions/products/product/profile",
+      {
+        command_id: factCommandId(21),
+        expected_revision: 1,
+        alias: "unsafe\u0000alias",
+      },
     ).then((response) => [response, 400] as const),
     fixture.request(
       "PUT",
