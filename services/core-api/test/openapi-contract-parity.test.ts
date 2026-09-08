@@ -246,6 +246,41 @@ test("patch, create reference, and end-use branches match the runtime contracts"
   }
 });
 
+test("composed action bodies expose root object fields without weakening their branches", () => {
+  for (const path of [
+    "/api/actions/products/{product_id}/profile",
+    "/api/actions/inventory-items/{inventory_item_id}/facts",
+  ]) {
+    const schema = requestSchema(path, "patch");
+    assert.equal(schema.type, "object");
+    assert.equal(schema.additionalProperties, false);
+    assert.deepEqual(schema.required, ["command_id", "expected_revision"]);
+    assert.ok(schema.anyOf && schema.anyOf.length > 1);
+    for (const branch of schema.anyOf) {
+      assert.equal(branch.type, schema.type);
+      assert.equal(branch.additionalProperties, schema.additionalProperties);
+      assert.deepEqual(branch.properties, schema.properties);
+      assert.ok(schema.required.every((key) => branch.required?.includes(key)));
+      assert.equal(branch.required?.length, schema.required.length + 1);
+    }
+  }
+  const schema = requestSchema("/api/actions/inventory-items/{inventory_item_id}/end-use", "post");
+  assert.equal(schema.type, "object");
+  assert.equal(schema.additionalProperties, false);
+  assert.deepEqual(schema.required, ["command_id", "as_of", "lifecycle_status"]);
+  assert.deepEqual(Object.keys(schema.properties ?? {}).sort(), ["as_of", "command_id", "lifecycle_status", "remaining_percent_estimate"]);
+  assert.equal(schema.oneOf?.length, 2);
+  const formerSchema = { oneOf: schema.oneOf };
+  const base = { command_id: commandId, as_of: "2026-09-07" };
+  for (const lifecycle_status of ["finished", "discarded", "opened", null]) {
+    for (const remaining of [undefined, null, 0, 25, 100, -1, 101, 1.5, "25"]) {
+      const value = { ...base, lifecycle_status, ...(remaining === undefined ? {} : { remaining_percent_estimate: remaining }) };
+      assert.equal(validates(schema, value), validates(formerSchema, value));
+      assert.equal(validates(schema, value), customGptEndInventoryItemUseInputSchema.safeParse(value).success);
+    }
+  }
+});
+
 test("trimmed Product text encodes sentinels without rejecting valid normalized lengths", () => {
   const profileSchema = requestSchema(
     "/api/actions/products/{product_id}/profile",

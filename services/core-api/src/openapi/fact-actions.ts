@@ -39,7 +39,11 @@ const productProfilePatchFields = [
 
 const productProfileProperties = {
     command_id: canonicalUuidSchema,
-    expected_revision: entityRevisionSchema,
+    expected_revision: {
+      ...entityRevisionSchema,
+      description:
+        "Copy inventory_item.product.revision from the same most recent fetch_inventory_item response used for product_id, after verifying the target bottle. Do not use inventory_item.revision. If the Product ID or revision is missing, or inventory_item.product_id differs from inventory_item.product.product_id, stop without writing and fetch the target bottle again.",
+    },
     name: trimmedConfirmedTextSchema(200, "Confirmed Product name."),
     alias: nullableSchema(
       trimmedSupportedConfirmedTextSchema(
@@ -68,6 +72,10 @@ const productProfileProperties = {
 } as const;
 
 const reviseProductProfileInputSchema = {
+  ...strictObjectSchema(
+    ["command_id", "expected_revision"],
+    productProfileProperties,
+  ),
   anyOf: productProfilePatchFields.map((field) =>
     strictObjectSchema(
       ["command_id", "expected_revision", field],
@@ -93,6 +101,10 @@ const inventoryItemFactProperties = {
 } as const;
 
 const reviseInventoryItemFactsInputSchema = {
+  ...strictObjectSchema(
+    ["command_id", "expected_revision"],
+    inventoryItemFactProperties,
+  ),
   anyOf: inventoryFactPatchFields.map((field) =>
     strictObjectSchema(
       ["command_id", "expected_revision", field],
@@ -122,6 +134,12 @@ const recordProductOpenedInputSchema = strictObjectSchema(
 );
 
 const endInventoryItemUseInputSchema = {
+  ...strictObjectSchema(["command_id", "as_of", "lifecycle_status"], {
+    command_id: canonicalUuidSchema,
+    as_of: isoDateSchema,
+    lifecycle_status: { type: "string", enum: ["finished", "discarded"] },
+    remaining_percent_estimate: nullableIntegerSchema(0, 100),
+  }),
   oneOf: [
     strictObjectSchema(["command_id", "as_of", "lifecycle_status"], {
       command_id: canonicalUuidSchema,
@@ -149,7 +167,8 @@ const productIdPathParameter = {
   name: "product_id",
   in: "path",
   required: true,
-  description: "Stable opaque identifier of the Product to update.",
+  description:
+    "Copy inventory_item.product.product_id verbatim from the most recent fetch_inventory_item response after verifying the target bottle. Do not use inventory_item.inventory_item_id or command_id, and never generate or rewrite an entity ID. If the Product ID or revision is missing, or inventory_item.product_id differs from inventory_item.product.product_id, stop without writing and fetch the target bottle again.",
   schema: pathIdSchema,
 } as const;
 
@@ -165,7 +184,7 @@ export const reviseProductProfileActionOperation = {
   operationId: "revise_product_profile",
   summary: "Revise a shared Product profile",
   description:
-    "Updates confirmed shared Product profile fields and its revision. Omitted fields are preserved; null clears nullable fields. At least one profile field is required. The path identifies the Product, and this operation does not change its display image.",
+    "Updates confirmed shared Product fields and revision, not images. Omitted fields stay unchanged; null clears nullable fields. Requires a profile field. Bind Product ID and revision to the same verified fetch as specified below; stop without writing if values are missing or linkage is inconsistent.",
   "x-openai-isConsequential": true,
   security: bearerAuthSecurity,
   parameters: [productIdPathParameter],
