@@ -343,6 +343,7 @@ async function validateDownloadTarget(
 ): Promise<readonly ResolvedAddress[]> {
   if (
     url.protocol !== "https:" ||
+    url.port !== "" ||
     url.username.length > 0 ||
     url.password.length > 0 ||
     !isAllowedActionFileHostname(url.hostname, allowedHosts)
