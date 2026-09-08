@@ -52,6 +52,7 @@ export const uploadProductImagesActionOperation = {
   security: bearerAuthSecurity,
   requestBody: {
     required: true,
+    description: "After platform file-reference replacement, the complete transmitted JSON body, including whitespace and escapes, must not exceed 99999 UTF-8 bytes. HTTP 413 UPLOAD_TOO_LARGE rejects an oversized body before command registration or download. Do not truncate file references or automatically split the batch.",
     content: {
       "application/json": { schema: uploadProductImagesInputSchema },
     },

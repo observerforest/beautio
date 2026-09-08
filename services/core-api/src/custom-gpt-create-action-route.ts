@@ -4,7 +4,8 @@ import {
   customGptCreateCommandOutputSchema,
 } from "@beautio/contracts";
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { JSON_BODY_LIMIT, readJson, throwIfRequestAborted } from "./body.ts";
+import { readJson, throwIfRequestAborted } from "./body.ts";
+import { customGptMaximumPayloadBytes } from "./custom-gpt-payload-limits.ts";
 import {
   sendCustomGptCreateActionError,
   sendCustomGptCreateActionNotFound,
@@ -113,7 +114,7 @@ export function createCustomGptCreateActionRoute(
             throwIfRequestAborted(preparationSignal);
             const body = await readJson(
               request,
-              JSON_BODY_LIMIT,
+              customGptMaximumPayloadBytes,
               preparationSignal,
             );
             throwIfRequestAborted(preparationSignal);

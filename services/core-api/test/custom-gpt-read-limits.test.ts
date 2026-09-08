@@ -69,8 +69,11 @@ test("read response bounds count complete UTF-8 bytes and never send truncated s
   assert.ok(Buffer.byteLength(JSON.stringify(largeOutput), "utf8") > 1900);
   fixture.reads.fetchInventoryItem = async () => largeOutput;
   const response = await fixture.post(fetchItem, { inventory_item_id: "a-active" });
-  assert.equal(response.status, 500);
-  assert.doesNotMatch(await response.text(), /inventory_item|界/);
+  assert.equal(response.status, 422);
+  const rejected = await response.text();
+  assert.match(rejected, /RESPONSE_TOO_LARGE/);
+  assert.match(rejected, /1900-byte/);
+  assert.doesNotMatch(rejected, /inventory_item|界/);
   fixture.reads.fetchInventoryItem = original;
   assert.equal((await fixture.post(fetchItem, { inventory_item_id: "a-active" })).status, 200);
 });
@@ -93,8 +96,8 @@ test("read output rejects unknown fields and errors never expose provider messag
 test("invalid resource options cannot enlarge the maximum boundaries", async (context) => {
   const { reads } = await readFixture(context);
   for (const value of [0, 9, 1.5, Infinity, NaN]) assert.throws(() => createCustomGptReadRoute(reads, { maximumConcurrentRequests: value }));
-  for (const value of [511, 262145, 512.5, Infinity, NaN]) assert.throws(() => createCustomGptReadRoute(reads, { maximumResultBytes: value }));
-  assert.doesNotThrow(() => createCustomGptReadRoute(reads, { maximumConcurrentRequests: 8, maximumResultBytes: 262144 }));
+  for (const value of [511, 100000, 262144, 512.5, Infinity, NaN]) assert.throws(() => createCustomGptReadRoute(reads, { maximumResultBytes: value }));
+  assert.doesNotThrow(() => createCustomGptReadRoute(reads, { maximumConcurrentRequests: 8, maximumResultBytes: 99999 }));
 });
 
 test("read bodies reject wrong content type, invalid JSON and over 64 KiB without invoking reads", async (context) => {

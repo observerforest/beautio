@@ -476,7 +476,7 @@ test("known-failure settlement busy stays unknown, holds the gate, and replays i
   assert.deepEqual(fixture.snapshot(), afterFirst);
 });
 
-test("the maximum 25 Product and 100 bottle request keeps its one MiB input and eight KiB receipt bounds", async (context) => {
+test("25 Products and 100 bottles fit with short fields; oversized text is rejected before creation", async (context) => {
   const fixture = await createActionFixture(context);
   const products = Array.from({ length: 25 }, (_, index) => ({
     batch_ref: `product_${index}`,
@@ -501,8 +501,19 @@ test("the maximum 25 Product and 100 bottle request keeps its one MiB input and 
   };
   const requestText = JSON.stringify(body);
   assert.ok(Buffer.byteLength(requestText, "utf8") < 1024 * 1024);
+  assert.ok(Buffer.byteLength(requestText, "utf8") > 99_999);
+  const before = fixture.snapshot();
+  const oversized = await fixture.request("POST", createPath, requestText);
+  assert.equal(oversized.status, 413);
+  assert.equal(customGptCreateActionErrorSchema.parse(await oversized.json()).error.code, "UPLOAD_TOO_LARGE");
+  assert.deepEqual(fixture.snapshot(), before);
 
-  const response = await fixture.request("POST", createPath, requestText);
+  const compactBody = { ...body,
+    products: products.map((product) => ({ ...product, ingredient_list_text: "Aqua", shared_notes: "Shared" })),
+    inventory_items: inventoryItems.map((item) => ({ ...item, custom_notes: "Bottle" })),
+  };
+  assert.ok(Buffer.byteLength(JSON.stringify(compactBody), "utf8") <= 99_999);
+  const response = await fixture.request("POST", createPath, compactBody);
   assert.equal(response.status, 200);
   const responseText = await response.text();
   assert.ok(

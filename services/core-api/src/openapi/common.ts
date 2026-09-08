@@ -110,6 +110,7 @@ const readErrorCodes = [
   "INVALID_INPUT",
   "UNAUTHORIZED",
   "UPLOAD_TOO_LARGE",
+  "RESPONSE_TOO_LARGE",
   "INTERNAL_ERROR",
 ] as const;
 
@@ -123,12 +124,12 @@ function errorSchema(codes: readonly string[]): JsonSchema {
 }
 
 export const readErrorResponse = jsonResponse(
-  "Stable bounded Beautio read error.",
+  "Stable bounded Beautio read error. HTTP 422 RESPONSE_TOO_LARGE rejects a complete result exceeding the UTF-8 JSON byte limit without truncation; it does not establish any earlier write outcome.",
   errorSchema(readErrorCodes),
 );
 
 export const fetchReadErrorResponse = jsonResponse(
-  "Stable bounded Beautio inventory fetch error.",
+  "Stable bounded Beautio inventory fetch error. HTTP 422 RESPONSE_TOO_LARGE rejects a complete result exceeding the UTF-8 JSON byte limit without truncation; it does not establish any earlier write outcome.",
   errorSchema([...readErrorCodes, "INVENTORY_ITEM_NOT_FOUND"]),
 );
 

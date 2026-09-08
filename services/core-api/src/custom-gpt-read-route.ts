@@ -7,6 +7,7 @@ import {
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { throwIfRequestAborted } from "./body.ts";
 import { sendCustomGptReadError } from "./custom-gpt-read-errors.ts";
+import { assertCustomGptResponseFits, customGptMaximumPayloadBytes } from "./custom-gpt-payload-limits.ts";
 import { closeIncompleteRequestAfterResponse } from "./incomplete-request.ts";
 import { invalidInput, sendJson, sendNotFound } from "./responses.ts";
 
@@ -43,7 +44,7 @@ export function createCustomGptReadRoute(
   limits: CustomGptReadLimits = {},
 ): CustomGptReadRoute {
   const maximumConcurrent = boundedInteger(limits.maximumConcurrentRequests, 8, 1, 8);
-  const maximumBytes = boundedInteger(limits.maximumResultBytes, 262144, 512, 262144);
+  const maximumBytes = boundedInteger(limits.maximumResultBytes, customGptMaximumPayloadBytes, 512, customGptMaximumPayloadBytes);
   let activeRequests = 0;
   return {
     async handleRequest(request, response, url, readBody, signal) {
@@ -73,9 +74,7 @@ export function createCustomGptReadRoute(
             ? customGptFetchOutputSchema.parse(await application.fetchInventoryItem(input))
             : customGptCommandStatusOutputSchema.parse(await application.getCommandStatus(input));
         throwIfRequestAborted(signal);
-        if (Buffer.byteLength(JSON.stringify(output), "utf8") > maximumBytes) {
-          throw new Error("read result exceeds configured byte limit");
-        }
+        assertCustomGptResponseFits(output, maximumBytes);
         sendJson(response, 200, output);
       } catch (error) {
         closeIncompleteRequestAfterResponse(request, response);

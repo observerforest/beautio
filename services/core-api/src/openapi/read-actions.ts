@@ -215,7 +215,7 @@ export const searchInventoryActionOperation = {
   },
   responses: {
     "200": jsonResponse(
-      "Stable paginated inventory summaries.",
+      "Complete paginated inventory summaries, at most 99999 UTF-8 JSON bytes. Oversized results return HTTP 422 RESPONSE_TOO_LARGE without truncation.",
       customGptSearchOutputSchema,
     ),
     default: readErrorResponse,
@@ -237,7 +237,7 @@ export const fetchInventoryItemActionOperation = {
   },
   responses: {
     "200": jsonResponse(
-      "One complete versioned inventory record.",
+      "One complete versioned inventory record, at most 99999 UTF-8 JSON bytes. Oversized results return HTTP 422 RESPONSE_TOO_LARGE without truncation.",
       customGptFetchOutputSchema,
     ),
     default: fetchReadErrorResponse,
@@ -258,7 +258,7 @@ export const getCommandStatusActionOperation = {
     },
   },
   responses: {
-    "200": jsonResponse("The stored command status.", commandStatusOutputSchema),
+    "200": jsonResponse("The complete stored command status, at most 99999 UTF-8 JSON bytes. Oversized results return HTTP 422 RESPONSE_TOO_LARGE without truncation; no earlier write outcome is established.", commandStatusOutputSchema),
     default: readErrorResponse,
   },
 } as const;

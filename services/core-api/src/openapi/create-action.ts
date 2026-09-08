@@ -127,6 +127,7 @@ export const createInventoryBatchActionOperation = {
   security: bearerAuthSecurity,
   requestBody: {
     required: true,
+    description: "The complete transmitted JSON body, including whitespace and escapes, must not exceed 99999 UTF-8 bytes. HTTP 413 UPLOAD_TOO_LARGE rejects an oversized body before command registration. Do not truncate fields or automatically split the batch.",
     content: {
       "application/json": { schema: createInventoryBatchInputSchema },
     },

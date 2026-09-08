@@ -28,9 +28,11 @@ const standardRequestOperations = [
   "end_inventory_item_use",
 ] as const;
 
-// These are pure in-memory schema and serialization regressions for a known
-// Actions transport compatibility gap, not Custom GPT Builder acceptance tests;
-// they do not alter any runtime cap or business limit.
+// These are pure schema/serialization examples, not runtime acceptance tests.
+// Business schemas intentionally remain broader than the Custom GPT transport:
+// its separate 99999-byte cap now rejects these complete oversized payloads.
+// The old 1 MiB/256 KiB comparisons below document why that guard is necessary,
+// not the current Custom GPT allowance or Builder acceptance.
 test("known Actions transport gap: a valid 25-Product, 100-bottle create can exceed 100000 characters below one MiB", () => {
   const ascii = customGptCreateCommandInputSchema.parse(createInput("a"));
   const cjk = customGptCreateCommandInputSchema.parse(createInput("界"));

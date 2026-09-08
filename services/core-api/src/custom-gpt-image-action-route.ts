@@ -9,7 +9,8 @@ import {
   customGptUploadImagesCommandOutputSchema,
 } from "@beautio/contracts";
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { JSON_BODY_LIMIT, readJson, throwIfRequestAborted } from "./body.ts";
+import { readJson, throwIfRequestAborted } from "./body.ts";
+import { customGptMaximumPayloadBytes } from "./custom-gpt-payload-limits.ts";
 import {
   sendCustomGptImageActionError,
   sendCustomGptImageActionNotFound,
@@ -176,7 +177,7 @@ async function handleUpload(
         throwIfRequestAborted(preparationSignal);
         const body = await readJson(
           request,
-          JSON_BODY_LIMIT,
+          customGptMaximumPayloadBytes,
           preparationSignal,
         );
         throwIfRequestAborted(preparationSignal);
